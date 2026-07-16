@@ -20,8 +20,8 @@ def test_fork_inherits_prefix_zero_copy():
     assert charged == len("unique-1")
 
 
-def test_ten_way_fanout_prefix_reuse_gate():
-    """Gate G2: >=90% of shared prefix tokens saved across 10 children."""
+def test_ten_way_fanout_prefix_reuse():
+    """>=90% of shared prefix tokens are saved across 10 children."""
     kv = TreeKVCache()
     kv.create_tree("p")
     shared = toks("S" * 32000)

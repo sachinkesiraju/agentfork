@@ -6,16 +6,15 @@ Baselines compared for an N-way sibling fanout over a shared prefix of
   A. independent   — every child re-prefills the full prefix (no caching).
   B. provider      — provider prompt caching: cached-input tokens billed at a
                      discount (e.g. 0.1x); cache writes at write_mult.
-  C. self_hosted   — stock SGLang/vLLM radix cache, same-namespace requests:
-                     prefix compute is amortized but each child still holds a
-                     logical copy unless batched; sibling batching gets the
-                     compute side, this is the fair strong baseline.
-  D. agentfork     — tree-keyed CoW fork: prefix computed once, resident once,
-                     children pay only their unique suffix.
+  C. self_hosted   — stock SGLang/vLLM prefix caching, same-namespace requests:
+                     prefix compute and physical residency are amortized when
+                     the engine retains and reuses the identical prefix.
+  D. agentfork     — tree-keyed lifecycle controls over the same physical
+                     prefix sharing; children pay only their unique suffix.
 
-Compute cost is proxied by prefill token-charges; HBM residency by resident
-tokens. These map linearly to $/token and GB via model-specific constants
-(see report/RESULTS.md for the 70B/GQA mapping).
+Compute cost is proxied by prefill token-charges; cache residency by resident
+tokens. This is token arithmetic, not a latency, dollar-cost, or byte-level
+measurement.
 """
 
 from __future__ import annotations
@@ -42,7 +41,7 @@ def model(s: Scenario) -> dict:
         + (n - 1) * p * s.provider_cached_discount + n * u,
         "resident": None,  # opaque, provider-side
     }
-    self_hosted = {"prefill_charged": p + n * u, "resident": n * p + n * u}
+    self_hosted = {"prefill_charged": p + n * u, "resident": p + n * u}
     agentfork = {"prefill_charged": p + n * u, "resident": p + n * u}
     out = {
         "scenario": vars(s),

@@ -1,10 +1,9 @@
 """pidfd-based branch kill path.
 
-One kill call must reap BOTH halves of a branch: the sandbox process and its
-KV pages. On kernels with ``CLONE_PIDFD_AUTOKILL`` (uapi bit 36) closing the
-pidfd kills the child automatically; on older kernels (like 5.15) we get the
-same guarantee with ``pidfd_send_signal`` + ``PR_SET_PDEATHSIG`` as the
-orphan backstop. Both paths are wired here and the active one is reported.
+One kill call sequentially reaps BOTH halves of a branch: the child process
+and its reference-cache pages. The process path uses ``pidfd_send_signal``;
+``PR_SET_PDEATHSIG`` is the orphan backstop if the supervisor exits. This
+module does not use ``CLONE_PIDFD_AUTOKILL`` or manage Firecracker directly.
 """
 
 from __future__ import annotations

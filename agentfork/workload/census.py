@@ -6,9 +6,9 @@ Analyzes a list of agent sessions (id, created, title, prompt) for:
      (exact leading common prefix, char-level proxy for token prefix);
   3. recurring identical prompts (cross-wake prefix reuse candidates).
 
-The fork primitive pays off when fanout >= ~8 and f >= 0.2 (see
-report/RESULTS.md gates). This module makes those two numbers measurable
-on any session export.
+The evaluation threshold is fanout >= ~8 and f >= 0.2 (see
+report/RESULTS.md). This module makes those two numbers measurable on any
+session export.
 
 Input JSON: [{"id": ..., "created": unix_ts, "title": ..., "prompt": ...}]
 """

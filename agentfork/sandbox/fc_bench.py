@@ -1,4 +1,4 @@
-"""Firecracker microVM fork benchmark (Gate G4 evidence).
+"""Firecracker microVM snapshot and fanout benchmark.
 
 Measures on the current host:
   1. cold boot latency of a microVM;
@@ -93,8 +93,8 @@ class MicroVM:
         return time.perf_counter() - t0
 
     def kill(self) -> tuple[float, float]:
-        """Returns (signal_s, reaped_s): signal delivery is the moment the VM
-        stops consuming GPU/CPU; reap includes full VMM teardown."""
+        """Returns (signal_s, reaped_s): signal_s measures signal submission;
+        reap includes confirmed exit and full VMM teardown."""
         t0 = time.perf_counter()
         signal.pidfd_send_signal(self.pidfd, signal.SIGKILL)
         t1 = time.perf_counter()

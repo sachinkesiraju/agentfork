@@ -1,7 +1,7 @@
 """Integrated kill-path benchmark: one kill() reaps sandbox process + KV.
 
 Measures, over N fork/kill cycles:
-  - pidfd_send_signal latency (the moment the branch stops running);
+  - pidfd_send_signal syscall latency (signal submission, not confirmed exit);
   - full reap latency (zombie collected, no orphan possible);
   - KV reclaim latency (tree-keyed refcount drop + page free);
   - end-to-end kill (signal -> both halves reclaimed).

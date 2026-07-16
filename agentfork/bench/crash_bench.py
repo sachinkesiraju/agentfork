@@ -3,8 +3,8 @@
 For each cycle, a supervisor process spawns N sandbox children through
 BranchReaper (PR_SET_PDEATHSIG backstop), then the supervisor itself is
 SIGKILLed with no chance to clean up. The children must be reaped by the
-kernel, not leaked. This validates the orphan story CLONE_PIDFD_AUTOKILL
-solves on >=6.4 kernels, using the 5.15-compatible fallback path.
+kernel, not leaked. This exercises the ``PR_SET_PDEATHSIG`` path used by the
+current implementation; it does not exercise ``CLONE_PIDFD_AUTOKILL``.
 
 Run: python -m agentfork.bench.crash_bench --cycles 50 --children 5
 """

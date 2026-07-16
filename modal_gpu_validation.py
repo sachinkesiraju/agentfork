@@ -1,13 +1,14 @@
-"""G10: GPU validation of the TreeRadixCache patch on Modal.
+"""GPU validation of the TreeRadixCache patch on Modal.
 
 Mounts the local sglang checkout (main @ 40517b593 + tree_radix_cache patch)
 over the lmsysorg/sglang image (for CUDA torch + deps) and, on a real GPU:
 
 1. real-HBM pool test: TreeRadixCache + MHATokenToKVPool/TokenToKVPoolAllocator
    on device=cuda — measures actual HBM bytes, slot dedup, and reclaim-to-zero.
-2. the 7 TreeRadixCache unit tests, on the GPU host.
-3. live engine E2E: sgl.Engine (Qwen3-0.6B) — 10 sibling requests sharing a
-   long prefix; reports cached_tokens per sibling from the real engine.
+2. the TreeRadixCache unit-test file, on the GPU host.
+3. stock live-engine baseline: sgl.Engine (Qwen3-0.6B) — 10 requests sharing
+   a long prefix. This measures SGLang's existing RadixAttention reuse; the
+   engine is not configured to call TreeRadixCache's branch APIs.
 
 Run: SGLANG_DIR=/path/to/sglang python3 -m modal run modal_gpu_validation.py
 (SGLANG_DIR defaults to ~/sglang; it must be a checkout with the
@@ -106,7 +107,7 @@ def validate() -> str:
         capture_output=True, text=True, env={**os.environ})
     out["unit_tests"] = r.stdout.strip().splitlines()[-1] if r.stdout else r.stderr[-200:]
 
-    # --- 3. live engine E2E prefix reuse ---
+    # --- 3. stock live-engine prefix-cache baseline ---
     try:
         import sglang as sgl
         eng = sgl.Engine(model_path="Qwen/Qwen3-0.6B", mem_fraction_static=0.6,
