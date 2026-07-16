@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 300" width="960" height="300" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Inter, sans-serif">
+  <defs>
+    <filter id="shad" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="1" stdDeviation="2" flood-color="#0f172a" flood-opacity="0.08"/>
+    </filter>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8" fill="none" stroke="#94a3b8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <marker id="arrowG" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8" fill="none" stroke="#16a34a" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+  <rect width="960" height="300" fill="#f8fafc" rx="12"/>
+  <text x="40" y="32" font-size="18" font-weight="600" fill="#0f172a" letter-spacing="-0.3">Lifecycle: coding-agent fanout</text>
+  <text x="40" y="50" font-size="12" fill="#64748b">A 32k-token repo context forks into 10 fix candidates; 9 are killed, the winner merges back</text>
+  <g transform="translate(40,80)" filter="url(#shad)">
+    <rect width="180" height="120" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+    <rect x="20" y="18" width="58" height="20" rx="10" fill="#eff6ff" stroke="#bfdbfe"/>
+    <text x="49" y="32" text-anchor="middle" font-size="10" font-weight="600" fill="#2563eb">PARENT</text>
+    <text x="20" y="66" font-size="15" font-weight="600" fill="#0f172a">Coding agent</text>
+    <text x="20" y="88" font-size="12" fill="#64748b">32k-token repo context</text>
+    <text x="20" y="106" font-size="12" fill="#64748b">KV prefix paid once</text>
+  </g>
+  <line x1="220" y1="140" x2="238" y2="140" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="320" y1="140" x2="338" y2="140" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <g transform="translate(238,122)" filter="url(#shad)">
+    <rect width="82" height="36" rx="18" fill="#0f172a"/>
+    <text x="41" y="23" text-anchor="middle" font-size="12" font-weight="600" fill="#ffffff" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">fork()</text>
+  </g>
+  <g transform="translate(340,68)" filter="url(#shad)">
+    <rect width="300" height="144" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+    <text x="150.0" y="28" text-anchor="middle" font-size="12" font-weight="600" fill="#0f172a">10 fix candidates (shared parent context)</text>
+    <rect x="20" y="62" width="44" height="30" rx="8" fill="#fef2f2" stroke="#fecaca"/>
+    <text x="42.0" y="81.0" text-anchor="middle" font-size="11" font-weight="600" fill="#dc2626">1</text>
+    <rect x="74" y="62" width="44" height="30" rx="8" fill="#fef2f2" stroke="#fecaca"/>
+    <text x="96.0" y="81.0" text-anchor="middle" font-size="11" font-weight="600" fill="#dc2626">2</text>
+    <rect x="128" y="62" width="44" height="30" rx="8" fill="#fef2f2" stroke="#fecaca"/>
+    <text x="150.0" y="81.0" text-anchor="middle" font-size="11" font-weight="600" fill="#dc2626">3</text>
+    <rect x="182" y="62" width="44" height="30" rx="8" fill="#fef2f2" stroke="#fecaca"/>
+    <text x="204.0" y="81.0" text-anchor="middle" font-size="11" font-weight="600" fill="#dc2626">4</text>
+    <rect x="236" y="62" width="44" height="30" rx="8" fill="#fef2f2" stroke="#fecaca"/>
+    <text x="258.0" y="81.0" text-anchor="middle" font-size="11" font-weight="600" fill="#dc2626">5</text>
+    <rect x="20" y="102" width="44" height="30" rx="8" fill="#fef2f2" stroke="#fecaca"/>
+    <text x="42.0" y="121.0" text-anchor="middle" font-size="11" font-weight="600" fill="#dc2626">6</text>
+    <rect x="74" y="102" width="44" height="30" rx="8" fill="#fef2f2" stroke="#fecaca"/>
+    <text x="96.0" y="121.0" text-anchor="middle" font-size="11" font-weight="600" fill="#dc2626">7</text>
+    <rect x="128" y="102" width="44" height="30" rx="8" fill="#fef2f2" stroke="#fecaca"/>
+    <text x="150.0" y="121.0" text-anchor="middle" font-size="11" font-weight="600" fill="#dc2626">8</text>
+    <rect x="182" y="102" width="44" height="30" rx="8" fill="#fef2f2" stroke="#fecaca"/>
+    <text x="204.0" y="121.0" text-anchor="middle" font-size="11" font-weight="600" fill="#dc2626">9</text>
+    <rect x="236" y="102" width="44" height="30" rx="8" fill="#f0fdf4" stroke="#bbf7d0"/>
+    <text x="258.0" y="121.0" text-anchor="middle" font-size="11" font-weight="600" fill="#16a34a">10</text>
+  </g>
+  <line x1="620" y1="185.0" x2="690" y2="140" stroke="#16a34a" stroke-width="1.5" marker-end="url(#arrowG)"/>
+  <g transform="translate(690,80)" filter="url(#shad)">
+    <rect width="180" height="120" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+    <rect x="20" y="18" width="58" height="20" rx="10" fill="#f0fdf4" stroke="#bbf7d0"/>
+    <text x="49" y="32" text-anchor="middle" font-size="10" font-weight="600" fill="#16a34a">MERGE</text>
+    <text x="20" y="66" font-size="15" font-weight="600" fill="#0f172a">Parent continues</text>
+    <text x="20" y="88" font-size="12" fill="#64748b">Folds winning fix in,</text>
+    <text x="20" y="106" font-size="12" fill="#64748b">commits the change</text>
+  </g>
+  <g transform="translate(40,262)" filter="url(#shad)">
+    <rect width="168.0" height="26" rx="13" fill="#ffffff" stroke="#e2e8f0"/>
+    <circle cx="14" cy="13" r="3.5" fill="#2563eb"/>
+    <text x="28" y="17" font-size="11" fill="#334155"><tspan font-weight="600" fill="#0f172a">fork</tspan> 10-way in 22 ms</text>
+  </g>
+  <g transform="translate(222.0,262)" filter="url(#shad)">
+    <rect width="146.4" height="26" rx="13" fill="#ffffff" stroke="#e2e8f0"/>
+    <circle cx="14" cy="13" r="3.5" fill="#dc2626"/>
+    <text x="28" y="17" font-size="11" fill="#334155"><tspan font-weight="600" fill="#0f172a">kill</tspan> 9 in ~0.5 ms</text>
+  </g>
+  <g transform="translate(382.4,262)" filter="url(#shad)">
+    <rect width="124.8" height="26" rx="13" fill="#ffffff" stroke="#e2e8f0"/>
+    <circle cx="14" cy="13" r="3.5" fill="#16a34a"/>
+    <text x="28" y="17" font-size="11" fill="#334155"><tspan font-weight="600" fill="#0f172a">prefill</tspan> paid once</text>
+  </g>
+</svg>

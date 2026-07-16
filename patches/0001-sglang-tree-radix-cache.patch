@@ -1,0 +1,536 @@
+diff --git a/python/sglang/srt/mem_cache/tree_radix_cache.py b/python/sglang/srt/mem_cache/tree_radix_cache.py
+new file mode 100644
+index 0000000..01eb3c4
+--- /dev/null
++++ b/python/sglang/srt/mem_cache/tree_radix_cache.py
+@@ -0,0 +1,279 @@
++"""Agent-tree extension of RadixCache: fork_branch / kill_tree primitives.
++
++Adds explicit agent/process-tree identity on top of the existing token-prefix
++radix cache. All branches of one agent tree share a single ``extra_key``
++namespace, so a forked child transparently reuses (copy-on-write, zero KV
++copies) every cached page of its parent's prefix through the normal radix
++match path. Each live branch pins its prefix with the existing
++``lock_ref`` mechanism, and ``kill_tree`` unpins in O(depth) so pages become
++evictable the moment the last owning branch dies — the cache half of an
++integrated sandbox+KV kill path.
++
++No scheduler or model-runner changes are required; this is purely additive
++over the public RadixCache API (match_prefix / insert / inc_lock_ref /
++dec_lock_ref / evict).
++"""
++
++from __future__ import annotations
++
++import itertools
++from array import array
++from dataclasses import dataclass, field
++from typing import Optional
++
++import torch
++
++from sglang.srt.mem_cache.base_prefix_cache import (
++    EvictParams,
++    InsertParams,
++    MatchPrefixParams,
++)
++from sglang.srt.mem_cache.radix_cache import RadixCache, RadixKey, TreeNode
++
++
++class TreeQuotaExceeded(MemoryError):
++    """A tree tried to charge or reserve past its per-tree HBM quota."""
++
++
++@dataclass
++class AgentBranch:
++    """Identity + pinned state of one live branch of an agent tree."""
++
++    branch_id: str
++    namespace: Optional[str]
++    parent_id: Optional[str] = None
++    child_seq: int = 0
++    token_ids: array = field(default_factory=lambda: array("q"))
++    locked_node: Optional[TreeNode] = None
++    reserved_tokens: int = 0
++    speculative: bool = False
++
++
++@dataclass
++class TreeTelemetry:
++    """Per-tree KV residency and movement counters."""
++
++    live_branches: int = 0
++    charged_tokens: int = 0     # tokens this tree inserted (unique suffixes)
++    pinned_tokens: int = 0      # tokens currently pinned by live branches
++    reserved_tokens: int = 0    # fork-time reservations not yet consumed
++    saved_tokens: int = 0       # prefill avoided via shared-prefix hits
++    invalidations: int = 0
++    demotions: int = 0
++
++
++class TreeRadixCache(RadixCache):
++    """RadixCache + agent-tree fork/kill primitives (additive, CPU-testable)."""
++
++    def __init__(self, params, tree_quota_tokens: Optional[int] = None):
++        super().__init__(params)
++        self._branches: dict[str, AgentBranch] = {}
++        self._fork_seq = itertools.count(1)
++        self.tree_quota_tokens = tree_quota_tokens
++        self._telemetry: dict[str, TreeTelemetry] = {}
++
++    # ---- quotas / reservations / telemetry -------------------------------
++
++    def tree_telemetry(self, namespace: str) -> TreeTelemetry:
++        return self._telemetry.setdefault(namespace, TreeTelemetry())
++
++    def _charge(self, br: AgentBranch, tokens: int) -> None:
++        """Enforce the per-tree quota; reserved tokens are pre-charged."""
++        tel = self.tree_telemetry(br.namespace)
++        from_reserve = min(br.reserved_tokens, tokens)
++        br.reserved_tokens -= from_reserve
++        tel.reserved_tokens -= from_reserve
++        tel.charged_tokens += from_reserve
++        extra = tokens - from_reserve
++        if extra <= 0:
++            return
++        if (
++            self.tree_quota_tokens is not None
++            and tel.charged_tokens + tel.reserved_tokens + extra
++            > self.tree_quota_tokens
++        ):
++            raise TreeQuotaExceeded(
++                f"tree {br.namespace}: {tel.charged_tokens} charged "
++                f"+ {tel.reserved_tokens} reserved + {extra} new "
++                f"> quota {self.tree_quota_tokens}"
++            )
++        tel.charged_tokens += extra
++
++    def reserve(self, branch_id: str, num_tokens: int) -> None:
++        """Fork-time reservation: pre-charge suffix capacity against the
++        tree quota before the branch's requests arrive, so admission is
++        decided at fork time instead of mid-decode."""
++        br = self._branches[branch_id]
++        tel = self.tree_telemetry(br.namespace)
++        if (
++            self.tree_quota_tokens is not None
++            and tel.charged_tokens + tel.reserved_tokens + num_tokens
++            > self.tree_quota_tokens
++        ):
++            raise TreeQuotaExceeded(
++                f"tree {br.namespace}: reservation of {num_tokens} exceeds "
++                f"quota {self.tree_quota_tokens}"
++            )
++        br.reserved_tokens += num_tokens
++        tel.reserved_tokens += num_tokens
++
++    def demote_branch(self, branch_id: str) -> int:
++        """Priority demotion of a speculative branch: unpin its pages so
++        they become evictable under pressure, but keep them cached so a
++        later promote (or re-run) still hits. Returns tokens made evictable."""
++        br = self._branches[branch_id]
++        if br.speculative or br.locked_node is None:
++            return 0
++        delta = self.dec_lock_ref(br.locked_node).delta
++        br.speculative = True
++        tel = self.tree_telemetry(br.namespace)
++        tel.pinned_tokens -= delta
++        tel.demotions += 1
++        return delta
++
++    def promote_branch(self, branch_id: str) -> int:
++        """Re-pin a demoted branch's surviving prefix. Returns the number of
++        tokens still cached (the rest must be re-prefilled)."""
++        br = self._branches[branch_id]
++        if not br.speculative:
++            return len(br.token_ids)
++        key = RadixKey(array("q", br.token_ids), extra_key=br.namespace)
++        res = self.match_prefix(MatchPrefixParams(key=key))
++        br.locked_node = res.last_device_node
++        pinned = -self.inc_lock_ref(br.locked_node).delta
++        br.speculative = False
++        self.tree_telemetry(br.namespace).pinned_tokens += pinned
++        return len(res.device_indices)
++
++    def invalidate_tree(self, branch_id: str) -> int:
++        """ABI/weights invalidation: drop the branch's pinned KV so the next
++        extend falls back to a full re-prefill. Returns tokens released."""
++        br = self._branches[branch_id]
++        released = 0
++        if br.locked_node is not None and not br.speculative:
++            released = self.dec_lock_ref(br.locked_node).delta
++        br.locked_node = None
++        br.speculative = False
++        tel = self.tree_telemetry(br.namespace)
++        tel.pinned_tokens -= released
++        tel.invalidations += 1
++        br.token_ids = array("q")
++        if released > 0:
++            self.evict(EvictParams(num_tokens=released))
++        return released
++
++    # ---- tree lifecycle -------------------------------------------------
++
++    def create_agent_tree(
++        self, branch_id: str, namespace: Optional[str] = None
++    ) -> AgentBranch:
++        if branch_id in self._branches:
++            raise ValueError(f"branch exists: {branch_id}")
++        br = AgentBranch(branch_id=branch_id, namespace=namespace or branch_id)
++        self._branches[branch_id] = br
++        self.tree_telemetry(br.namespace).live_branches += 1
++        return br
++
++    def fork_branch(
++        self, parent_id: str, child_id: Optional[str] = None
++    ) -> AgentBranch:
++        """CoW fork: the child inherits the parent's cached prefix.
++
++        No KV pages are copied; the child re-pins the same radix path
++        (lock_ref++) inside the parent's namespace, so the shared prefix
++        survives even if the parent is killed first.
++        """
++        parent = self._branches[parent_id]
++        seq = next(self._fork_seq)
++        child_id = child_id or f"{parent_id}/{seq}"
++        if child_id in self._branches:
++            raise ValueError(f"branch exists: {child_id}")
++        child = AgentBranch(
++            branch_id=child_id,
++            namespace=parent.namespace,
++            parent_id=parent_id,
++            child_seq=seq,
++            token_ids=array("q", parent.token_ids),
++        )
++        pinned = 0
++        if parent.speculative:
++            # parent's node may have been partially evicted; re-match
++            key = RadixKey(array("q", parent.token_ids), extra_key=parent.namespace)
++            node = self.match_prefix(MatchPrefixParams(key=key)).last_device_node
++            pinned = -self.inc_lock_ref(node).delta
++            child.locked_node = node
++        elif parent.locked_node is not None:
++            pinned = -self.inc_lock_ref(parent.locked_node).delta
++            child.locked_node = parent.locked_node
++        self._branches[child_id] = child
++        tel = self.tree_telemetry(child.namespace)
++        tel.pinned_tokens += pinned
++        tel.live_branches += 1
++        tel.saved_tokens += len(child.token_ids)
++        return child
++
++    def kill_tree(self, branch_id: str) -> int:
++        """Unpin the branch and evict now-unreferenced pages.
++
++        Returns the number of tokens made evictable (delta), i.e. pages whose
++        last pin belonged to this branch. O(depth) unpin + targeted evict.
++        """
++        br = self._branches.pop(branch_id, None)
++        if br is None:
++            return 0
++        delta = 0
++        if br.locked_node is not None and not br.speculative:
++            delta = self.dec_lock_ref(br.locked_node).delta
++        if delta > 0:
++            self.evict(EvictParams(num_tokens=delta))
++        tel = self.tree_telemetry(br.namespace)
++        tel.live_branches -= 1
++        tel.pinned_tokens -= delta
++        tel.reserved_tokens -= br.reserved_tokens
++        return delta
++
++    # ---- data path -------------------------------------------------------
++
++    def extend_tree(
++        self,
++        branch_id: str,
++        token_ids: list[int],
++        value: Optional[torch.Tensor] = None,
++    ) -> int:
++        """Append tokens to a branch; returns the cached-prefix hit length.
++
++        The hit length counts tokens that did NOT need prefill because they
++        were already resident (typically the forked parent prefix).
++        """
++        br = self._branches[branch_id]
++        old_len = len(br.token_ids)
++        new_tokens = array("q", br.token_ids)
++        new_tokens.extend(token_ids)
++        key = RadixKey(new_tokens, extra_key=br.namespace)
++        hit = len(self.match_prefix(MatchPrefixParams(key=key)).device_indices)
++        charged = len(new_tokens) - max(hit, old_len)
++        if charged > 0:
++            self._charge(br, charged)  # raises before any state changes
++        br.token_ids = new_tokens
++        tel = self.tree_telemetry(br.namespace)
++        tel.saved_tokens += max(hit - old_len, 0)
++        self.insert(InsertParams(key=key, value=value))
++        new_node = self.match_prefix(
++            MatchPrefixParams(key=key)
++        ).last_device_node
++        pinned = -self.inc_lock_ref(new_node).delta
++        if br.locked_node is not None and not br.speculative:
++            pinned -= self.dec_lock_ref(br.locked_node).delta
++        br.locked_node = new_node
++        br.speculative = False
++        tel.pinned_tokens += pinned
++        return hit
++
++    def match_tree_prefix(self, branch_id: str, token_ids: list[int]) -> int:
++        """Longest cached prefix (in tokens) visible to this branch."""
++        br = self._branches[branch_id]
++        key = RadixKey(array("q", token_ids), extra_key=br.namespace)
++        return len(self.match_prefix(MatchPrefixParams(key=key)).device_indices)
++
++    def live_branches(self) -> int:
++        return len(self._branches)
+diff --git a/test/registered/unit/mem_cache/test_tree_radix_cache.py b/test/registered/unit/mem_cache/test_tree_radix_cache.py
+new file mode 100644
+index 0000000..9a555f2
+--- /dev/null
++++ b/test/registered/unit/mem_cache/test_tree_radix_cache.py
+@@ -0,0 +1,245 @@
++"""Unit tests for srt/mem_cache/tree_radix_cache (agent-tree fork/kill)."""
++
++import unittest
++import unittest.mock
++
++import torch
++
++from sglang.srt.mem_cache.cache_init_params import CacheInitParams
++from sglang.srt.mem_cache.tree_radix_cache import TreeQuotaExceeded, TreeRadixCache
++from sglang.test.ci.ci_register import register_cpu_ci
++from sglang.test.test_utils import CustomTestCase
++
++register_cpu_ci(est_time=5, suite="base-a-test-cpu")
++
++
++def _make_cache(tree_quota_tokens=None) -> TreeRadixCache:
++    mock_allocator = unittest.mock.Mock()
++    mock_allocator.device = torch.device("cpu")
++    mock_allocator.free = unittest.mock.Mock()
++    params = CacheInitParams(
++        disable=False,
++        req_to_token_pool=None,
++        token_to_kv_pool_allocator=mock_allocator,
++        page_size=1,
++    )
++    return TreeRadixCache(params, tree_quota_tokens=tree_quota_tokens)
++
++
++class TestTreeRadixCache(CustomTestCase):
++    def test_fork_inherits_parent_prefix(self):
++        cache = _make_cache()
++        cache.create_agent_tree("parent")
++        prefix = list(range(1000))
++        hit = cache.extend_tree("parent", prefix)
++        self.assertEqual(hit, 0)  # cold prefill
++
++        cache.fork_branch("parent", "child")
++        # child sees the full parent prefix as cached: zero re-prefill
++        self.assertEqual(cache.match_tree_prefix("child", prefix), 1000)
++        hit = cache.extend_tree("child", [5000, 5001, 5002])
++        self.assertEqual(hit, 1000)
++
++    def test_ten_way_fanout_prefix_reuse(self):
++        cache = _make_cache()
++        cache.create_agent_tree("p")
++        prefix = list(range(2000))
++        cache.extend_tree("p", prefix)
++        for i in range(10):
++            br = cache.fork_branch("p")
++            hit = cache.extend_tree(br.branch_id, [10_000 + i])
++            self.assertEqual(hit, 2000)  # every sibling reuses the prefix
++
++    def test_namespaces_are_disjoint(self):
++        cache = _make_cache()
++        cache.create_agent_tree("a")
++        cache.create_agent_tree("b")
++        tokens = list(range(100))
++        cache.extend_tree("a", tokens)
++        # different tree, same tokens: no cross-tree leakage
++        self.assertEqual(cache.match_tree_prefix("b", tokens), 0)
++
++    def test_kill_tree_releases_pins(self):
++        cache = _make_cache()
++        cache.create_agent_tree("p")
++        cache.extend_tree("p", list(range(500)))
++        cache.fork_branch("p", "c")
++        cache.extend_tree("c", [900, 901])
++
++        self.assertGreater(cache.protected_size(), 0)
++        freed_child = cache.kill_tree("c")
++        self.assertEqual(freed_child, 2)  # only the child's unshared suffix
++        # parent's prefix still cached and pinned
++        self.assertEqual(cache.match_tree_prefix("p", list(range(500))), 500)
++
++        freed_parent = cache.kill_tree("p")
++        self.assertEqual(freed_parent, 500)
++        self.assertEqual(cache.protected_size(), 0)
++
++    def test_child_survives_parent_kill(self):
++        cache = _make_cache()
++        cache.create_agent_tree("p")
++        prefix = list(range(300))
++        cache.extend_tree("p", prefix)
++        cache.fork_branch("p", "c")
++        cache.kill_tree("p")
++        # shared prefix is still pinned by the child
++        self.assertEqual(cache.match_tree_prefix("c", prefix), 300)
++        cache.kill_tree("c")
++        self.assertEqual(cache.protected_size(), 0)
++
++    def test_kill_is_idempotent(self):
++        cache = _make_cache()
++        cache.create_agent_tree("t")
++        cache.extend_tree("t", [1, 2, 3])
++        self.assertEqual(cache.kill_tree("t"), 3)
++        self.assertEqual(cache.kill_tree("t"), 0)
++
++    def test_fifty_fork_kill_cycles_no_leaks(self):
++        cache = _make_cache()
++        cache.create_agent_tree("p")
++        cache.extend_tree("p", list(range(200)))
++        for i in range(50):
++            br = cache.fork_branch("p")
++            cache.extend_tree(br.branch_id, [1000 + i, 2000 + i])
++            cache.kill_tree(br.branch_id)
++        self.assertEqual(cache.live_branches(), 1)
++        cache.kill_tree("p")
++        self.assertEqual(cache.protected_size(), 0)
++        self.assertEqual(cache.live_branches(), 0)
++
++    def test_per_tree_quota_enforced(self):
++        cache = _make_cache(tree_quota_tokens=100)
++        cache.create_agent_tree("t")
++        cache.extend_tree("t", list(range(90)))
++        with self.assertRaises(TreeQuotaExceeded):
++            cache.extend_tree("t", list(range(1000, 1020)))
++        # other trees are unaffected (fairness)
++        cache.create_agent_tree("u")
++        self.assertEqual(cache.extend_tree("u", list(range(50))), 0)
++
++    def test_shared_prefix_charged_once_per_tree(self):
++        cache = _make_cache(tree_quota_tokens=120)
++        cache.create_agent_tree("p")
++        cache.extend_tree("p", list(range(100)))
++        # 10 forks re-use the prefix: no additional quota is consumed
++        for i in range(10):
++            br = cache.fork_branch("p")
++            cache.extend_tree(br.branch_id, [10_000 + i])
++        tel = cache.tree_telemetry("p")
++        self.assertEqual(tel.charged_tokens, 110)
++        self.assertEqual(tel.saved_tokens, 10 * 100)  # saved once at fork
++
++    def test_fork_time_reservation_admission(self):
++        cache = _make_cache(tree_quota_tokens=100)
++        cache.create_agent_tree("p")
++        cache.extend_tree("p", list(range(40)))
++        br = cache.fork_branch("p", "c")
++        cache.reserve("c", 60)  # exactly fills the quota
++        with self.assertRaises(TreeQuotaExceeded):
++            cache.reserve("c", 1)  # admission fails at fork time
++        # the reserved branch can consume its reservation
++        cache.extend_tree("c", list(range(1000, 1060)))
++        self.assertEqual(br.reserved_tokens, 0)
++        # kill releases any unconsumed reservation
++        cache.fork_branch("p", "d")
++        with self.assertRaises(TreeQuotaExceeded):
++            cache.reserve("d", 10)
++
++    def test_demote_promote_speculative_branch(self):
++        cache = _make_cache()
++        cache.create_agent_tree("p")
++        cache.extend_tree("p", list(range(200)))
++        cache.fork_branch("p", "spec")
++        cache.extend_tree("spec", list(range(1000, 1050)))
++        before = cache.evictable_size()
++        made_evictable = cache.demote_branch("spec")
++        self.assertEqual(made_evictable, 50)  # its unshared suffix
++        self.assertEqual(cache.evictable_size(), before + 50)
++        # promote re-pins whatever survived (no pressure here: everything)
++        still_cached = cache.promote_branch("spec")
++        self.assertEqual(still_cached, 250)
++        self.assertEqual(cache.evictable_size(), before)
++        cache.kill_tree("spec")
++        cache.kill_tree("p")
++        self.assertEqual(cache.protected_size(), 0)
++
++    def test_invalidate_falls_back_to_reprefill(self):
++        cache = _make_cache()
++        cache.create_agent_tree("t")
++        tokens = list(range(300))
++        cache.extend_tree("t", tokens)
++        released = cache.invalidate_tree("t")
++        self.assertEqual(released, 300)
++        # next extend is a cold re-prefill, not a stale hit
++        self.assertEqual(cache.extend_tree("t", tokens), 0)
++        self.assertEqual(cache.tree_telemetry("t").invalidations, 1)
++        cache.kill_tree("t")
++
++    def test_telemetry_tracks_residency(self):
++        cache = _make_cache()
++        cache.create_agent_tree("p")
++        cache.extend_tree("p", list(range(100)))
++        cache.fork_branch("p", "c")
++        cache.extend_tree("c", list(range(500, 520)))
++        tel = cache.tree_telemetry("p")
++        self.assertEqual(tel.live_branches, 2)
++        self.assertEqual(tel.charged_tokens, 120)
++        self.assertEqual(tel.pinned_tokens, 120)
++        cache.kill_tree("c")
++        self.assertEqual(tel.live_branches, 1)
++        self.assertEqual(tel.pinned_tokens, 100)
++        cache.kill_tree("p")
++        self.assertEqual(tel.live_branches, 0)
++        self.assertEqual(tel.pinned_tokens, 0)
++
++    def test_quota_failure_leaves_branch_state_unchanged(self):
++        cache = _make_cache(tree_quota_tokens=100)
++        cache.create_agent_tree("t")
++        cache.extend_tree("t", list(range(90)))
++        with self.assertRaises(TreeQuotaExceeded):
++            cache.extend_tree("t", list(range(1000, 1020)))
++        # the failed extend must not have mutated the branch: exactly the
++        # 10 remaining quota tokens still fit
++        self.assertEqual(cache.extend_tree("t", list(range(2000, 2010))), 90)
++        self.assertEqual(cache.tree_telemetry("t").charged_tokens, 100)
++
++    def test_extend_on_demoted_branch_no_double_unpin(self):
++        cache = _make_cache()
++        cache.create_agent_tree("p")
++        cache.extend_tree("p", list(range(100)))
++        cache.fork_branch("p", "s")
++        cache.extend_tree("s", list(range(500, 550)))
++        cache.demote_branch("s")
++        # extend without an explicit promote: must re-pin, not double-unpin
++        cache.extend_tree("s", list(range(550, 560)))
++        cache.kill_tree("s")
++        cache.kill_tree("p")
++        self.assertEqual(cache.protected_size(), 0)
++        self.assertEqual(cache.evictable_size(), 0)
++
++    def test_fork_from_demoted_parent(self):
++        cache = _make_cache()
++        cache.create_agent_tree("p")
++        prefix = list(range(200))
++        cache.extend_tree("p", prefix)
++        cache.demote_branch("p")
++        cache.fork_branch("p", "c")
++        self.assertEqual(cache.match_tree_prefix("c", prefix), 200)
++        cache.kill_tree("c")
++        cache.kill_tree("p")
++        self.assertEqual(cache.protected_size(), 0)
++
++    def test_invalidate_demoted_branch(self):
++        cache = _make_cache()
++        cache.create_agent_tree("t")
++        cache.extend_tree("t", list(range(100)))
++        cache.demote_branch("t")
++        # already unpinned by demote: nothing further to release, no underflow
++        self.assertEqual(cache.invalidate_tree("t"), 0)
++        cache.kill_tree("t")
++        self.assertEqual(cache.protected_size(), 0)
++
++
++if __name__ == "__main__":
++    unittest.main()

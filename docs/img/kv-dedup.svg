@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 400" width="960" height="400" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Inter, sans-serif">
+  <defs>
+    <filter id="shad" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="1" stdDeviation="2" flood-color="#0f172a" flood-opacity="0.08"/>
+    </filter>
+  </defs>
+
+  <rect width="960" height="400" fill="#f8fafc" rx="12"/>
+  <text x="40" y="46" font-size="20" font-weight="600" fill="#0f172a" letter-spacing="-0.3">Tree-keyed KV cache</text>
+  <text x="40" y="68" font-size="13" fill="#64748b">One resident parent prefix, N logical branches</text>
+
+  <!-- Left card: naive clones -->
+  <g transform="translate(40,92)" filter="url(#shad)">
+    <rect width="420" height="280" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+    <text x="24" y="36" font-size="15" font-weight="600" fill="#0f172a">Naive clones</text>
+    <text x="24" y="56" font-size="12" fill="#64748b">Every clone stores the full parent prefix again</text>
+
+    <!-- clone rows: prefix block + delta block -->
+    <g transform="translate(24,80)">
+      <rect width="280" height="30" rx="6" fill="#fee2e2" stroke="#fecaca"/>
+      <text x="140" y="20" text-anchor="middle" font-size="11" font-weight="500" fill="#991b1b">parent prefix (32k) — copy 1</text>
+      <rect x="288" y="0" width="84" height="30" rx="6" fill="#f8fafc" stroke="#e2e8f0"/>
+      <text x="330" y="20" text-anchor="middle" font-size="11" fill="#475569">delta</text>
+    </g>
+    <g transform="translate(24,120)">
+      <rect width="280" height="30" rx="6" fill="#fee2e2" stroke="#fecaca"/>
+      <text x="140" y="20" text-anchor="middle" font-size="11" font-weight="500" fill="#991b1b">parent prefix (32k) — copy 2</text>
+      <rect x="288" y="0" width="84" height="30" rx="6" fill="#f8fafc" stroke="#e2e8f0"/>
+      <text x="330" y="20" text-anchor="middle" font-size="11" fill="#475569">delta</text>
+    </g>
+    <g transform="translate(24,160)">
+      <rect width="280" height="30" rx="6" fill="#fee2e2" stroke="#fecaca"/>
+      <text x="140" y="20" text-anchor="middle" font-size="11" font-weight="500" fill="#991b1b">parent prefix (32k) — copy 3</text>
+      <rect x="288" y="0" width="84" height="30" rx="6" fill="#f8fafc" stroke="#e2e8f0"/>
+      <text x="330" y="20" text-anchor="middle" font-size="11" fill="#475569">delta</text>
+    </g>
+    <text x="210" y="222" text-anchor="middle" font-size="12" fill="#94a3b8">… 7 more full copies</text>
+    <rect x="24" y="238" width="372" height="26" rx="13" fill="#fef2f2" stroke="#fecaca"/>
+    <text x="210" y="255" text-anchor="middle" font-size="12" font-weight="600" fill="#dc2626">10 × 32k resident tokens · 10 × prefill</text>
+  </g>
+
+  <!-- Right card: agentfork -->
+  <g transform="translate(500,92)" filter="url(#shad)">
+    <rect width="420" height="280" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+    <text x="24" y="36" font-size="15" font-weight="600" fill="#0f172a">agentfork</text>
+    <text x="24" y="56" font-size="12" fill="#64748b">One shared prefix, refcount-pinned; branches add deltas</text>
+
+    <!-- shared prefix -->
+    <rect x="24" y="80" width="372" height="36" rx="8" fill="#dcfce7" stroke="#bbf7d0"/>
+    <text x="210" y="103" text-anchor="middle" font-size="12" font-weight="600" fill="#166534">shared parent prefix (32k) — resident once</text>
+
+    <!-- fan lines -->
+    <line x1="210" y1="116" x2="52" y2="150" stroke="#cbd5e1" stroke-width="1.5"/>
+    <line x1="210" y1="116" x2="131" y2="150" stroke="#cbd5e1" stroke-width="1.5"/>
+    <line x1="210" y1="116" x2="210" y2="150" stroke="#cbd5e1" stroke-width="1.5"/>
+    <line x1="210" y1="116" x2="289" y2="150" stroke="#cbd5e1" stroke-width="1.5"/>
+    <line x1="210" y1="116" x2="368" y2="150" stroke="#cbd5e1" stroke-width="1.5"/>
+
+    <!-- branch deltas -->
+    <g transform="translate(24,150)">
+      <rect width="56" height="28" rx="6" fill="#f8fafc" stroke="#cbd5e1"/>
+      <text x="28" y="18" text-anchor="middle" font-size="11" font-weight="500" fill="#334155">b1</text>
+      <rect x="79" y="0" width="56" height="28" rx="6" fill="#f8fafc" stroke="#cbd5e1"/>
+      <text x="107" y="18" text-anchor="middle" font-size="11" font-weight="500" fill="#334155">b2</text>
+      <rect x="158" y="0" width="56" height="28" rx="6" fill="#f8fafc" stroke="#cbd5e1"/>
+      <text x="186" y="18" text-anchor="middle" font-size="11" font-weight="500" fill="#334155">b3</text>
+      <rect x="237" y="0" width="56" height="28" rx="6" fill="#f8fafc" stroke="#cbd5e1"/>
+      <text x="265" y="18" text-anchor="middle" font-size="11" font-weight="500" fill="#334155">b4</text>
+      <rect x="316" y="0" width="56" height="28" rx="6" fill="#f8fafc" stroke="#cbd5e1"/>
+      <text x="344" y="18" text-anchor="middle" font-size="11" font-weight="500" fill="#334155">b5</text>
+    </g>
+    <text x="210" y="222" text-anchor="middle" font-size="12" fill="#94a3b8">… 5 more branch deltas share the same prefix</text>
+    <rect x="24" y="238" width="372" height="26" rx="13" fill="#f0fdf4" stroke="#bbf7d0"/>
+    <text x="210" y="255" text-anchor="middle" font-size="12" font-weight="600" fill="#16a34a">1 × 32k resident tokens · 0 re-prefill · 11× dedup</text>
+  </g>
+</svg>
