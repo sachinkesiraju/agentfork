@@ -1,8 +1,7 @@
 # agentfork
 
 Fork a live agent — its sandbox **and** its LLM KV context — as one coordinated lifecycle.
-Kill any branch and reclaim both halves in **sub-millisecond to single-digit
-milliseconds**, with zero orphans and zero leaked KV pages.
+Kill any branch and reclaim both halves in **sub-millisecond to single-digit milliseconds**, with zero orphans and zero leaked KV pages.
 
 ![tree-keyed KV: one resident prefix, N logical branches](docs/img/kv-dedup.svg)
 
