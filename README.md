@@ -191,7 +191,7 @@ the checks that fail or remain untested.
 
 In the [10-child GPU test](patches/real_pool_validation.py), sharing reduced KV
 usage from 357k slots to 37k. Stock SGLang already shares cached prefixes, so
-agentfork adds branch tracking and cleanup—not lower memory use.
+agentfork adds branch tracking and cleanup, not lower memory use.
 
 Provider-cache numbers are estimates based on assumed prices, not real-world
 measurements.
