@@ -37,8 +37,9 @@ class SGLangKVBackend:
         return branch
 
     def fork_branch(self, parent_id: str, child_id: str | None = None):
+        parent_len = self._lengths[parent_id]
         branch = self._cache.fork_branch(parent_id, child_id)
-        self._lengths[branch.branch_id] = self._lengths[parent_id]
+        self._lengths[branch.branch_id] = parent_len
         return branch
 
     def kill(self, tree_id: str) -> int:
@@ -46,8 +47,8 @@ class SGLangKVBackend:
         return self._cache.kill_tree(tree_id)
 
     def extend(self, tree_id: str, tokens: list[int]) -> int:
+        old_len = self._lengths[tree_id]  # before extend_tree: never mutate the engine for an untracked branch
         hit = self._cache.extend_tree(tree_id, tokens)
-        old_len = self._lengths[tree_id]
         new_total = old_len + len(tokens)
         charged = new_total - max(hit, old_len)
         self._lengths[tree_id] = new_total

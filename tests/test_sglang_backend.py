@@ -162,10 +162,25 @@ def test_extend_does_not_double_charge_when_part_of_the_prefix_was_evicted():
     assert backend._lengths["t"] == 5
 
 
-def test_fork_branch_raises_for_untracked_parent():
+def test_fork_branch_raises_for_untracked_parent_without_touching_the_cache():
     cache = FakeTreeRadixCache()
     backend = SGLangKVBackend(cache)
     cache.sequences["p"] = []  # cache knows "p"; the adapter's bookkeeping does not
 
     with pytest.raises(KeyError):
         backend.fork_branch("p", "c")
+
+    # the check must run before the cache call: no leaked child branch
+    assert "c" not in cache.sequences
+
+
+def test_extend_raises_for_untracked_branch_without_touching_the_cache():
+    cache = FakeTreeRadixCache()
+    backend = SGLangKVBackend(cache)
+    cache.sequences["t"] = [1, 2]  # cache knows "t"; the adapter's bookkeeping does not
+
+    with pytest.raises(KeyError):
+        backend.extend("t", [3, 4])
+
+    # the check must run before extend_tree: the engine was not extended/charged
+    assert cache.sequences["t"] == [1, 2]
