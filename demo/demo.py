@@ -1,15 +1,15 @@
 """agentfork demo: fork a live agent 10 ways, race the branches, kill the losers.
 
-Runs anywhere (CPU-only, no GPU, no Firecracker needed): each branch is a real
-OS process supervised through pidfd, and its KV context lives in the reference
-tree-keyed CoW cache. Watch the ledger: forks are free (no re-prefill, no page
-copies), kills reclaim process + KV in well under a millisecond, and the cache
-ends exactly empty.
+Runs on Linux without a GPU or Firecracker: each branch is a real OS process
+supervised through pidfd, and its KV context lives in the CPU reference cache.
+Watch the ledger: KV forks require no re-prefill or page copies, each kill reaps
+the process and reference-cache entry, and the cache ends exactly empty.
+Timings depend on the host.
 
     python -m demo.demo            # or: python demo/demo.py
 
-For the same lifecycle against a real GPU (real SGLang engine + HBM pool),
-see modal_gpu_validation.py.
+For separate patched-SGLang allocator and stock-engine prefix-cache checks on a
+GPU, see modal_gpu_validation.py.
 """
 
 from __future__ import annotations

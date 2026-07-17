@@ -1,13 +1,14 @@
-"""G10: GPU validation of the TreeRadixCache patch on Modal.
+"""GPU validation of the TreeRadixCache patch on Modal.
 
 Mounts the local sglang checkout (main @ 40517b593 + tree_radix_cache patch)
 over the lmsysorg/sglang image (for CUDA torch + deps) and, on a real GPU:
 
 1. real-HBM pool test: TreeRadixCache + MHATokenToKVPool/TokenToKVPoolAllocator
    on device=cuda — measures actual HBM bytes, slot dedup, and reclaim-to-zero.
-2. the 7 TreeRadixCache unit tests, on the GPU host.
-3. live engine E2E: sgl.Engine (Qwen3-0.6B) — 10 sibling requests sharing a
-   long prefix; reports cached_tokens per sibling from the real engine.
+2. the TreeRadixCache unit-test file, on the GPU host.
+3. stock live-engine baseline: sgl.Engine (Qwen3-0.6B) — 10 requests sharing
+   a long prefix. This measures SGLang's existing RadixAttention reuse; the
+   engine is not configured to call TreeRadixCache's branch APIs.
 
 Run: SGLANG_DIR=/path/to/sglang python3 -m modal run modal_gpu_validation.py
 (SGLANG_DIR defaults to ~/sglang; it must be a checkout with the
@@ -20,8 +21,10 @@ import os
 import modal
 
 SGLANG_DIR = os.path.expanduser(os.environ.get("SGLANG_DIR", "~/sglang"))
+if not os.path.isdir(os.path.join(SGLANG_DIR, "python", "sglang")):
+    raise FileNotFoundError(f"SGLANG_DIR is not an SGLang checkout: {SGLANG_DIR}")
 
-app = modal.App("agentfork-g10")
+app = modal.App("agentfork-gpu-validation")
 
 image = (
     modal.Image.from_registry("lmsysorg/sglang:latest")
@@ -76,6 +79,8 @@ def validate() -> str:
     cache.create_agent_tree("parent")
     ptok = list(range(PREFIX))
     pslots = alloc.alloc(PREFIX)
+    if pslots is None:
+        raise RuntimeError("failed to allocate parent KV slots")
     cache.extend_tree("parent", ptok, value=pslots.clone())
     out["parent_used"] = used()
     t0 = time.perf_counter()
@@ -83,6 +88,8 @@ def validate() -> str:
         br = cache.fork_branch("parent", f"c{i}")
         assert cache.match_tree_prefix(br.branch_id, ptok) == PREFIX
         cs = alloc.alloc(SUFFIX)
+        if cs is None:
+            raise RuntimeError(f"failed to allocate KV slots for {br.branch_id}")
         cache.extend_tree(br.branch_id,
                           [10_000_000 + i * SUFFIX + j for j in range(SUFFIX)],
                           value=torch.cat([pslots, cs]))
@@ -104,13 +111,16 @@ def validate() -> str:
         [sys.executable, "-m", "pytest", "-q",
          "/root/sgltest/registered/unit/mem_cache/test_tree_radix_cache.py"],
         capture_output=True, text=True, env={**os.environ})
-    out["unit_tests"] = r.stdout.strip().splitlines()[-1] if r.stdout else r.stderr[-200:]
+    out["unit_tests"] = (
+        r.stdout.strip().splitlines()[-1] if r.stdout else r.stderr[-200:])
+    if r.returncode != 0:
+        raise RuntimeError(f"TreeRadixCache tests failed: {r.stderr[-1000:]}")
 
-    # --- 3. live engine E2E prefix reuse ---
+    # --- 3. stock live-engine prefix-cache baseline ---
+    import sglang as sgl
+    eng = sgl.Engine(model_path="Qwen/Qwen3-0.6B", mem_fraction_static=0.6,
+                     log_level="warning")
     try:
-        import sglang as sgl
-        eng = sgl.Engine(model_path="Qwen/Qwen3-0.6B", mem_fraction_static=0.6,
-                         log_level="warning")
         prefix = "You are a helpful assistant. " * 400  # ~2.4k tokens shared
         t0 = time.perf_counter()
         first = eng.generate(prefix + "Task 0:", {"max_new_tokens": 4})
@@ -118,18 +128,17 @@ def validate() -> str:
         cached, times = [], []
         for i in range(1, 11):
             t0 = time.perf_counter()
-            r = eng.generate(prefix + f"Task {i}:", {"max_new_tokens": 4})
+            result = eng.generate(prefix + f"Task {i}:", {"max_new_tokens": 4})
             times.append(time.perf_counter() - t0)
-            cached.append(r["meta_info"]["cached_tokens"])
+            cached.append(result["meta_info"]["cached_tokens"])
         out["engine"] = {
             "prompt_tokens": first["meta_info"]["prompt_tokens"],
             "parent_prefill_s": round(parent_s, 2),
             "sibling_cached_tokens": cached,
             "sibling_gen_s_p50": round(sorted(times)[5], 3),
         }
+    finally:
         eng.shutdown()
-    except Exception as e:  # noqa: BLE001
-        out["engine"] = f"FAILED: {type(e).__name__}: {e}"
 
     return json.dumps(out, indent=2)
 

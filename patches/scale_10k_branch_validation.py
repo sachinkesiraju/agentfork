@@ -40,9 +40,17 @@ cache = TreeRadixCache(params)
 def used() -> int:
     return POOL_TOKENS - alloc.available_size()
 
+
+def allocate(num_tokens: int):
+    slots = alloc.alloc(num_tokens)
+    if slots is None:
+        raise MemoryError(f"failed to allocate {num_tokens} KV slots")
+    return slots
+
+
 cache.create_agent_tree("parent")
 parent_tokens = list(range(PREFIX))
-parent_slots = alloc.alloc(PREFIX)
+parent_slots = allocate(PREFIX)
 cache.extend_tree("parent", parent_tokens, value=parent_slots.clone())
 print(f"parent prefilled: allocator_used={used()}")
 
@@ -57,13 +65,13 @@ print(f"forked {CHILDREN} branches in {fork_s:.2f}s "
 # spot-check prefix visibility across the fanout
 for i in (0, CHILDREN // 2, CHILDREN - 1):
     assert cache.match_tree_prefix(f"c{i}", parent_tokens) == PREFIX
-print("prefix visibility: 100% for spot-checked branches (0, mid, last)")
+print("prefix visibility: full for spot-checked branches (0, mid, last)")
 
 # every branch diverges with its own small suffix
 t0 = time.perf_counter()
 for i, br in enumerate(branches):
     suffix = [10_000_000 + i * SUFFIX + j for j in range(SUFFIX)]
-    slots = alloc.alloc(SUFFIX)
+    slots = allocate(SUFFIX)
     full = torch.cat([parent_slots, slots])
     hit = cache.extend_tree(br.branch_id, suffix, value=full)
     assert hit >= PREFIX

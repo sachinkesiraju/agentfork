@@ -1,7 +1,12 @@
 import sys
 
+import pytest
+
 from agentfork.kill.reaper import BranchReaper
 from agentfork.kv.tree_cache import TreeKVCache
+
+pytestmark = pytest.mark.skipif(
+    not BranchReaper.supported(), reason="requires Linux pidfd support")
 
 
 def toks(s):

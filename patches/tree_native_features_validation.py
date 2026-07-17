@@ -43,7 +43,6 @@ cache.create_agent_tree("greedy")
 slots = alloc.alloc(40_000)
 cache.extend_tree("greedy", list(range(40_000)), value=slots)
 try:
-    s2 = alloc.alloc(20_000)
     cache.extend_tree("greedy", list(range(100_000, 120_000)), value=None)
     quota_hit = False
 except TreeQuotaExceeded:

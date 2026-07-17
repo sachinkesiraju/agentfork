@@ -1,7 +1,7 @@
 """Integrated kill-path benchmark: one kill() reaps sandbox process + KV.
 
 Measures, over N fork/kill cycles:
-  - pidfd_send_signal latency (the moment the branch stops running);
+  - pidfd_send_signal syscall latency (signal submission, not confirmed exit);
   - full reap latency (zombie collected, no orphan possible);
   - KV reclaim latency (tree-keyed refcount drop + page free);
   - end-to-end kill (signal -> both halves reclaimed).
@@ -20,6 +20,10 @@ from agentfork.kv.tree_cache import TreeKVCache
 
 
 def run(cycles: int, prefix_tokens: int, suffix_tokens: int) -> dict:
+    if cycles < 1:
+        raise ValueError("cycles must be at least 1")
+    if prefix_tokens < 0 or suffix_tokens < 0:
+        raise ValueError("token counts must be nonnegative")
     kv = TreeKVCache()
     kv.create_tree("parent")
     kv.extend("parent", list(range(prefix_tokens)))
