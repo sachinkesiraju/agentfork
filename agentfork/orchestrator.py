@@ -17,11 +17,14 @@ records intent, not live handles: after a supervisor crash a new orchestrator
 loads the file and replays ``kill()`` against its backends, which is why
 ``SandboxBackend.kill`` must be idempotent and tolerate unknown branch IDs.
 
-Scope matches the rest of this repository: the KV half is the CPU reference
-``TreeKVCache`` and the sandbox half is a generic subprocess (via
-``BranchReaper``) or any object satisfying ``SandboxBackend``. Kill remains
-sequential across the two halves, not atomic. A patched-SGLang engine backend
-and a Firecracker backend are integration targets, not implemented here.
+Scope matches the rest of this repository: the KV half defaults to the CPU
+reference ``TreeKVCache`` and the sandbox half to a generic subprocess (via
+``BranchReaper``), but either can be any object satisfying ``KVBackend`` or
+``SandboxBackend``. Kill remains sequential across the two halves, not atomic.
+Adapters for a patched-SGLang engine (``agentfork.kv.sglang_backend``) and for
+Firecracker (``agentfork.sandbox.firecracker_backend``) exist and satisfy
+those protocols, but are unit-tested against mocks only; neither has been run
+against a live SGLang engine or a real Firecracker guest.
 """
 
 from __future__ import annotations
@@ -47,6 +50,18 @@ class SandboxBackend(Protocol):
     def spawn(self, branch_id: str, parent_id: str | None) -> None: ...
     def kill(self, branch_id: str) -> None: ...
     def alive(self, branch_id: str) -> bool: ...
+
+
+class KVBackend(Protocol):
+    """KV half of a branch. Mirrors ``TreeKVCache``'s surface: ``fork_branch``
+    performs a zero-copy logical fork, ``kill`` releases a branch's pages and
+    returns the number of tokens freed, ``extend`` appends tokens and returns
+    the number newly charged (not already cached along this branch's path)."""
+
+    def create_tree(self, tree_id: str) -> object: ...
+    def fork_branch(self, parent_id: str, child_id: str | None = None) -> object: ...
+    def kill(self, tree_id: str) -> int: ...
+    def extend(self, tree_id: str, tokens: list[int]) -> int: ...
 
 
 class NullSandbox:
@@ -119,7 +134,7 @@ class KillReceipt:
 class ForkOrchestrator:
     """Owns (KV branch, sandbox) pairs; one ID spans both lifecycles."""
 
-    def __init__(self, kv: TreeKVCache | None = None,
+    def __init__(self, kv: KVBackend | None = None,
                  sandbox: SandboxBackend | None = None,
                  registry_path: str | os.PathLike | None = None,
                  default_lease_s: float | None = None,
