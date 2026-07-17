@@ -196,15 +196,18 @@ outputs, assumptions, and checks that fail or remain untested.
 | Scale: one prefix into 10,000 logical branches | **0.95 s (10.5k forks/s)** on a CPU-backed SGLang allocator; bulk kill of 10,001 in 0.17 s; allocator back to 0. This measures metadata scale, not concurrent inference |
 | Tree-native cache controls | Direct API checks cover budgets, reservations, demotion/promotion, invalidation, and telemetry; scheduler enforcement remains unimplemented |
 
-The 9.65× result is versus an explicitly unshared allocation, not stock SGLang
-RadixAttention. Stock SGLang already stores an identical cached prefix once.
-The corrected cost model is ~1.0× compute and ~1.0× cache residency versus a
-well-run same-namespace self-hosted prefix cache. The proposed gain over that
-baseline is explicit ownership, branch policy, telemetry, and coordinated
-reclaim—not another 9.65× memory reduction.
+**How to read the 9.65× result:** the GPU test compares shared KV slots with a
+worst-case allocation that stores a separate copy of the 32k-token prefix for
+every child. Normal SGLang RadixAttention already shares identical prefixes, so
+agentfork is not 9.65× smaller than stock SGLang. Against that stronger baseline,
+the cost model gives both systems roughly the same prefill work and KV residency.
+The patch instead adds branch-level ownership primitives—identity, pinning,
+budgets, telemetry, and reclaim—that a future SGLang backend can connect to the
+sandbox lifecycle.
 
-Provider-cache comparisons use token arithmetic with a 0.1× cached-read price
-and 1.25× cache-write price, not measured invoices, latency, or HBM usage.
+**Provider-cache estimate:** this is a token-pricing model, not a benchmark. It
+assumes cached reads cost 0.1× normal input tokens and cache writes cost 1.25×;
+it does not measure invoices, request latency, or provider HBM usage.
 
 ## Running benchmarks
 
