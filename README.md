@@ -189,11 +189,17 @@ the checks that fail or remain untested.
 | 10,000-branch cache test | 0.95 s to create branches and 0.17 s to bulk-kill them; allocator back to 0; this tests cache metadata, not concurrent inference |
 | Tree-native cache controls | Direct API tests cover budgets, reservations, demotion, invalidation, and telemetry; the scheduler does not enforce them |
 
-**The 9.65× figure is versus an unshared allocation, not versus stock SGLang.**
-It compares shared KV to giving every child its own full copy of the prefix.
-Stock SGLang already avoids that by sharing one cached prefix on its own, so
-against a well-run stock SGLang deployment, compute and residency are close to
-1.0×: no extra memory savings. What the patch adds on top of stock SGLang is
+**Where 9.65× comes from:** the
+[GPU-pool validation](patches/real_pool_validation.py) kept one 32,000-token
+parent and gave each of ten children a unique 500-token suffix:
+
+- Shared: `32,000 + (10 × 500) = 37,000` occupied KV slots.
+- Unshared: `32,000 + (10 × 32,500) = 357,000` occupied KV slots.
+- Ratio: `357,000 ÷ 37,000 = 9.65×`.
+
+This is a comparison with an explicitly unshared allocation, not stock SGLang.
+Stock RadixAttention already shares an identical cached prefix, so compute and
+residency versus that baseline are close to 1.0×. The patch instead adds
 explicit branch ownership, policy, telemetry, and coordinated reclaim.
 
 **The provider-cache comparison is a pricing model, not a measurement.** It
