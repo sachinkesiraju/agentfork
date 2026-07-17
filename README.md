@@ -68,9 +68,9 @@ to
 shared setup + sum(branch work)
 ```
 
-Forking pays off when setup is expensive, branches are short, and most branches
-die early. It helps little when there are few branches or when most work happens
-after the fork.
+Forking pays off when setup is expensive, branches are short, and most of them
+are killed early. It pays off less when there are few branches or when most of
+the work happens after the fork.
 
 ## Quickstart
 
@@ -80,14 +80,13 @@ python demo/demo.py   # Linux, CPU-only reference demo
 pytest -q             # non-Linux hosts skip pidfd integration tests
 ```
 
-The demo does not run a model or a microVM. Integer token IDs stand in for KV
-cache entries, and sleeping Python processes stand in for sandboxes. One parent
-owns a 32k-token prefix; ten children share that prefix with no re-prefill, add
-their own suffixes, and are then killed. The demo ends with zero live trees and
-zero resident cache tokens.
+The demo does not run a model or a microVM: integer token IDs stand in for KV
+cache entries, and sleeping Python processes stand in for sandboxes. One
+parent owns a 32k-token prefix; ten children share it with no re-prefill, add
+their own suffixes, and are then killed, ending with zero live trees and zero
+resident cache tokens.
 
-The same lifecycle through the Python API (`agentfork.*` is the stable public
-surface from 0.2.0; submodule internals are not):
+The same lifecycle through the Python API:
 
 ```python
 import sys
@@ -109,9 +108,11 @@ with ForkOrchestrator(sandbox=sandbox, registry_path="branches.json",
     orch.kill_losers(children[0].branch_id)
 ```
 
-`kill()` reaps the sandbox, then the KV branch, then removes the registry
-record. The steps are sequential, not atomic; `reconcile()` retries work a
-failed or crashed supervisor left behind.
+`kill_losers()` keeps the winner and its ancestors, then calls `kill()` on
+every other branch: `kill()` reaps a branch's sandbox, then its KV state, then
+drops its registry record. The steps are sequential, not atomic; `reconcile()`
+retries work a failed or crashed supervisor left behind. `agentfork.*` is the
+stable public surface from 0.2.0 onward; submodule internals are not.
 
 **Compatibility:** Python ≥ 3.10; Linux ≥ 5.4 for the `pidfd` reaper; SGLang @
 `40517b593b23870cf351a05a1d53e930cea6a58d` for the patch. Firecracker v1.7 and
@@ -149,14 +150,22 @@ ForkOrchestrator  (registry / leases / rollback / reconcile)
         │
         ▼
    coordinated branch ID
-   ├── ReaperSandbox           pidfd process + CPU reference-cache backend (live)
-   ├── TreeRadixCache patch    fork_branch / kill_tree (validated, not wired in)
-   └── Firecracker benchmark   snapshot / load / kill (validated, not wired in)
+   │
+   ├── KV branch
+   │    ├── TreeKVCache            CPU reference cache (live)
+   │    └── TreeRadixCache patch   validated on SGLang, not wired in
+   │
+   └── sandbox branch
+        ├── ReaperSandbox          pidfd subprocess (live)
+        └── Firecracker benchmark  validated separately, not wired in
 ```
 
-CUDA memory cannot be forked with `fork(2)`. The KV fork is a logical
-reference to shared KV slots, not an OS-level copy of GPU state. Firecracker
-copy-on-write applies to guest memory, not CUDA memory.
+"Fork" here is not Linux `fork(2)`: CUDA state cannot be duplicated by forking
+a process, so nothing in agentfork relies on that. The KV fork is a logical
+reference count on shared KV slots inside the cache, not a copy of GPU memory.
+Firecracker's copy-on-write is a separate mechanism that shares a VM's guest
+memory pages between snapshot and restore; it does not touch CUDA memory
+either.
 
 ## Measured results
 
@@ -176,16 +185,16 @@ the checks that fail or remain untested.
 | 10,000-branch cache test | 0.95 s to create branches and 0.17 s to bulk-kill them; allocator back to 0; this tests cache metadata, not concurrent inference |
 | Tree-native cache controls | Direct API tests cover budgets, reservations, demotion, invalidation, and telemetry; the scheduler does not enforce them |
 
-**On the 9.65× figure:** it compares shared KV against an allocation that
-stores a separate copy of the prefix for every child. Stock SGLang already
-avoids that duplication by sharing one cached prefix, so compute and residency
-are close to 1.0× against a well-run self-hosted prefix cache. What the patch
-adds on top is explicit branch ownership, policy, telemetry, and coordinated
-reclaim, not further memory savings.
+**The 9.65× figure is versus an unshared allocation, not versus stock SGLang.**
+It compares shared KV to giving every child its own full copy of the prefix.
+Stock SGLang already avoids that by sharing one cached prefix on its own, so
+against a well-run stock SGLang deployment, compute and residency are close to
+1.0×: no extra memory savings. What the patch adds on top of stock SGLang is
+explicit branch ownership, policy, telemetry, and coordinated reclaim.
 
-**On the provider-cache comparison:** it is a pricing model, not a benchmark.
-It assumes cached reads cost 0.1× normal input tokens and cache writes cost
-1.25×, and it does not measure invoices, latency, or provider memory use.
+**The provider-cache comparison is a pricing model, not a measurement.** It
+assumes cached reads cost 0.1× normal input tokens and cache writes cost
+1.25×. It does not measure real invoices, latency, or provider memory use.
 
 ## Running benchmarks
 
@@ -214,31 +223,22 @@ SGLANG_DIR="$SGLANG_DIR" modal run modal_gpu_validation.py
 
 ## Limitations
 
-- The orchestrator coordinates the CPU reference cache and fresh subprocesses.
-  No production backend spans a Firecracker microVM and the patched SGLang
-  cache; cleanup is recorded and retried, but sequential rather than atomic.
-- The registry is a JSON file written with `open()` and `os.replace()`; it has
-  no `fsync` and no cross-process locking, so only one orchestrator should own
-  a given registry file at a time.
-- The SGLang patch is not wired into request scheduling, model execution, HTTP
-  serving, or a multi-worker router. The live-engine result above is a stock
-  RadixAttention baseline, not an end-to-end patch test.
-- Cache budgets and reservations are accounting only; the scheduler does not
-  enforce them as physical GPU memory reservations.
-- GPU validation used one A10 and a Qwen3-0.6B stock-engine baseline; 70B-scale
-  models, tensor parallelism, and scheduler contention are unmeasured.
-- The Modal validation script pulls `lmsysorg/sglang:latest`, not a
-  digest-pinned image, so a GPU run can pick up an unreviewed base-image
-  change.
-- Firecracker measurements used idle, CPU-only 256 MiB guests; microVMs and GPU
-  inference have not been colocated, and guest readiness was not measured.
-- The components do not synchronize concurrent callers, and the reaper uses
-  `preexec_fn`, which Python warns is unsafe in threaded programs.
-- No winner merge, artifact handoff, hibernation, migration, or resume protocol
-  is implemented.
-- The workload-shape check failed on private organic traces that are not
-  included in the repository.
-- Provider-cache ratios are modeled rather than measured.
+- No production backend spans a Firecracker microVM and the patched SGLang
+  cache. The orchestrator only coordinates the CPU reference cache and fresh
+  subprocesses today, and cleanup is retried, not atomic.
+- The SGLang patch is not wired into request scheduling, model execution, or
+  serving, and its budgets and reservations are accounting only: the
+  scheduler does not enforce them.
+- GPU validation used one A10 with a Qwen3-0.6B baseline, and Firecracker
+  validation used idle, CPU-only 256 MiB guests. Neither covers production
+  scale or GPU-plus-microVM colocation.
+- The registry has no `fsync` or cross-process locking, so only one
+  orchestrator should own a given registry file.
+- The reference components are not safe for concurrent callers, and the
+  reaper's `preexec_fn` use is unsafe under threaded supervisors, per Python's
+  own warning.
+- No winner merge, artifact handoff, hibernation, migration, or resume
+  protocol is implemented.
 
 ## Why agentfork vs. alternatives
 
@@ -253,7 +253,7 @@ covers ownership and cleanup on both sides.
 | [thaw](https://github.com/thaw-ai/thaw), [processfork](https://github.com/manav8498/processfork) | Branches an inference session across generations | An isolated sandbox lifecycle paired with that branch |
 | [SGLang](https://github.com/sgl-project/sglang) RadixAttention, [vLLM](https://github.com/vllm-project/vllm) APC | Automatically reuses KV for requests sharing a prefix | Explicit agent-tree ownership, branch policy, and sandbox coordination |
 | [LMCache](https://github.com/LMCache/LMCache), [Mooncake](https://github.com/kvcache-ai/Mooncake), [Dynamo](https://github.com/ai-dynamo/dynamo) | Moves and tiers KV cache across memory and workers | Branch identity and sandbox coordination on top of that movement |
-| **agentfork** | A tree-keyed SGLang patch, a CPU reference cache and reaper, and a separate Firecracker benchmark | Wiring all three paths into one recoverable fork/kill operation |
+| **agentfork** | Forks a sandbox and its KV cache under one branch ID, and reclaims both on kill | Turning it into a hosted service with the production backends wired in |
 
 ## License
 
