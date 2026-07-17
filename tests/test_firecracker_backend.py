@@ -17,6 +17,7 @@ class FakeProc:
 
     def __init__(self):
         self._poll_value = None  # None == still running, like a real Popen
+        self.pid = 54321
 
     def poll(self):
         return self._poll_value
@@ -37,6 +38,9 @@ class FakeMicroVM:
 
     def pause(self):
         self.events.append(("pause",))
+
+    def resume(self):
+        self.events.append(("resume",))
 
     def snapshot(self, mem_path, state_path):
         self.events.append(("snapshot", mem_path, state_path))
@@ -96,7 +100,7 @@ def test_spawn_root_boots_pauses_snapshots_and_becomes_alive(tmp_path):
     sandbox.spawn("root", None)
 
     vm = factory.instances[-1]
-    assert [e[0] for e in vm.events] == ["boot", "pause", "snapshot"]
+    assert [e[0] for e in vm.events] == ["boot", "pause", "snapshot", "resume"]
     assert vm.events[0] == ("boot", "kernel", "rootfs.ext4")
     assert sandbox.alive("root") is True
 
@@ -109,7 +113,7 @@ def test_spawn_child_restores_from_parent_snapshot_not_boot(tmp_path):
     sandbox.spawn("child", "root")
 
     child_vm = factory.instances[-1]
-    assert [e[0] for e in child_vm.events] == ["restore", "pause", "snapshot"]
+    assert [e[0] for e in child_vm.events] == ["restore", "pause", "snapshot", "resume"]
     assert child_vm.events[0] == ("restore", parent_mem, parent_state)
     assert sandbox.alive("child") is True
 
@@ -149,6 +153,39 @@ def test_alive_is_false_when_process_has_exited_but_still_tracked(tmp_path):
 
     assert sandbox.alive("root") is False
     assert "root" in sandbox._vms  # still tracked, just not alive
+
+
+def test_spawn_records_pid_and_kill_removes_it(tmp_path):
+    sandbox, factory = _make_sandbox(tmp_path)
+    sandbox.spawn("root", None)
+
+    pid_path = tmp_path / "root" / "fc.pid"
+    assert pid_path.read_text() == "54321"
+
+    sandbox.kill("root")
+    assert not pid_path.exists()
+
+
+def test_kill_reclaims_orphan_from_pid_file_after_restart(tmp_path):
+    import subprocess
+    import sys
+
+    orphan = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        # simulate a restarted supervisor: fresh adapter, no in-memory
+        # handles, only the pid file a previous life recorded
+        (tmp_path / "ghost").mkdir()
+        (tmp_path / "ghost" / "fc.pid").write_text(str(orphan.pid))
+        sandbox, factory = _make_sandbox(tmp_path)
+
+        sandbox.kill("ghost")
+
+        assert orphan.wait(timeout=5) != 0  # SIGKILLed
+        assert not (tmp_path / "ghost" / "fc.pid").exists()
+    finally:
+        if orphan.poll() is None:
+            orphan.kill()
+            orphan.wait()
 
 
 def test_spawn_failure_kills_the_vm_and_leaves_no_bookkeeping(tmp_path):

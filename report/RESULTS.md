@@ -24,6 +24,7 @@ environments are not checked in are labeled below.
 | KV sharing on a **real SGLang allocator/pool** (not mocks) | sharing + full reclaim | **9.65× versus an explicitly unshared allocation** (37,000 used vs 357,000). This is not a gain over stock SGLang RadixAttention, which already shares identical cached prefixes. The allocator returns to **exactly 0** after killing all branches (`patches/real_pool_validation.py`). | PASS |
 | Crash injection: supervisor SIGKILLed, no cleanup | 0 surviving subprocesses | **0 surviving Python children in 50 cycles × 5 children**; children disappear in 1.5 ms p50 through the `PR_SET_PDEATHSIG` backstop (`agentfork/bench/crash_bench.py`). This does not test external GPU cleanup. | PASS for tested subprocess path |
 | microVM snapshot loads share host pages | shared pages measured | 25 idle VMM processes: **RSS 117.7 MiB vs PSS 23.8 MiB → 4.95× RSS/PSS ratio**, ~0.95 MiB PSS per 256 MiB configured guest (`smaps_rollup` in `fc_bench`). This does not measure a resident 256 MiB working set per child. | PASS for tested idle guests |
+| Orchestrator drives real Firecracker end to end (`demo/fc_demo.py`) | fork/kill lifecycle on real microVMs | Recorded 2026-07-17 on Firecracker v1.16.1, aarch64 (Apple M4, Lima/nested KVM), idle 256 MiB guests: root boot+snapshot **111–165 ms**; 10-way fork **235–317 ms per child**, ~125 ms of it the per-branch snapshot write; 9 losers killed in **132–231 ms**; **0 surviving VMMs** across 3 runs; full test suite 67/67 on the same Linux guest. Guests were idle; no networking or readiness. | PASS for idle-guest lifecycle |
 | Fork one prefix into **10,000** logical branches without physical copies | N=10,000, 0 copies, exact reclaim | On a real SGLang pool/allocator backed by small CPU tensors: **10,000 forks in 0.95 s (10.5k forks/s)** with allocator usage unchanged; after per-branch divergence, **1,667× vs unshared**; **bulk kill of 10,001 branches in 0.17 s (59k kills/s)** returns the allocator to 0 (`patches/scale_10k_branch_validation.py`). This is metadata scale, not concurrent inference scale. | PASS |
 | Tree-native cache controls: quotas, reservations, demotion, invalidation, telemetry | each measured | Cache-level accounting produced the recorded quota and 34/66 reservation decisions; demotion/promotion, invalidation, and counters behaved as asserted against a CPU-backed SGLang pool (`patches/tree_native_features_validation.py`). Quotas/reservations are logical hooks and do not control allocator calls until a scheduler is wired to them. | PASS for direct cache API |
 
@@ -103,9 +104,10 @@ needs an end-to-end trace from an actual fanout workload.
   selects `TreeRadixCache` or propagates branch IDs. The Qwen3-0.6B live-engine
   result below is a stock RadixAttention baseline, not an end-to-end patch test.
   A CPU-engine attempt was also blocked by unavailable vLLM CPU wheels.
-- **Unified runtime:** no API atomically coordinates Firecracker restore, patched
-  cache fork, inference submission, and rollback. The reaper's two cleanup steps
-  are sequential.
+- **Unified runtime:** `ForkOrchestrator` coordinates Firecracker restore with
+  the reference KV cache (`demo/fc_demo.py`), but nothing coordinates the
+  patched SGLang cache or inference submission, and cleanup steps are
+  sequential, not atomic.
 - **Production-scale GPU behavior:** the direct cache API was tested on one A10
   with a synthetic 2 GiB pool. 70B-class models, tensor/pipeline parallelism,
   mixed workloads, and scheduler contention remain unmeasured.

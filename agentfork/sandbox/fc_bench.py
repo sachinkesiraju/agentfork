@@ -34,14 +34,28 @@ class _UDSHTTP:
     def __init__(self, sock_path: str):
         self.sock_path = sock_path
 
+    def _connect(self) -> socket.socket:
+        # the socket file appears at bind() but connects succeed only after
+        # listen(); a request racing that startup window sees ECONNREFUSED
+        last: Exception | None = None
+        for _ in range(200):
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.settimeout(5.0)
+            try:
+                sock.connect(self.sock_path)
+                return sock
+            except (ConnectionRefusedError, FileNotFoundError) as exc:
+                sock.close()
+                last = exc
+                time.sleep(0.005)
+        raise last
+
     def request(self, method: str, path: str, body: dict | None = None) -> int:
         payload = json.dumps(body).encode() if body is not None else b""
         req = (f"{method} {path} HTTP/1.1\r\nHost: localhost\r\n"
                f"Content-Type: application/json\r\n"
                f"Content-Length: {len(payload)}\r\n\r\n").encode() + payload
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-            sock.settimeout(5.0)
-            sock.connect(self.sock_path)
+        with self._connect() as sock:
             sock.sendall(req)
             response = http.client.HTTPResponse(sock)
             response.begin()
@@ -53,9 +67,12 @@ class MicroVM:
     def __init__(self, fc_bin: str, vm_dir: str):
         self.vm_dir = vm_dir
         self.sock = os.path.join(vm_dir, "fc.sock")
-        self.proc = subprocess.Popen(
-            [fc_bin, "--api-sock", self.sock],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # output goes to a file, not DEVNULL: a VMM that dies at startup is
+        # otherwise undiagnosable
+        with open(os.path.join(vm_dir, "fc.log"), "wb") as log:
+            self.proc = subprocess.Popen(
+                [fc_bin, "--api-sock", self.sock],
+                stdout=log, stderr=subprocess.STDOUT)
         self.pidfd = None
         try:
             self.pidfd = os.pidfd_open(self.proc.pid)
@@ -103,6 +120,9 @@ class MicroVM:
 
     def pause(self) -> None:
         self._request("PATCH", "/vm", {"state": "Paused"})
+
+    def resume(self) -> None:
+        self._request("PATCH", "/vm", {"state": "Resumed"})
 
     def snapshot(self, mem_path: str, state_path: str) -> float:
         t0 = time.perf_counter()

@@ -27,8 +27,9 @@ does, only how a branch of it is created and torn down.
 By default, `ForkOrchestrator` drives the reference backends: `TreeKVCache`
 for KV state and `ReaperSandbox` for the process. Adapters for the SGLang
 cache patch and a Firecracker sandbox (`SGLangKVBackend`, `FirecrackerSandbox`)
-satisfy the same `KVBackend`/`SandboxBackend` protocols, unit-tested against
-mocks only.
+satisfy the same `KVBackend`/`SandboxBackend` protocols. The Firecracker
+adapter runs end to end against real microVMs (`demo/fc_demo.py`); the SGLang
+adapter is mock-tested only.
 
 Use it for:
 
@@ -104,6 +105,7 @@ sandbox = ReaperSandbox([sys.executable, "-c", "import time; time.sleep(60)"])
 
 with ForkOrchestrator(sandbox=sandbox, registry_path="branches.json",
                       default_lease_s=600) as orch:
+    orch.reconcile()  # collect anything a previous crashed run left behind
     orch.create_parent("parent", tokens=list(range(32_000)))
     children = orch.fork("parent", n=3)
 
@@ -161,7 +163,7 @@ ForkOrchestrator  (registry / leases / rollback / reconcile)
    │
    └── sandbox branch
         ├── ReaperSandbox          pidfd subprocess (live)
-        └── Firecracker benchmark  via FirecrackerSandbox (mock-tested only)
+        └── Firecracker microVMs   via FirecrackerSandbox (live, idle guests)
 ```
 
 "Fork" here is not Linux `fork(2)`: CUDA state cannot be duplicated by forking
@@ -185,6 +187,7 @@ the checks that fail or remain untested.
 | Supervisor crash test | 0 surviving Python children across 50 runs with 5 children each |
 | Firecracker snapshot load | 2.1 ms p50 API time per child; 25 children loaded in 150 ms; full VMM teardown was 31 ms p50 |
 | Firecracker host-page sharing | 117.7 MiB total RSS vs 23.8 MiB total PSS across 25 idle VMMs |
+| End-to-end orchestrator + real Firecracker (`demo/fc_demo.py`, aarch64 v1.16.1, idle 256 MiB guests) | Root boot 111–165 ms; 10-way fork at 235–317 ms per child, dominated by the ~125 ms per-branch snapshot write; 9 losers killed in 132–231 ms; zero surviving VMMs across 3 runs |
 | SGLang patch size | 547 additive lines: 299 implementation and 248 tests |
 | 10,000-branch cache test | 0.95 s to create branches and 0.17 s to bulk-kill them; allocator back to 0; this tests cache metadata, not concurrent inference |
 | Tree-native cache controls | Direct API tests cover budgets, reservations, demotion, invalidation, and telemetry; the scheduler does not enforce them |
@@ -215,6 +218,7 @@ PYTHONPATH="$SGLANG_DIR/python" python patches/tree_native_features_validation.p
 
 # Firecracker (requires /dev/kvm, Firecracker, a guest kernel, and a rootfs):
 python -m agentfork.sandbox.fc_bench --fc ./firecracker --kernel vmlinux --rootfs rootfs.ext4
+python demo/fc_demo.py --fc ./firecracker --kernel vmlinux --rootfs rootfs.ext4  # full lifecycle through ForkOrchestrator
 
 # GPU validation (requires Modal and the patched SGLang checkout):
 pip install modal
@@ -223,10 +227,10 @@ SGLANG_DIR="$SGLANG_DIR" modal run modal_gpu_validation.py
 
 ## Limitations
 
-- Adapters exist for the patched SGLang cache and a Firecracker microVM
-  (`SGLangKVBackend`, `FirecrackerSandbox`), but neither has been run against
-  a live SGLang engine or a real Firecracker guest, only mocks; cleanup is
-  retried, not atomic.
+- The SGLang adapter (`SGLangKVBackend`) has not been run against a live
+  engine, only mocks. The Firecracker adapter has only driven idle guests:
+  no guest networking, identity, or readiness probes. Cleanup is retried,
+  not atomic.
 - The SGLang patch is not wired into request scheduling, model execution, or
   serving, and its budgets and reservations are accounting only: the
   scheduler does not enforce them.
@@ -253,7 +257,7 @@ covers ownership and cleanup on both sides.
 | [forkd](https://github.com/deeplethe/forkd) | Forks microVMs from a shared snapshot, copy-on-write | A branch ID that also owns and reclaims the LLM KV cache |
 | [SGLang](https://github.com/sgl-project/sglang) RadixAttention, [vLLM](https://github.com/vllm-project/vllm) APC | Automatically reuses KV for requests sharing a prefix | Explicit agent-tree ownership, branch policy, and sandbox coordination |
 | [LMCache](https://github.com/LMCache/LMCache), [Mooncake](https://github.com/kvcache-ai/Mooncake), [Dynamo](https://github.com/ai-dynamo/dynamo) | Moves and tiers KV cache across memory and workers | Branch identity and sandbox coordination on top of that movement |
-| **agentfork** | Forks a sandbox and its KV cache under one branch ID, and reclaims both on kill | Validating the production adapters against a live SGLang engine and a real Firecracker guest, then hosting it as a service |
+| **agentfork** | Forks a sandbox and its KV cache under one branch ID, and reclaims both on kill | Validating the SGLang adapter against a live engine, giving Firecracker guests networking and readiness, then hosting it as a service |
 
 ## License
 
