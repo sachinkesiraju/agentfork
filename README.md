@@ -77,32 +77,35 @@ the work happens after the fork.
 
 ## Quickstart
 
+Requires Python 3.10 or newer. The demo also requires Linux 5.4 or newer.
+
 ```bash
+git clone https://github.com/sachinkesiraju/agentfork.git
+cd agentfork
+python -m venv .venv
+source .venv/bin/activate
 pip install -e ".[dev]"
-python demo/demo.py   # Linux, CPU-only reference demo
-pytest -q             # non-Linux hosts skip pidfd integration tests
+python demo/demo.py
 ```
 
-The demo does not run a model or a microVM: integer token IDs stand in for KV
-cache entries, and sleeping Python processes stand in for sandboxes. One
-parent owns a 32k-token prefix; ten children share it with no re-prefill, add
-their own suffixes, and are then killed, ending with zero live trees and zero
-resident cache tokens.
+The CPU-only demo forks a 32k-token parent into ten branches, kills the losing
+branches, and verifies that no processes or cache entries leak. It uses token
+IDs and sleeping processes, so it does not need a model, GPU, or microVM. A
+successful run ends with `CLEAN`.
 
-The same lifecycle through the Python API:
+Minimal Python API:
 
 ```python
 import sys
 
 from agentfork import ForkOrchestrator, ReaperSandbox
 
-prefix_tokens = list(range(32_000))
 sandbox = ReaperSandbox([sys.executable, "-c", "import time; time.sleep(60)"])
 
 with ForkOrchestrator(sandbox=sandbox, registry_path="branches.json",
                       default_lease_s=600) as orch:
-    orch.create_parent("parent", tokens=prefix_tokens)
-    children = orch.fork("parent", n=10)
+    orch.create_parent("parent", tokens=list(range(32_000)))
+    children = orch.fork("parent", n=3)
 
     for i, child in enumerate(children):
         start = 1_000_000 + i * 500
@@ -111,15 +114,8 @@ with ForkOrchestrator(sandbox=sandbox, registry_path="branches.json",
     orch.kill_losers(children[0].branch_id)
 ```
 
-`kill_losers()` keeps the winner and its ancestors, then calls `kill()` on
-every other branch: `kill()` reaps a branch's sandbox, then its KV state, then
-drops its registry record. `reconcile()` retries work a failed or crashed
-supervisor left behind. `agentfork.*` is the stable public surface from 0.2.0
-onward; submodule internals are not.
-
-**Compatibility:** Python ≥ 3.10; Linux ≥ 5.4 for the `pidfd` reaper; SGLang @
-`40517b593b23870cf351a05a1d53e930cea6a58d` for the patch. Firecracker v1.7 and
-an NVIDIA A10 on Modal are the measured environments.
+`kill_losers()` keeps the selected branch and its ancestors and cleans up every
+other branch. Run `pytest -q` to execute the test suite.
 
 ## How it works
 
@@ -193,16 +189,12 @@ the checks that fail or remain untested.
 | 10,000-branch cache test | 0.95 s to create branches and 0.17 s to bulk-kill them; allocator back to 0; this tests cache metadata, not concurrent inference |
 | Tree-native cache controls | Direct API tests cover budgets, reservations, demotion, invalidation, and telemetry; the scheduler does not enforce them |
 
-**The 9.65× figure is versus an unshared allocation, not versus stock SGLang.**
-It compares shared KV to giving every child its own full copy of the prefix.
-Stock SGLang already avoids that by sharing one cached prefix on its own, so
-against a well-run stock SGLang deployment, compute and residency are close to
-1.0×: no extra memory savings. What the patch adds on top of stock SGLang is
-explicit branch ownership, policy, telemetry, and coordinated reclaim.
+In the [10-child GPU test](patches/real_pool_validation.py), sharing reduced KV
+usage from 357k slots to 37k. Stock SGLang already shares cached prefixes, so
+agentfork adds branch tracking and cleanup, not lower memory use.
 
-**The provider-cache comparison is a pricing model, not a measurement.** It
-assumes cached reads cost 0.1× normal input tokens and cache writes cost
-1.25×. It does not measure real invoices, latency, or provider memory use.
+Provider-cache numbers are estimates based on assumed prices, not real-world
+measurements.
 
 ## Running benchmarks
 
@@ -258,8 +250,7 @@ covers ownership and cleanup on both sides.
 
 | Project | What it does | What's missing |
 |---|---|---|
-| [forkd](https://github.com/deeplethe/forkd), [Mitos](https://github.com/mitos-run/mitos) | Forks microVMs from a shared snapshot, copy-on-write | A branch ID that also owns and reclaims the LLM KV cache |
-| [thaw](https://github.com/thaw-ai/thaw), [processfork](https://github.com/manav8498/processfork) | Branches an inference session across generations | An isolated sandbox lifecycle paired with that branch |
+| [forkd](https://github.com/deeplethe/forkd) | Forks microVMs from a shared snapshot, copy-on-write | A branch ID that also owns and reclaims the LLM KV cache |
 | [SGLang](https://github.com/sgl-project/sglang) RadixAttention, [vLLM](https://github.com/vllm-project/vllm) APC | Automatically reuses KV for requests sharing a prefix | Explicit agent-tree ownership, branch policy, and sandbox coordination |
 | [LMCache](https://github.com/LMCache/LMCache), [Mooncake](https://github.com/kvcache-ai/Mooncake), [Dynamo](https://github.com/ai-dynamo/dynamo) | Moves and tiers KV cache across memory and workers | Branch identity and sandbox coordination on top of that movement |
 | **agentfork** | Forks a sandbox and its KV cache under one branch ID, and reclaims both on kill | Validating the production adapters against a live SGLang engine and a real Firecracker guest, then hosting it as a service |
