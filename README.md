@@ -3,15 +3,15 @@
 Fork a live agent — its sandbox **and** its LLM KV context — as one coordinated lifecycle.
 Kill any branch and reclaim both halves in **sub-millisecond to single-digit milliseconds**, with zero orphans and zero leaked KV pages.
 
+*Measured across separate direct-cache, subprocess/reference-cache, and
+Firecracker benchmarks; Firecracker + patched SGLang has not been exercised end
+to end.*
+
 ![tree-keyed KV: one resident prefix, N logical branches](docs/img/kv-dedup.svg)
 
 **Measured at a glance:** A10 direct-cache API: 22 ms for 10 create+extend
 operations and 9.65× fewer occupied KV slots vs unshared · Linux subprocess +
 CPU reference cache: 0.53 ms p50 kill · 547-line additive SGLang patch.
-
-These figures come from separate direct-cache, subprocess/reference-cache, and
-Firecracker benchmarks; Firecracker + patched SGLang has not been exercised end
-to end.
 
 ## What it does
 
@@ -111,7 +111,6 @@ import sys
 from agentfork import ForkOrchestrator, ReaperSandbox
 
 prefix_tokens = list(range(32_000))
-unique_suffix_tokens = list(range(1_000_000, 1_000_500))
 sandbox = ReaperSandbox([sys.executable, "-c", "import time; time.sleep(60)"])
 
 with ForkOrchestrator(sandbox=sandbox, registry_path="branches.json",
@@ -119,16 +118,17 @@ with ForkOrchestrator(sandbox=sandbox, registry_path="branches.json",
     orch.create_parent("parent", tokens=prefix_tokens)
     children = orch.fork("parent", n=10)
     for i, child in enumerate(children):
-        orch.extend(child.branch_id, unique_suffix_tokens + [i])
+        start = 1_000_000 + i * 500
+        orch.extend(child.branch_id, list(range(start, start + 500)))
     orch.kill_losers(children[0].branch_id)  # keeps winner + ancestors until close
 ```
 
 `kill()` reaps the sandbox, then the KV branch, then removes the journal record.
-The steps are sequential, not atomic; failures remain journaled until the caller
-invokes `reconcile()`. The registry stores lifecycle intent—not process handles,
-sandbox snapshots, or KV contents—so reconciliation retries idempotent cleanup
-rather than resuming branch execution. Lease expiration is likewise caller-driven
-through `reap_expired()` or `reconcile()`; there is no background reaper.
+The steps are sequential, not atomic; if a cleanup step raises, the record stays
+journaled for an explicit `kill()` retry. The registry stores lifecycle
+intent—not process handles, sandbox snapshots, or KV contents—so it cannot resume
+branch execution. `reconcile()` collects mid-fork records and expired leases;
+lease collection is caller-driven and there is no background reaper.
 
 **Compatibility:** Python ≥ 3.10; Linux ≥ 5.4 for the `pidfd` reaper; SGLang @
 `40517b593b23870cf351a05a1d53e930cea6a58d` for the patch. Firecracker v1.7
@@ -139,8 +139,9 @@ parallelism and microVM+GPU colocation are unmeasured.
 
 `ForkOrchestrator` gives the sandbox and CPU reference-cache branch one ID,
 journals lifecycle intent, and rolls back failures it observes during a fork.
-Interrupted cleanup and expired leases remain recorded until the caller invokes
-`reconcile()` or `reap_expired()`. The production backends remain separate:
+Mid-fork records and expired leases remain until the caller invokes `reconcile()`
+or `reap_expired()`; failed kills stay journaled for an explicit retry. The
+production backends remain separate:
 
 1. **KV cache fork** — `patches/0001-sglang-tree-radix-cache.patch` adds
    `TreeRadixCache` to SGLang. Children inherit the parent's KV prefix
@@ -185,9 +186,9 @@ outputs, assumptions, and checks that fail or remain untested.
 | Stock SGLang live-engine prefix-cache baseline | **2,402–2,403 of 2,404 tokens cached** per sibling; 33 ms p50 generation vs 9.07 s first request. This path does not invoke the patch's branch APIs |
 | Subprocess + CPU reference-cache kill | **0.53 ms p50 / 1.46 ms max**, 100 cycles on the recorded host |
 | Supervisor SIGKILLed (crash injection) | **0 surviving Python children** in 50×5 cycles; 1.5 ms p50 through `PR_SET_PDEATHSIG` |
-| Firecracker snapshot load | **2.1 ms p50 load API time/child**, 25-way fanout in 150 ms; full VMM teardown was 31 ms p50 |
+| Firecracker snapshot load | **2.1 ms p50 load API time/child**, 25-way fanout in 150 ms; guest application readiness was not measured |
 | Firecracker idle-VMM RSS/PSS ratio | RSS 117.7 MiB vs PSS 23.8 MiB across 25 idle VMMs → **4.95×**; this includes more than guest snapshot pages |
-| SGLang patch | **547 additive lines**: 299 implementation + 248 tests, with 17 test methods |
+| SGLang patch | **547 additive lines**: 299 implementation + 248 tests; current patch has 17 test methods, while the captured GPU run used the earlier 7-test revision |
 | Scale: one prefix into 10,000 logical branches | **0.95 s (10.5k forks/s)** on a CPU-backed SGLang allocator; bulk kill of 10,001 in 0.17 s; allocator back to 0. This measures metadata scale, not concurrent inference |
 | Tree-native cache controls | Direct API checks cover budgets, reservations, demotion/promotion, invalidation, and telemetry; scheduler enforcement remains unimplemented |
 
@@ -209,18 +210,32 @@ python demo/demo.py
 python -m agentfork.bench.kill_bench --cycles 100
 python -m agentfork.bench.crash_bench --cycles 50 --children 5
 python -m agentfork.bench.cost_model --children 10 --prefix 32000 --suffix 2000
+
+# Direct SGLang cache validation (from this repository):
+export SGLANG_DIR=/path/to/sglang
+git -C "$SGLANG_DIR" checkout 40517b593b23870cf351a05a1d53e930cea6a58d
+git -C "$SGLANG_DIR" apply "$PWD/patches/0001-sglang-tree-radix-cache.patch"
+PYTHONPATH="$SGLANG_DIR/python" python patches/real_pool_validation.py
+PYTHONPATH="$SGLANG_DIR/python" python patches/scale_10k_branch_validation.py
+PYTHONPATH="$SGLANG_DIR/python" python patches/tree_native_features_validation.py
+
 # Firecracker bench (needs /dev/kvm + firecracker binary + guest kernel/rootfs):
 python -m agentfork.sandbox.fc_bench --fc ./firecracker --kernel vmlinux --rootfs rootfs.ext4
-# GPU validation (needs Modal and a patched SGLang checkout):
-SGLANG_DIR=/path/to/sglang modal run modal_gpu_validation.py
+
+# GPU validation (needs Modal and the patched SGLang checkout):
+pip install modal
+SGLANG_DIR="$SGLANG_DIR" modal run modal_gpu_validation.py
 ```
 
 ## Limitations
 
 - `ForkOrchestrator` coordinates the CPU reference cache and generic
   subprocesses. There is no production backend spanning a Firecracker microVM
-  and the patched SGLang cache; cleanup is journaled and retried, but sequential
-  rather than transactional.
+  and the patched SGLang cache; failed cleanup stays journaled for an explicit
+  retry, but remains sequential rather than transactional.
+- The JSON registry uses temporary-file + `os.replace`, but no `fsync` or
+  cross-process locking. It assumes one orchestrator owns a registry path, and
+  `reconcile()` / `reap_expired()` are caller-driven rather than background jobs.
 - The SGLang patch is not wired into request scheduling, model execution, HTTP
   serving, tensor parallelism, or a multi-worker router. The live-engine result
   above is a stock RadixAttention baseline, not an end-to-end patch test.
@@ -230,12 +245,14 @@ SGLANG_DIR=/path/to/sglang modal run modal_gpu_validation.py
   behavior, tensor parallelism, and scheduler contention are unmeasured.
 - Firecracker measurements use idle, CPU-only 256 MiB guests; Firecracker and GPU
   inference have not been colocated or connected through an API proxy.
-- `TreeKVCache` and `BranchReaper` do not synchronize concurrent callers, and
-  the reaper uses `preexec_fn`, which Python warns is unsafe in threaded code.
+- `ForkOrchestrator`, `TreeKVCache`, and `BranchReaper` do not synchronize
+  concurrent callers, and the reaper uses `preexec_fn`, which Python warns is
+  unsafe in threaded code.
 - No winner merge, durable artifact handoff, hibernation, migration, or resume
   protocol is implemented.
-- The observed workload-shape check failed on private organic traces that are
-  not included in the repository.
+- Private organic traces did not simultaneously reach fanout ≥ 8 and
+  visible-prompt prefix fraction ≥ 0.2. The traces are not checked in, and
+  visible-prompt overlap may understate full KV-prefix overlap.
 - Provider-cache ratios are modeled rather than measured, and the Modal image
   is not digest-pinned.
 
