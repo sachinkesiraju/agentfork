@@ -161,17 +161,22 @@ production backends remain separate:
    + GPU kill measurement.
 
 ```
-ForkOrchestrator  (registry / leases / rollback / reconcile)
-        │
-        ▼
-   coordinated branch ID
-   ├── TreeRadixCache patch    fork_branch / kill_tree (not yet a backend)
-   ├── Firecracker benchmark   snapshot / load / kill (not yet a backend)
-   └── ReaperSandbox           pidfd process + CPU reference-cache backend
+ForkOrchestrator
+├── lifecycle state: JSON registry, leases, rollback, reconciliation
+└── one branch ID shared by the current reference backends
+    ├── KV:      TreeKVCache     CPU model of prefix sharing and reclaim
+    └── sandbox: ReaperSandbox   fresh subprocess supervised through pidfd
+
+Validated separately; not yet wired into ForkOrchestrator
+├── GPU KV:  TreeRadixCache patch   fork_branch / kill_tree / cache policy
+└── sandbox: Firecracker benchmark  snapshot / load / kill
 ```
 
-CUDA state cannot be `fork(2)`-ed. The KV fork is logical CoW over shared paged
-KV slots, not an OS-level fork of GPU state.
+`fork(2)` cannot clone CUDA allocations. `TreeRadixCache.fork_branch()` instead
+creates another logical owner of the parent's existing KV-slot indices and pins
+that shared radix path; only the child's divergent suffix needs new KV slots.
+Firecracker's copy-on-write path is separate and applies to the microVM's guest
+memory snapshot, not to CUDA state.
 
 ## Measured results
 
