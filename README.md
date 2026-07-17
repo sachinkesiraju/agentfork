@@ -94,25 +94,29 @@ re-prefill, and ends with 0 resident reference-cache tokens and 0 live trees.
 KV residency is 11× deduplicated immediately after fork and 9× after each child
 adds an 800-token suffix. It does not run a real LLM or Firecracker guest.
 
-The same reference primitives in Python:
+The same reference primitives in Python (`agentfork.*` is the stable public
+surface from 0.2.0; submodule internals are not covered by semantic
+versioning):
 
 ```python
 import sys
 
-from agentfork.kv.tree_cache import TreeKVCache
-from agentfork.kill.reaper import BranchReaper
+from agentfork import ForkOrchestrator, ReaperSandbox
 
-cache = TreeKVCache()
-parent = cache.create_tree("tree-1")
-cache.extend(parent.tree_id, prefix_tokens)
-
-child = cache.fork_branch("tree-1", "tree-1/branch-1")
-cache.extend(child.tree_id, unique_suffix_tokens)
-
-reaper = BranchReaper(kv_cache=cache)
-reaper.spawn(child.tree_id, [sys.executable, "-c", "import time; time.sleep(60)"])
-reaper.kill(child.tree_id)   # sequentially reaps process, then drops cache refs
+sandbox = ReaperSandbox([sys.executable, "-c", "import time; time.sleep(60)"])
+with ForkOrchestrator(sandbox=sandbox, registry_path="branches.json",
+                      default_lease_s=600) as orch:
+    orch.create_parent("parent", tokens=prefix_tokens)
+    children = orch.fork("parent", n=10)
+    for child in children:
+        orch.extend(child.branch_id, unique_suffix_tokens)
+    orch.kill_losers(children[0].branch_id)   # winner and ancestors survive
 ```
+
+`kill()` reaps the sandbox, then the KV branch, then drops the registry
+record. The steps share an ID but are sequential, not atomic; a failed or
+crashed kill stays journaled, and the next `reconcile()` retries it. The
+lower-level `TreeKVCache` and `BranchReaper` remain available for direct use.
 
 **Compatibility:** Python ≥ 3.10; Linux ≥ 5.4 for the `pidfd` reaper; SGLang @
 `40517b593b23870cf351a05a1d53e930cea6a58d` for the patch. Firecracker v1.7
@@ -142,13 +146,13 @@ this repository they remain separate components:
    subprocess + reference-cache path, not Firecracker + GPU reclaim.
 
 ```
-Your control plane
+ForkOrchestrator (registry · leases · rollback · reconcile)
         │
         ▼
    coordinated branch ID
-   ├── TreeRadixCache patch    fork_branch / kill_tree / policy / telemetry
-   ├── Firecracker benchmark   snapshot / load / kill (standalone)
-   └── BranchReaper            pidfd process + CPU reference-cache kill
+   ├── TreeRadixCache patch    fork_branch / kill_tree / policy / telemetry  (not yet a backend)
+   ├── Firecracker benchmark   snapshot / load / kill  (standalone; not yet a backend)
+   └── BranchReaper            pidfd process + CPU reference-cache kill  (ReaperSandbox backend)
 ```
 
 CUDA state cannot be `fork(2)`-ed. The KV fork is logical CoW over shared paged
@@ -210,9 +214,11 @@ Firecracker validation.
 
 ## Limitations
 
-- There is no unified production `fork()` API. Firecracker restore and KV fork
-  are separate operations, and `BranchReaper.kill()` is sequential rather than
-  transactional.
+- `ForkOrchestrator` coordinates only the reference backends: the CPU cache
+  and generic subprocesses. Firecracker restore and the patched SGLang cache
+  are not yet backends, so a production `fork()` spanning a microVM and a live
+  inference engine remains unimplemented. Kills are sequential with journaled
+  retry, not transactional.
 - The SGLang patch is additive and pinned to one commit. It is not wired into
   request scheduling, model execution, HTTP serving, tensor parallelism, or a
   multi-worker router. The live-engine result above is a stock RadixAttention
