@@ -25,17 +25,16 @@ It is not an agent framework or a scheduler: it does not decide what an agent
 does, only how a branch of it is created and torn down.
 
 By default, `ForkOrchestrator` drives the reference backends: `TreeKVCache`
-for KV state and `ReaperSandbox` for the process. Adapters also exist for the
-SGLang cache patch and a Firecracker sandbox (`SGLangKVBackend`,
-`FirecrackerSandbox`), satisfying the same `KVBackend`/`SandboxBackend`
-protocols the reference backends do. They're unit-tested against mocks only;
-neither has been run against a live SGLang engine or a real Firecracker guest.
+for KV state and `ReaperSandbox` for the process. Adapters for the SGLang
+cache patch and a Firecracker sandbox (`SGLangKVBackend`, `FirecrackerSandbox`)
+satisfy the same `KVBackend`/`SandboxBackend` protocols, unit-tested against
+mocks only.
 
 Use it for:
 
-- Cloud agent platforms that fan one task out to N parallel attempts and
-  reduce to a winner: fork N branches from one prepared context, kill the
-  losers (e.g. [agent-mapreduce](https://github.com/sachinkesiraju/agent-mapreduce)).
+- Cloud agent platforms that
+  [map/reduce](https://github.com/sachinkesiraju/agent-mapreduce) one task
+  across N parallel attempts: fork from one prepared context, keep the winner.
 - Coding agents that try several fixes from one repository context.
 - Verification trees that run cheap checks first and kill the failures before
   anything expensive runs.
@@ -114,9 +113,9 @@ with ForkOrchestrator(sandbox=sandbox, registry_path="branches.json",
 
 `kill_losers()` keeps the winner and its ancestors, then calls `kill()` on
 every other branch: `kill()` reaps a branch's sandbox, then its KV state, then
-drops its registry record. The steps are sequential, not atomic; `reconcile()`
-retries work a failed or crashed supervisor left behind. `agentfork.*` is the
-stable public surface from 0.2.0 onward; submodule internals are not.
+drops its registry record. `reconcile()` retries work a failed or crashed
+supervisor left behind. `agentfork.*` is the stable public surface from 0.2.0
+onward; submodule internals are not.
 
 **Compatibility:** Python ≥ 3.10; Linux ≥ 5.4 for the `pidfd` reaper; SGLang @
 `40517b593b23870cf351a05a1d53e930cea6a58d` for the patch. Firecracker v1.7 and
@@ -125,8 +124,8 @@ an NVIDIA A10 on Modal are the measured environments.
 ## How it works
 
 `ForkOrchestrator` gives the sandbox and KV branch one ID, records intent in a
-registry, rolls back partial forks, retries interrupted cleanup, and bounds
-every branch with a lease.
+single-owner, fsynced registry, rolls back partial forks, retries interrupted
+cleanup, and bounds every branch with a lease.
 
 **The reference path runs today.** `TreeKVCache.fork_branch` walks the
 parent's cached path and bumps a reference count at each node; no tokens are
@@ -134,9 +133,7 @@ copied. `ReaperSandbox` spawns a fresh subprocess for the child. On kill,
 `agentfork/kill/reaper.py` reaps the subprocess through Linux `pidfd` and
 drops the matching cache entry; the combined path measured 0.53 ms p50.
 
-Two production backends have adapters satisfying those same protocols, but
-each adapter is unit-tested against a mock only, not a live SGLang engine or a
-real Firecracker guest:
+Two production backends have adapters behind those same protocols:
 
 1. **KV cache fork**: `patches/0001-sglang-tree-radix-cache.patch` adds
    `TreeRadixCache` to SGLang. Children inherit the parent's KV prefix
@@ -244,12 +241,11 @@ SGLANG_DIR="$SGLANG_DIR" modal run modal_gpu_validation.py
 - GPU validation used one A10 with a Qwen3-0.6B baseline, and Firecracker
   validation used idle, CPU-only 256 MiB guests. Neither covers production
   scale or GPU-plus-microVM colocation.
-- Concurrency is coarse: each component serializes callers behind one lock,
-  so parallel forks are safe but gain no throughput. Registry writes are
-  fsynced and ownership is enforced with a lock file, one orchestrator per
-  registry. The reaper's default `PR_SET_PDEATHSIG` backstop still uses
-  `preexec_fn`, which CPython documents as thread-unsafe; pass
-  `pdeathsig=False` under threaded supervisors.
+- Each component serializes callers behind one coarse lock: concurrent
+  threads are safe but parallel forks gain no throughput. The reaper's
+  default `PR_SET_PDEATHSIG` backstop uses `preexec_fn`, which CPython
+  documents as thread-unsafe; pass `pdeathsig=False` under threaded
+  supervisors.
 - No winner merge, artifact handoff, hibernation, migration, or resume
   protocol is implemented.
 
