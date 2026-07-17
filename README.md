@@ -30,9 +30,10 @@ or a scheduler.
 Use it for:
 
 - `map`/`reduce` agent fanout (e.g. [agent-mapreduce](https://github.com/sachinkesiraju/agent-mapreduce)).
-- Trying several coding fixes from one repository context.
-- Verification trees that kill most branches early.
-- Search and planning agents that explore several next steps.
+- Coding agents that try several fixes from one repository context.
+- Verification trees that run cheap checks first and kill branches before the
+  expensive ones.
+- Search and planning agents that fork several next steps from the same state.
 - Evaluations that reuse one prepared context across policies or seeds.
 
 ## Example: tree-style agent fanout
@@ -40,15 +41,16 @@ Use it for:
 A coding agent has read a 32k-token repository, reproduced a bug, and prepared
 its build environment. It wants to try 10 fixes.
 
-Fork the agent at that point. Each child inherits the parent's model context
-and sandbox state, so it pays only for its own work. Run cheap checks first and
-kill branches that fail formatting, compilation, or focused tests. Without
-forking, you boot 10 cold sessions and re-read the repository 10 times.
+Forking the agent at that point gives each child the same cached context and
+sandbox state, so each child pays only for its own fix. Cheap checks run
+first, and branches that fail formatting, compilation, or focused tests are
+killed immediately. Without forking, the agent would boot 10 cold sessions and
+re-read the repository 10 times.
 
-The strongest version is a tree, not a flat best-of-N batch. If two fixes
+The strongest version is a tree, not a flat best-of-N batch: if two fixes
 survive, fork each again for race tests, performance tests, or independent
 review. Those grandchildren inherit the root context plus their candidate's
-changes. Run the full test suite only on the finalists.
+changes, and the full test suite runs only on the finalists.
 
 ![agentfork lifecycle: fork a live agent, race the branches, kill the losers](docs/img/lifecycle.svg)
 
