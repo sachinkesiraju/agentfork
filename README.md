@@ -7,18 +7,23 @@ to clean up both.
 
 ![tree-keyed KV: one resident prefix, N logical branches](docs/img/kv-dedup.svg)
 
-**Measured at a glance:** A10 direct-cache API: 22 ms for 10 create+extend
-operations and 9.65× fewer occupied KV slots vs unshared · Linux subprocess +
-CPU reference cache: 0.53 ms p50 kill · 547-line additive SGLang patch.
+**Measured:** forking 10 branches on an NVIDIA A10 took 22 ms and used 9.65×
+fewer KV slots than storing a separate copy of the context per branch. Killing
+a branch (subprocess + CPU cache) takes 0.53 ms at the median. The SGLang patch
+is 547 lines of new code with no changes to existing behavior.
 
 ## What it does
 
-agentfork implements two runtime operations:
+A branch has two halves: a sandbox (the process and filesystem an agent runs
+in) and a KV cache (the memory a model builds up while reading a prompt, which
+lets it skip re-reading). agentfork implements two operations that act on both
+halves at once:
 
 - **`fork(parent)`** creates a child KV branch and starts its sandbox.
 - **`kill(child)`** stops the sandbox and releases the branch's KV state.
 
-`ForkOrchestrator` gives both sides the same branch ID. The current reference
+`ForkOrchestrator` gives both halves the same branch ID, so one call cleans up
+both. The current reference
 implementation uses `TreeKVCache` for KV state and `ReaperSandbox` for fresh
 subprocesses. The SGLang cache patch and Firecracker snapshot path are tested
 separately and are not connected to the orchestrator yet.
@@ -29,7 +34,8 @@ Use it for:
 - Trying several coding fixes from the same repository context.
 - Pruning candidate branches with tests or other checks.
 - Search and planning agents that explore several next steps.
-- Evaluations that reuse one prepared context across policies or seeds.
+- Evaluations that reuse one prepared context across different models, prompts,
+  or random seeds.
 
 ## Example: tree-style agent fanout
 
@@ -41,8 +47,8 @@ snapshot-capable sandbox backend could also give each child the same filesystem
 and process state. Each child then does only the work for its own fix.
 
 Run cheap checks first. Kill branches that fail formatting, compilation, or
-focused tests. If two fixes survive, fork them again for race tests, performance
-tests, or independent review. Run the full test suite only on the finalists.
+focused tests. If two fixes survive, fork them again for concurrency tests,
+performance tests, or independent review. Run the full test suite only on the finalists.
 
 ![agentfork lifecycle: fork a live agent, race the branches, kill the losers](docs/img/lifecycle.svg)
 
@@ -73,8 +79,8 @@ pytest -q             # non-Linux hosts skip pidfd integration tests
 The demo does not run a model or a microVM. Integer token IDs stand in for KV
 cache entries, and sleeping Python processes stand in for sandboxes. One parent
 owns a 32k-token prefix. Ten children share that prefix, add separate suffixes,
-and are then cleaned up. The demo finishes with no live cache trees or resident
-reference-cache tokens.
+and are then cleaned up. At the end, the demo verifies that everything was
+freed: no branches and no cached tokens remain.
 
 The same lifecycle through the public Python API:
 
@@ -99,8 +105,8 @@ with ForkOrchestrator(sandbox=sandbox, registry_path="branches.json",
 ```
 
 `kill_losers()` keeps the winner and its ancestors until the orchestrator closes.
-The registry records branch intent so failed cleanup can be retried. It does not
-store process state or KV data.
+The registry records which branches were created, so cleanup that failed can be
+retried after a crash. It does not store process state or KV data.
 
 **Compatibility:** Python ≥ 3.10; Linux ≥ 5.4 for the `pidfd` reaper; SGLang @
 `40517b593b23870cf351a05a1d53e930cea6a58d` for the patch. Firecracker v1.7
@@ -127,7 +133,8 @@ sandbox: Firecracker benchmark  snapshot / load / kill
 The pieces work as follows:
 
 1. **Orchestrator** — assigns one ID to the sandbox and KV branch, records branch
-   state, rolls back failed forks, and tracks leases.
+   state, rolls back failed forks, and tracks leases (a per-branch time limit;
+   a branch whose lease lapses is cleaned up automatically).
 2. **KV cache** — children share the parent's cached prefix. New KV slots are
    needed only when a child adds different tokens.
 3. **Sandbox** — `ReaperSandbox` starts a fresh subprocess today. Firecracker
@@ -135,10 +142,9 @@ The pieces work as follows:
 4. **Kill** — the sandbox is stopped first, then the KV branch is released. The
    steps are ordered but not atomic.
 
-CUDA memory is not copied with `fork(2)`. The SGLang patch creates another
-logical reference to the parent's KV slots and allocates new slots only for a
-child's different suffix. Firecracker copy-on-write applies to guest memory, not
-CUDA memory.
+Neither backend copies GPU memory. The SGLang patch points a child at the
+parent's existing cache entries and allocates new ones only for tokens the
+child adds. Firecracker's copy-on-write applies to guest RAM, not GPU memory.
 
 ## Measured results
 
@@ -147,12 +153,12 @@ See [report/RESULTS.md](report/RESULTS.md) for full results and test details.
 | Claim | Measured |
 |---|---|
 | CPU reference prefix reuse | 10 children reused 100% of the parent prefix; separate trees stayed isolated |
-| Patched SGLang cache on an A10 | 37k occupied slots vs 357k with sharing disabled; 10 create+extend operations in 22 ms; allocator returned to 0 after cleanup |
+| Patched SGLang cache on an A10 | 37k occupied slots vs 357k with sharing disabled; 10 create+extend operations in 22 ms; all cache memory was released after cleanup |
 | Stock SGLang prefix caching | 2,402–2,403 of 2,404 prompt tokens were cached; this uses stock RadixAttention, not the agentfork patch |
-| Subprocess + CPU cache kill | 0.53 ms p50 and 1.46 ms max over 100 cycles |
-| Supervisor crash test | 0 surviving Python children across 50 runs with 5 children each |
-| Firecracker snapshot load | 2.1 ms p50 API time per child; 25 children loaded in 150 ms; guest readiness was not measured |
-| Firecracker process memory | 117.7 MiB total RSS vs 23.8 MiB total PSS across 25 idle VMMs |
+| Subprocess + CPU cache kill | 0.53 ms median and 1.46 ms max over 100 cycles |
+| Crash cleanup | Killing the controlling process left 0 orphaned child processes across 50 runs with 5 children each |
+| Firecracker snapshot load | 2.1 ms median API time per child; 25 children loaded in 150 ms. This times the snapshot-load call, not how long until the VM is ready to use |
+| Firecracker process memory | Counted naively, 25 idle VMs use 117.7 MiB (RSS); counting memory shared between them only once, 23.8 MiB (PSS) |
 | SGLang patch size | 547 lines: 299 implementation and 248 tests |
 | 10,000-branch cache test | 0.95 s to create branches and 0.17 s to remove them; this tests cache metadata, not concurrent model execution |
 | Cache controls | Direct API tests cover budgets, reservations, demotion, invalidation, and telemetry |
@@ -162,9 +168,11 @@ stores a separate 32k-token prefix for every child. Stock SGLang already shares
 identical prefixes, so agentfork is not 9.65× smaller than stock SGLang. The
 patch instead adds branch IDs, budgets, telemetry, and branch-level cleanup.
 
-The provider-cache estimate is a pricing model, not a benchmark. It assumes
-cached reads cost 0.1× normal input tokens and cache writes cost 1.25×. It does
-not measure invoices, latency, or provider memory use.
+The `cost_model` script (under Running benchmarks below) estimates what fanout
+would cost on a hosted LLM API with prompt caching. It is arithmetic on
+published prices — cached reads at 0.1× the normal input rate, cache writes at
+1.25× — not a benchmark. It does not measure real invoices, latency, or
+provider memory use.
 
 ## Running benchmarks
 
@@ -201,8 +209,8 @@ SGLANG_DIR="$SGLANG_DIR" modal run modal_gpu_validation.py
   own each registry file.
 - The reference components are not thread-safe, and `ReaperSandbox` uses
   `preexec_fn`, which Python warns against in threaded programs.
-- SGLang budgets and reservations are cache accounting only; the scheduler does
-  not enforce them.
+- The SGLang patch records per-branch budgets and reservations, but nothing yet
+  stops a branch from exceeding them.
 - Large models, tensor parallelism, scheduler load, guest readiness, and
   microVM+GPU integration have not been tested.
 
