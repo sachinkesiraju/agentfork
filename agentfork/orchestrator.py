@@ -10,7 +10,8 @@
   ``reconcile()`` instead of leaking;
 - leases bound every branch's lifetime; ``reap_expired()`` collects branches
   whose lease lapsed, and ``reconcile()`` additionally collects branches a
-  previous process left mid-fork.
+  previous process left mid-fork or mid-kill (kill intent is journaled
+  before either half is reaped).
 
 The registry is a JSON file written atomically (write + fsync +
 ``os.replace``) and owned exclusively: a sidecar ``flock`` held for the
@@ -27,9 +28,10 @@ reference ``TreeKVCache`` and the sandbox half to a generic subprocess (via
 ``BranchReaper``), but either can be any object satisfying ``KVBackend`` or
 ``SandboxBackend``. Kill remains sequential across the two halves, not atomic.
 Adapters for a patched-SGLang engine (``agentfork.kv.sglang_backend``) and for
-Firecracker (``agentfork.sandbox.firecracker_backend``) exist and satisfy
-those protocols, but are unit-tested against mocks only; neither has been run
-against a live SGLang engine or a real Firecracker guest.
+Firecracker (``agentfork.sandbox.firecracker_backend``) satisfy those
+protocols. The Firecracker adapter has been driven end to end against real
+microVMs (``demo/fc_demo.py``, idle guests); the SGLang adapter is unit-tested
+against mocks only and has not touched a live engine.
 """
 
 from __future__ import annotations
@@ -48,6 +50,7 @@ from agentfork.kv.tree_cache import TreeKVCache
 
 _STATE_FORKING = "forking"
 _STATE_LIVE = "live"
+_STATE_KILLING = "killing"
 
 
 class SandboxBackend(Protocol):
@@ -160,6 +163,7 @@ class ForkOrchestrator:
         self._clock = clock
         self._lock = threading.RLock()
         self._seq = 0
+        self._closed = False
         self._branches: dict[str, Branch] = {}
         self._registry_lock_fd: int | None = None
         if self.registry_path:
@@ -199,6 +203,12 @@ class ForkOrchestrator:
         if self._registry_lock_fd is not None:
             os.close(self._registry_lock_fd)  # closing the fd drops the flock
             self._registry_lock_fd = None
+
+    def _ensure_open(self) -> None:
+        """A closed orchestrator gave up registry ownership; letting it keep
+        writing would corrupt a successor's registry. Reads stay allowed."""
+        if self._closed:
+            raise RuntimeError("orchestrator is closed")
 
     def _persist(self) -> None:
         if not self.registry_path:
@@ -241,6 +251,7 @@ class ForkOrchestrator:
     def create_parent(self, branch_id: str, tokens: list[int] | None = None,
                       lease_s: float | None = None) -> Branch:
         """Create a root branch: journal, create the KV tree, spawn sandbox."""
+        self._ensure_open()
         if branch_id in self._branches:
             raise ValueError(f"branch exists: {branch_id}")
         branch = Branch(branch_id, None, _STATE_FORKING, self._clock(),
@@ -270,6 +281,7 @@ class ForkOrchestrator:
         the sandbox. A sandbox failure rolls back that child's KV branch and
         registry record, then re-raises; earlier siblings stay live.
         """
+        self._ensure_open()
         parent = self._branches.get(parent_id)
         if parent is None or parent.state != _STATE_LIVE:
             raise KeyError(f"no live branch: {parent_id}")
@@ -302,20 +314,28 @@ class ForkOrchestrator:
 
     @locked
     def extend(self, branch_id: str, tokens: list[int]) -> int:
+        self._ensure_open()
         if branch_id not in self._branches:
             raise KeyError(f"no such branch: {branch_id}")
         return self.kv.extend(branch_id, tokens)
 
     @locked
     def kill(self, branch_id: str) -> KillReceipt:
-        """Reap sandbox then KV; drop the record only after both succeed.
+        """Journal kill intent, reap sandbox then KV, then drop the record.
 
-        The two halves are sequential, not atomic. If either raises, the
-        record stays in the registry so ``reconcile()`` retries the kill.
-        Killing an unknown branch is a no-op (idempotent).
+        The two halves are sequential, not atomic. Intent is journaled as
+        state ``killing`` before either half runs, so if one raises (or the
+        supervisor crashes mid-kill) the record survives and ``reconcile()``
+        retries the kill. Killing an unknown branch is a no-op (idempotent).
+        A killed parent's children survive by design (their KV refs keep the
+        shared prefix resident); their ``parent_id`` then names a dead
+        branch, and their own leases bound their lifetime.
         """
+        self._ensure_open()
         if branch_id not in self._branches:
             return KillReceipt(branch_id, 0)
+        self._branches[branch_id].state = _STATE_KILLING
+        self._persist()
         self.sandbox.kill(branch_id)
         freed = self.kv.kill(branch_id)
         self._forget(branch_id)
@@ -324,6 +344,7 @@ class ForkOrchestrator:
     @locked
     def kill_losers(self, winner_id: str) -> list[KillReceipt]:
         """Kill every live branch except the winner and its ancestor chain."""
+        self._ensure_open()
         if winner_id not in self._branches:
             raise KeyError(f"no such branch: {winner_id}")
         keep = set()
@@ -339,6 +360,7 @@ class ForkOrchestrator:
 
     @locked
     def renew_lease(self, branch_id: str, lease_s: float) -> Branch:
+        self._ensure_open()
         branch = self._branches.get(branch_id)
         if branch is None:
             raise KeyError(f"no such branch: {branch_id}")
@@ -353,6 +375,7 @@ class ForkOrchestrator:
         """Kill branches whose lease has lapsed. Children of an expired
         parent are collected too if their own lease lapsed; KV children
         survive a parent kill by design, so per-branch leases are the bound."""
+        self._ensure_open()
         now = self._clock()
         expired = [b.branch_id for b in self._branches.values()
                    if b.lease_expires_at is not None and b.lease_expires_at <= now]
@@ -360,11 +383,13 @@ class ForkOrchestrator:
 
     @locked
     def reconcile(self) -> list[KillReceipt]:
-        """Collect leaked branches: mid-fork leftovers from a crashed
-        supervisor plus anything past its lease. Safe to call at startup on a
-        registry a previous process wrote."""
+        """Collect leaked branches: mid-fork and mid-kill leftovers from a
+        crashed or failed supervisor, plus anything past its lease. Not run
+        automatically; call it at startup on a registry a previous process
+        wrote."""
+        self._ensure_open()
         stuck = [b.branch_id for b in self._branches.values()
-                 if b.state == _STATE_FORKING]
+                 if b.state in (_STATE_FORKING, _STATE_KILLING)]
         receipts = [self.kill(bid) for bid in stuck]
         receipts.extend(self.reap_expired())
         return receipts
@@ -384,8 +409,11 @@ class ForkOrchestrator:
     @locked
     def close(self) -> None:
         """Kill every recorded branch; raise the first error after trying
-        all. Registry ownership is released either way, so a successor
-        orchestrator can take over the file."""
+        all. The orchestrator ends closed either way: registry ownership is
+        released so a successor can take over, and every mutating method
+        raises from then on. Idempotent."""
+        if self._closed:
+            return
         error = None
         try:
             for branch_id in list(self._branches):
@@ -394,6 +422,7 @@ class ForkOrchestrator:
                 except Exception as exc:
                     error = error or exc
         finally:
+            self._closed = True
             self._release_registry_lock()
         if error is not None:
             raise error
