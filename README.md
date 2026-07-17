@@ -221,13 +221,13 @@ around. agentfork explores one branch identity spanning sandbox state and
 explicit KV ownership. This repository validates the pieces of that design but
 does not yet integrate them into a production runtime.
 
-| Project | What it covers | What it leaves open |
+| Project | What it covers | Remaining work |
 |---|---|---|
 | [forkd](https://github.com/deeplethe/forkd), [Mitos](https://github.com/mitos-run/mitos) | microVM fork with CoW | Bind sandbox identity to inference KV ownership and reclaim |
 | [thaw](https://github.com/thaw-ai/thaw), [processfork](https://github.com/manav8498/processfork) | inference/session branching experiments | Pair the inference branch with an isolated sandbox lifecycle |
 | [SGLang](https://github.com/sgl-project/sglang) RadixAttention, [vLLM](https://github.com/vllm-project/vllm) APC | automatic shared-prefix KV reuse | Add explicit agent-tree ownership, branch policy, and sandbox coordination where required |
 | [LMCache](https://github.com/LMCache/LMCache), [Mooncake](https://github.com/kvcache-ai/Mooncake), [Dynamo](https://github.com/ai-dynamo/dynamo) | KV transfer / tiering | Compose tree ownership with movement and routing |
-| **agentfork (this prototype)** | tree-aware SGLang patch, CPU reference cache/reaper, and separate Firecracker benchmark | Integrate all three paths behind one recoverable control-plane operation |
+| **agentfork** | tree-aware SGLang patch, CPU reference cache/reaper, and separate Firecracker benchmark | Integrate all three paths behind one recoverable control-plane operation |
 
 ## License
 
