@@ -2,9 +2,9 @@
 
 agentfork is a runtime prototype for tree-style agent fanout.
 
-Fork a live agent, its sandbox and its LLM KV context together, as one branch.
-Kill the branch and both halves are reclaimed in under 1 ms: no orphan
-processes, no leaked KV pages.
+It forks a live agent's sandbox and its LLM KV context together, as one
+branch. Killing a branch reclaims both halves in under 1 ms, with no orphan
+processes and no leaked KV pages.
 
 ![tree-keyed KV: one resident prefix, N logical branches](docs/img/kv-dedup.svg)
 
@@ -166,12 +166,12 @@ the checks that fail or remain untested.
 | 10,000-branch cache test | 0.95 s to create branches and 0.17 s to bulk-kill them; allocator back to 0; this tests cache metadata, not concurrent inference |
 | Tree-native cache controls | Direct API tests cover budgets, reservations, demotion, invalidation, and telemetry; the scheduler does not enforce them |
 
-The 9.65× result compares shared KV against an explicitly unshared allocation,
-not stock SGLang. Stock SGLang already stores an identical cached prefix once,
-so the corrected model is about 1.0× compute and 1.0× residency versus a
-well-run self-hosted prefix cache. The patch's proposed gain over that baseline
-is explicit ownership, branch policy, telemetry, and coordinated reclaim, not
-another 9.65× memory reduction.
+The 9.65× figure compares shared KV against an allocation that stores a
+separate copy of the prefix for every child. Stock SGLang already avoids that
+duplication by sharing one cached prefix, so compute and residency are close
+to 1.0× versus a well-run self-hosted prefix cache. What the patch adds on top
+is explicit branch ownership, policy, telemetry, and coordinated reclaim, not
+further memory savings.
 
 The provider-cache comparison is a pricing model, not a benchmark. It assumes
 cached reads cost 0.1× normal input tokens and cache writes cost 1.25×. It does
@@ -211,7 +211,7 @@ SGLANG_DIR="$SGLANG_DIR" modal run modal_gpu_validation.py
   serving, or a multi-worker router. The live-engine result above is a stock
   RadixAttention baseline, not an end-to-end patch test.
 - Cache budgets and reservations are accounting only; the scheduler does not
-  enforce them as physical HBM reservations.
+  enforce them as physical GPU memory reservations.
 - GPU validation used one A10; 70B-scale models, tensor parallelism, and
   scheduler contention are unmeasured.
 - Firecracker measurements used idle, CPU-only 256 MiB guests; microVMs and GPU
@@ -226,11 +226,11 @@ SGLANG_DIR="$SGLANG_DIR" modal run modal_gpu_validation.py
 
 ## Why agentfork vs. alternatives
 
-Existing tools give you one piece of the tree: a fast sandbox fork, a way to
-branch an inference session, shared-prefix caching, or a way to move KV caches
-around. agentfork explores one branch identity spanning sandbox state and
-explicit KV ownership. This repository validates the pieces of that design but
-does not yet integrate them into a production runtime.
+Other projects branch one piece of this: a fast sandbox fork, an inference
+session, shared-prefix caching, or moving KV caches between tiers. agentfork
+gives one branch identity to both sandbox state and KV ownership. This
+repository validates the pieces of that design but does not yet integrate them
+into a production runtime.
 
 | Project | What it covers | What it leaves open |
 |---|---|---|
