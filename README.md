@@ -81,9 +81,15 @@ For recursive fanout, the same accounting becomes
 root work + Σ unique work on each explored edge
 ```
 
-The advantage is largest when shared setup is long, branches are numerous and
-short, and cheap verification rejects most candidates early. It shrinks when
-fanout is small or most work happens after branches diverge.
+In the target runtime, the payoff comes from doing the expensive pre-branch
+work once. If the parent has already accumulated a large model context and
+prepared its environment, every child can start from that state instead of
+rebuilding it. Keeping branches short and verifying early limits each
+candidate's new token, memory, and compute cost; killing failures quickly also
+frees their process and cache state before more expensive checks run. With only
+a few branches—or with branches that spend most of their time doing different
+work after the fork—the shared setup is a small fraction of total cost. In that
+case, the benefit falls and orchestration overhead can dominate.
 
 ## Quickstart
 
