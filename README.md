@@ -84,7 +84,9 @@ forks 10 branches (0 re-prefill, 11× KV dedup before divergence and 9× after),
 lets one win, kills the rest, and ends with 0 resident reference-cache tokens
 and 0 live trees. It does not run a real LLM or Firecracker guest.
 
-The same reference lifecycle in Python:
+The same reference lifecycle in Python (`agentfork.*` is the stable public
+surface from 0.2.0; submodule internals are not covered by semantic
+versioning):
 
 ```python
 import sys
