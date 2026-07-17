@@ -255,19 +255,19 @@ SGLANG_DIR="$SGLANG_DIR" modal run modal_gpu_validation.py
 
 ## Why agentfork vs. alternatives
 
-Existing tools give you one piece of the tree — a fast sandbox fork, a way to
-branch an inference session, shared-prefix caching, or a way to move KV caches
-around. agentfork explores one branch identity spanning sandbox state and
-explicit KV ownership. This repository validates the pieces of that design but
-does not yet integrate them into a production runtime.
+These projects solve different parts of the problem. The practical question is
+which state you need to branch: the agent's execution environment, the model's
+attention cache, or both. agentfork targets both, but its current end-to-end path
+uses the CPU reference cache and fresh subprocesses; the GPU-cache and microVM
+paths are still separate.
 
-| Project | What it covers | The missing piece |
+| Project | What it does | What you still have to build |
 |---|---|---|
-| [forkd](https://github.com/deeplethe/forkd), [Mitos](https://github.com/mitos-run/mitos) | microVM fork with CoW | Bind sandbox identity to inference KV ownership and reclaim |
-| [thaw](https://github.com/thaw-ai/thaw), [processfork](https://github.com/manav8498/processfork) | inference/session branching experiments | Pair the inference branch with an isolated sandbox lifecycle |
-| [SGLang](https://github.com/sgl-project/sglang) RadixAttention, [vLLM](https://github.com/vllm-project/vllm) APC | automatic shared-prefix KV reuse | Add explicit agent-tree ownership, branch policy, and sandbox coordination where required |
-| [LMCache](https://github.com/LMCache/LMCache), [Mooncake](https://github.com/kvcache-ai/Mooncake), [Dynamo](https://github.com/ai-dynamo/dynamo) | KV transfer / tiering | Compose tree ownership with movement and routing |
-| **agentfork** | tree-aware SGLang patch, CPU reference cache/reaper, and separate Firecracker benchmark | Integrate all three paths behind one recoverable control-plane operation |
+| [forkd](https://github.com/deeplethe/forkd), [Mitos](https://github.com/mitos-run/mitos) | Start microVMs from a shared memory snapshot, so unchanged guest-memory pages can be reused | A matching branch in the LLM server, plus cleanup that frees its KV-cache slots when the microVM branch is killed |
+| [thaw](https://github.com/thaw-ai/thaw), [processfork](https://github.com/manav8498/processfork) | Branch an inference session so multiple generations can continue from shared model context | An isolated filesystem/process sandbox for each branch, and one operation that cleans up both states |
+| [SGLang](https://github.com/sgl-project/sglang) RadixAttention, [vLLM](https://github.com/vllm-project/vllm) Automatic Prefix Caching | Reuse KV-cache blocks when requests begin with the same tokens | A persistent agent branch ID that links those cache blocks to a sandbox, lease, and branch-level kill |
+| [LMCache](https://github.com/LMCache/LMCache), [Mooncake](https://github.com/kvcache-ai/Mooncake), [Dynamo](https://github.com/ai-dynamo/dynamo) | Store or move KV-cache blocks between GPU memory, CPU memory, storage, or workers | Cloning the agent's executable sandbox and managing process + KV cleanup as one branch |
+| **agentfork** | Gives a subprocess and CPU reference-cache branch one ID; separately validates a tree-aware SGLang cache and Firecracker snapshots | Production backends that connect `ForkOrchestrator` to the patched SGLang cache and Firecracker |
 
 ## License
 
