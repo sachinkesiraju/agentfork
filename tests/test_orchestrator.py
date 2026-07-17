@@ -218,3 +218,57 @@ def test_reaper_sandbox_integration_kills_real_processes():
         assert receipt.kv_freed_tokens == 0  # no unique suffix yet
         assert not orch.alive(children[0].branch_id)
     assert sandbox.reaper._branches == {}
+
+
+class FlakyKillSandbox(RecordingSandbox):
+    """Kill fails once per branch, then succeeds — a transient reap error."""
+
+    def __init__(self):
+        super().__init__()
+        self.failed_once = set()
+
+    def kill(self, branch_id):
+        if branch_id in self.live and branch_id not in self.failed_once:
+            self.failed_once.add(branch_id)
+            raise RuntimeError(f"transient kill failure: {branch_id}")
+        super().kill(branch_id)
+
+
+def test_failed_kill_is_journaled_and_retried_by_reconcile(tmp_path):
+    sandbox = FlakyKillSandbox()
+    orch = ForkOrchestrator(sandbox=sandbox,
+                            registry_path=tmp_path / "registry.json")
+    orch.create_parent("parent", tokens=PREFIX)
+
+    with pytest.raises(RuntimeError, match="transient kill failure"):
+        orch.kill("parent")
+
+    # intent survived the failure: the record is journaled as mid-kill
+    assert orch.branches()[0].state == "killing"
+    on_disk = json.loads((tmp_path / "registry.json").read_text())
+    assert on_disk["branches"][0]["state"] == "killing"
+
+    receipts = orch.reconcile()
+
+    assert [r.branch_id for r in receipts] == ["parent"]
+    assert orch.branches() == []
+    assert sandbox.live == set()
+
+
+def test_closed_orchestrator_refuses_mutation(tmp_path):
+    registry = tmp_path / "registry.json"
+    first = ForkOrchestrator(sandbox=RecordingSandbox(), registry_path=registry)
+    first.create_parent("parent", tokens=PREFIX)
+    first.close()
+    first.close()  # idempotent
+
+    second = ForkOrchestrator(registry_path=registry)  # ownership transferred
+    for call in (lambda: first.create_parent("x"),
+                 lambda: first.fork("parent"),
+                 lambda: first.extend("parent", [1]),
+                 lambda: first.kill("parent"),
+                 lambda: first.reconcile()):
+        with pytest.raises(RuntimeError, match="closed"):
+            call()
+    assert first.branches() == []  # reads stay allowed
+    second.close()
