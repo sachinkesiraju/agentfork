@@ -1,8 +1,9 @@
 # agentfork
 
-Fork a live agent — its sandbox **and** its LLM KV context — as one coordinated lifecycle.
+agentfork is a runtime prototype for tree-style agent fanout.
 
-Kill any branch and reclaim both halves in **sub-millisecond to single-digit milliseconds**, with zero orphans and zero leaked KV pages.
+It gives every branch one ID across its sandbox and LLM KV cache, so the control
+plane can fork, track, and clean up both through the same lifecycle.
 
 ![tree-keyed KV: one resident prefix, N logical branches](docs/img/kv-dedup.svg)
 
