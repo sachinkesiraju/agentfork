@@ -243,11 +243,10 @@ SGLANG_DIR="$SGLANG_DIR" modal run modal_gpu_validation.py
 - GPU validation used one A10 with a Qwen3-0.6B baseline, and Firecracker
   validation used idle, CPU-only 256 MiB guests. Neither covers production
   scale or GPU-plus-microVM colocation.
-- The registry has no `fsync` or cross-process locking, so only one
-  orchestrator should own a given registry file.
-- The reference components are not safe for concurrent callers, and the
-  reaper's `preexec_fn` use is unsafe under threaded supervisors, per Python's
-  own warning.
+- Nothing is safe for concurrent use: components expect a single caller
+  thread, the registry file has no `fsync` or locking so one orchestrator
+  must own it, and the reaper's `preexec_fn` is unsafe under threaded
+  supervisors.
 - No winner merge, artifact handoff, hibernation, migration, or resume
   protocol is implemented.
 
