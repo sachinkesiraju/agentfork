@@ -33,8 +33,9 @@ neither has been run against a live SGLang engine or a real Firecracker guest.
 
 Use it for:
 
-- `map`/`reduce` fanout for cloud agent platforms that run many parallel
-  attempts per task (e.g. [agent-mapreduce](https://github.com/sachinkesiraju/agent-mapreduce)).
+- Cloud agent platforms that fan one task out to N parallel attempts and
+  reduce to a winner: fork N branches from one prepared context, kill the
+  losers (e.g. [agent-mapreduce](https://github.com/sachinkesiraju/agent-mapreduce)).
 - Coding agents that try several fixes from one repository context.
 - Verification trees that run cheap checks first and kill the failures before
   anything expensive runs.
@@ -243,10 +244,12 @@ SGLANG_DIR="$SGLANG_DIR" modal run modal_gpu_validation.py
 - GPU validation used one A10 with a Qwen3-0.6B baseline, and Firecracker
   validation used idle, CPU-only 256 MiB guests. Neither covers production
   scale or GPU-plus-microVM colocation.
-- Nothing is safe for concurrent use: components expect a single caller
-  thread, the registry file has no `fsync` or locking so one orchestrator
-  must own it, and the reaper's `preexec_fn` is unsafe under threaded
-  supervisors.
+- Concurrency is coarse: each component serializes callers behind one lock,
+  so parallel forks are safe but gain no throughput. Registry writes are
+  fsynced and ownership is enforced with a lock file, one orchestrator per
+  registry. The reaper's default `PR_SET_PDEATHSIG` backstop still uses
+  `preexec_fn`, which CPython documents as thread-unsafe; pass
+  `pdeathsig=False` under threaded supervisors.
 - No winner merge, artifact handoff, hibernation, migration, or resume
   protocol is implemented.
 

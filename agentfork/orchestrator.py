@@ -12,10 +12,15 @@
   whose lease lapsed, and ``reconcile()`` additionally collects branches a
   previous process left mid-fork.
 
-The registry is a JSON file written atomically (write + ``os.replace``). It
-records intent, not live handles: after a supervisor crash a new orchestrator
-loads the file and replays ``kill()`` against its backends, which is why
-``SandboxBackend.kill`` must be idempotent and tolerate unknown branch IDs.
+The registry is a JSON file written atomically (write + fsync +
+``os.replace``) and owned exclusively: a sidecar ``flock`` held for the
+orchestrator's lifetime makes a second orchestrator on the same file fail
+loudly instead of corrupting it, and the kernel drops the lock if the owner
+dies. The file records intent, not live handles: after a supervisor crash a
+new orchestrator loads it and replays ``kill()`` against its backends, which
+is why ``SandboxBackend.kill`` must be idempotent and tolerate unknown branch
+IDs. Every component serializes its callers behind one coarse lock: safe for
+concurrent threads, no parallel throughput.
 
 Scope matches the rest of this repository: the KV half defaults to the CPU
 reference ``TreeKVCache`` and the sandbox half to a generic subprocess (via
@@ -29,12 +34,15 @@ against a live SGLang engine or a real Firecracker guest.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
+import threading
 import time
 from dataclasses import dataclass
 from typing import Callable, Protocol
 
+from agentfork._locking import locked
 from agentfork.kill.reaper import BranchReaper
 from agentfork.kv.tree_cache import TreeKVCache
 
@@ -146,15 +154,44 @@ class ForkOrchestrator:
         self.registry_path = os.fspath(registry_path) if registry_path else None
         self.default_lease_s = default_lease_s
         self._clock = clock
+        self._lock = threading.RLock()
         self._seq = 0
         self._branches: dict[str, Branch] = {}
-        if self.registry_path and os.path.exists(self.registry_path):
-            with open(self.registry_path, encoding="utf-8") as f:
-                data = json.load(f)
-            self._branches = {b["branch_id"]: Branch.from_dict(b)
-                              for b in data.get("branches", [])}
+        self._registry_lock_fd: int | None = None
+        if self.registry_path:
+            self._acquire_registry_lock()
+        try:
+            if self.registry_path and os.path.exists(self.registry_path):
+                with open(self.registry_path, encoding="utf-8") as f:
+                    data = json.load(f)
+                self._branches = {b["branch_id"]: Branch.from_dict(b)
+                                  for b in data.get("branches", [])}
+        except BaseException:
+            self._release_registry_lock()
+            raise
 
     # -- registry ------------------------------------------------------------
+
+    def _acquire_registry_lock(self) -> None:
+        """Take exclusive ownership of the registry for this orchestrator's
+        lifetime. The flock lives on a sidecar file because it binds to an
+        inode and ``_persist`` swaps the registry's inode on every write; the
+        kernel drops the lock automatically if the owning process dies."""
+        lock_path = f"{self.registry_path}.lock"
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            raise RuntimeError(
+                f"registry {self.registry_path} is owned by another "
+                f"orchestrator (lock: {lock_path})") from None
+        self._registry_lock_fd = fd
+
+    def _release_registry_lock(self) -> None:
+        if self._registry_lock_fd is not None:
+            os.close(self._registry_lock_fd)  # closing the fd drops the flock
+            self._registry_lock_fd = None
 
     def _persist(self) -> None:
         if not self.registry_path:
@@ -164,7 +201,16 @@ class ForkOrchestrator:
             json.dump({"version": 1,
                        "branches": [b.to_dict() for b in self._branches.values()]},
                       f, indent=1)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp, self.registry_path)
+        dir_fd = os.open(os.path.dirname(self.registry_path) or ".", os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)  # make the rename itself durable
+        except OSError:
+            pass  # some filesystems reject directory fsync; best effort
+        finally:
+            os.close(dir_fd)
 
     def _record(self, branch: Branch) -> None:
         self._branches[branch.branch_id] = branch
@@ -184,6 +230,7 @@ class ForkOrchestrator:
 
     # -- lifecycle -----------------------------------------------------------
 
+    @locked
     def create_parent(self, branch_id: str, tokens: list[int] | None = None,
                       lease_s: float | None = None) -> Branch:
         """Create a root branch: journal, create the KV tree, spawn sandbox."""
@@ -206,6 +253,7 @@ class ForkOrchestrator:
         self._persist()
         return branch
 
+    @locked
     def fork(self, parent_id: str, n: int = 1,
              child_ids: list[str] | None = None,
              lease_s: float | None = None) -> list[Branch]:
@@ -245,11 +293,13 @@ class ForkOrchestrator:
             children.append(branch)
         return children
 
+    @locked
     def extend(self, branch_id: str, tokens: list[int]) -> int:
         if branch_id not in self._branches:
             raise KeyError(f"no such branch: {branch_id}")
         return self.kv.extend(branch_id, tokens)
 
+    @locked
     def kill(self, branch_id: str) -> KillReceipt:
         """Reap sandbox then KV; drop the record only after both succeed.
 
@@ -264,6 +314,7 @@ class ForkOrchestrator:
         self._forget(branch_id)
         return KillReceipt(branch_id, freed)
 
+    @locked
     def kill_losers(self, winner_id: str) -> list[KillReceipt]:
         """Kill every live branch except the winner and its ancestor chain."""
         if winner_id not in self._branches:
@@ -279,6 +330,7 @@ class ForkOrchestrator:
 
     # -- collection ----------------------------------------------------------
 
+    @locked
     def renew_lease(self, branch_id: str, lease_s: float) -> Branch:
         branch = self._branches.get(branch_id)
         if branch is None:
@@ -289,6 +341,7 @@ class ForkOrchestrator:
         self._persist()
         return branch
 
+    @locked
     def reap_expired(self) -> list[KillReceipt]:
         """Kill branches whose lease has lapsed. Children of an expired
         parent are collected too if their own lease lapsed; KV children
@@ -298,6 +351,7 @@ class ForkOrchestrator:
                    if b.lease_expires_at is not None and b.lease_expires_at <= now]
         return [self.kill(bid) for bid in expired]
 
+    @locked
     def reconcile(self) -> list[KillReceipt]:
         """Collect leaked branches: mid-fork leftovers from a crashed
         supervisor plus anything past its lease. Safe to call at startup on a
@@ -310,22 +364,30 @@ class ForkOrchestrator:
 
     # -- introspection / teardown ---------------------------------------------
 
+    @locked
     def branches(self) -> list[Branch]:
         return list(self._branches.values())
 
+    @locked
     def alive(self, branch_id: str) -> bool:
         branch = self._branches.get(branch_id)
         return (branch is not None and branch.state == _STATE_LIVE
                 and self.sandbox.alive(branch_id))
 
+    @locked
     def close(self) -> None:
-        """Kill every recorded branch; raise the first error after trying all."""
+        """Kill every recorded branch; raise the first error after trying
+        all. Registry ownership is released either way, so a successor
+        orchestrator can take over the file."""
         error = None
-        for branch_id in list(self._branches):
-            try:
-                self.kill(branch_id)
-            except Exception as exc:
-                error = error or exc
+        try:
+            for branch_id in list(self._branches):
+                try:
+                    self.kill(branch_id)
+                except Exception as exc:
+                    error = error or exc
+        finally:
+            self._release_registry_lock()
         if error is not None:
             raise error
 
