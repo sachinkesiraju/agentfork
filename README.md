@@ -24,17 +24,17 @@ agentfork implements two runtime operations, both given the same branch ID by
 It is not an agent framework or a scheduler: it does not decide what an agent
 does, only how a branch of it is created and torn down.
 
-The reference backends, `TreeKVCache` and `ReaperSandbox`, run today. The
+The reference backends, `TreeKVCache` and `ReaperSandbox`, run today; the
 SGLang cache patch and the Firecracker snapshot benchmark are validated
-separately and not yet wired into the orchestrator; see "How it works" below
-for the mechanism.
+separately and not yet wired into the orchestrator (see
+[How it works](#how-it-works) for the mechanism).
 
 Use it for:
 
 - `map`/`reduce` agent fanout (e.g. [agent-mapreduce](https://github.com/sachinkesiraju/agent-mapreduce)).
 - Coding agents that try several fixes from one repository context.
-- Verification trees that run cheap checks first and kill branches before the
-  expensive ones.
+- Verification trees that run cheap checks first and kill the failures before
+  anything expensive runs.
 - Search and planning agents that fork several next steps from the same state.
 - Evaluations that reuse one cached context across policies or seeds.
 
