@@ -11,6 +11,8 @@ internals themselves are already covered by the patch's own test file
 
 from types import SimpleNamespace
 
+import pytest
+
 from agentfork.kv.sglang_backend import SGLangKVBackend
 
 
@@ -141,3 +143,29 @@ def test_extend_charges_zero_when_fully_recached():
 
     assert charged == 0
     assert backend._lengths["t"] == 5
+
+
+def test_extend_does_not_double_charge_when_part_of_the_prefix_was_evicted():
+    # Mirrors the patch's own `charged = len(new_tokens) - max(hit, old_len)`:
+    # if eviction dropped hit below old_len, tokens already charged in a
+    # prior extend() must not be charged again.
+    cache = FakeTreeRadixCache()
+    backend = SGLangKVBackend(cache)
+    backend.create_tree("t")
+    backend.extend("t", [1, 2, 3])  # old length now 3, all 3 charged
+
+    # only 2 of the 3 previously-cached tokens are still resident
+    cache.force_hit["t"] = 2
+    charged = backend.extend("t", [4, 5])  # new_total == 5
+
+    assert charged == 5 - 3  # new_total - max(hit=2, old_len=3), not new_total - hit
+    assert backend._lengths["t"] == 5
+
+
+def test_fork_branch_raises_for_untracked_parent():
+    cache = FakeTreeRadixCache()
+    backend = SGLangKVBackend(cache)
+    cache.sequences["p"] = []  # cache knows "p"; the adapter's bookkeeping does not
+
+    with pytest.raises(KeyError):
+        backend.fork_branch("p", "c")

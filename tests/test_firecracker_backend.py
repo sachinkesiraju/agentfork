@@ -66,6 +66,22 @@ class FakeMicroVMFactory:
         return vm
 
 
+class FailingBootMicroVM(FakeMicroVM):
+    """Fails boot(), the way a real MicroVM would on a bad kernel/rootfs."""
+
+    def boot(self, kernel, rootfs):
+        self.events.append(("boot", kernel, rootfs))
+        raise RuntimeError("Firecracker PUT /actions returned HTTP 400")
+
+
+class FailingBootMicroVMFactory(FakeMicroVMFactory):
+    def __call__(self, fc_bin, vm_dir):
+        vm = FailingBootMicroVM(fc_bin, vm_dir)
+        self.instances.append(vm)
+        self.by_dir[vm_dir] = vm
+        return vm
+
+
 def _make_sandbox(tmp_path, factory=None):
     factory = factory or FakeMicroVMFactory()
     sandbox = FirecrackerSandbox(
@@ -133,3 +149,16 @@ def test_alive_is_false_when_process_has_exited_but_still_tracked(tmp_path):
 
     assert sandbox.alive("root") is False
     assert "root" in sandbox._vms  # still tracked, just not alive
+
+
+def test_spawn_failure_kills_the_vm_and_leaves_no_bookkeeping(tmp_path):
+    sandbox, factory = _make_sandbox(tmp_path, factory=FailingBootMicroVMFactory())
+
+    with pytest.raises(RuntimeError):
+        sandbox.spawn("root", None)
+
+    vm = factory.instances[-1]
+    assert vm.events[-1][0] == "kill"  # best-effort cleanup ran
+    assert "root" not in sandbox._vms
+    assert "root" not in sandbox._snapshots
+    assert sandbox.alive("root") is False
