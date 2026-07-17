@@ -1,257 +1,189 @@
 # agentfork
 
-agentfork is a research prototype for giving an agent's sandbox process and LLM
-KV-cache branch the same lifecycle identity.
-
-**Kill any branch and reclaim both halves in sub-millisecond to single-digit
-milliseconds, with zero orphans and zero leaked KV pages.**
-
-The intended primitive is simple: fork a warm agent into several isolated
-candidates, let them diverge, then kill the losers and reclaim their process and
-KV state. This repository validates the pieces of that design. It is **not yet a
-drop-in runtime that atomically forks a Firecracker VM and a live inference
-request**.
+Fork a live agent — its sandbox **and** its LLM KV context — as one coordinated
+lifecycle.
+Kill any branch and reclaim both halves in **sub-millisecond to single-digit
+milliseconds**, with zero orphans and zero leaked KV pages.
 
 ![tree-keyed KV: one resident prefix, N logical branches](docs/img/kv-dedup.svg)
 
-**Selected experimental results:** 22 ms to create and extend 10 branches on a
-patched SGLang allocator backed by an NVIDIA A10 · 0.53 ms p50 to reap a Python
-child process and its CPU reference-cache entry · 9.65× KV-slot reduction versus
-an explicitly unshared baseline · 547 additive lines in the SGLang patch,
-including tests. See [Measured results](#measured-results) for the scope behind
-each number.
+**Measured at a glance:** 22 ms for 10 patched-cache create+extend operations on
+an A10 · 0.53 ms p50 subprocess + CPU reference-cache kill · 9.65× KV-slot
+reduction vs an explicitly unshared allocation · 547-line additive SGLang patch.
 
-## What is in this repository
+## What it does
 
-| Component | What it is | What it is not |
-|---|---|---|
-| `agentfork/kv/tree_cache.py` | CPU reference model for tree identity, prefix sharing, refcounts, quotas, and reclaim | An inference engine or GPU KV cache |
-| `patches/0001-sglang-tree-radix-cache.patch` | Additive `TreeRadixCache` implementation and 17 tests for SGLang at `40517b593` | Wired into SGLang's scheduler, model runner, or public server API |
-| `agentfork/kill/reaper.py` | Linux `pidfd` supervisor for a generic subprocess plus a cache object | A Firecracker manager or atomic transaction coordinator |
-| `agentfork/sandbox/fc_bench.py` | Standalone Firecracker snapshot/load/kill benchmark | A reusable `FCForker` runtime integrated with the cache |
-| `demo/demo.py` | Linux demo using real Python child processes and the CPU reference cache | A real LLM or microVM demo |
-| `modal_gpu_validation.py` | Patched-cache tests against an A10 HBM pool, plus a stock SGLang prefix-cache baseline | End-to-end use of the patch through `sgl.Engine` |
+agentfork prototypes two operations for a fork-native agent runtime:
 
-There is no top-level `fork(parent)` API today. The repository exposes the
-lower-level operations an orchestrator would need and records measurements for
-them.
+- **`fork(parent)`** gives a child the parent's cached context and sandbox state.
+- **`kill(child)`** stops the child and reclaims its process and KV ownership.
 
-## Use it for
+The repository validates the lower-level pieces of those operations: an
+additive SGLang patch that adds tree identity and lifecycle controls to the
+radix cache, a Firecracker snapshot/restore benchmark, a CPU reference cache,
+and a `pidfd`-based subprocess reaper. It is not yet a production runtime or an
+atomic transaction across Firecracker and a live inference server.
 
-Use agentfork to **evaluate or prototype fork-heavy agent runtimes** where:
+Use it for:
 
-1. a parent has accumulated a large, expensive context;
-2. several children start from exactly that state;
-3. each child performs a relatively small amount of unique work; and
-4. most children can be cancelled after scoring or verification.
+- `map`/`reduce` agent fanout (e.g. [agent-mapreduce](https://github.com/sachinkesiraju/agent-mapreduce)).
+- Speculative coding fixes: branch after repository analysis, try independent
+  fixes, and retain the best verified result.
+- Verification trees: use cheap checks to prune most candidates before running
+  expensive tests on finalists.
+- Search and planning agents that expand promising branches recursively, score
+  them, and reclaim the rest.
+- Evaluation matrices that reuse one prepared context and environment across
+  policies, seeds, models, or tool configurations.
 
-Workloads with that shape include:
-
-- **Best-of-N coding:** branch after repository analysis, try independent fixes,
-  run tests, and retain the best result.
-- **Map/reduce agents:** fan one prepared context out to many workers, then
-  aggregate their outputs (for example,
-  [agent-mapreduce](https://github.com/sachinkesiraju/agent-mapreduce)).
-- **Verifier trees:** generate candidates, run progressively more expensive
-  checks, and reclaim branches as soon as they fail.
-- **Search and planning:** expand several next actions from one trajectory,
-  score them, and keep only the promising subtree.
-- **Evaluation and test matrices:** reuse a common prompt or environment across
-  models, policies, seeds, or tool configurations.
-
-Today, those are **integration targets**, not packaged applications in this
-repo. Your orchestrator still has to create the sandbox, submit inference work,
-associate both with the same branch ID, choose a winner, and merge any durable
-artifacts.
-
-agentfork is probably not the right tool when requests do not share a long
-prefix, when ordinary SGLang RadixAttention already gives all the cache reuse
-you need, when inference is only available through a hosted API, or when you
-need a production-ready hibernate/migrate/resume system. No hibernation,
-checkpoint migration, winner merge, or durable artifact protocol is implemented
-here.
+These are integration targets, not packaged applications in this repository.
+`ForkOrchestrator` (`agentfork/orchestrator.py`) is a reference control plane
+for the lifecycle half: one branch ID spans the KV branch and the sandbox,
+intent is journaled to a registry file before side effects, leases bound every
+branch's lifetime, and `reconcile()` collects what a crashed supervisor left
+behind. Its backends today are the CPU reference cache and generic
+subprocesses; your application still has to submit inference work, score
+branches, and persist the winner.
 
 ## Example: tree-style agent fanout
 
-Consider the strongest case for a fork-native runtime: a coding agent has spent
-most of its budget getting to a good branch point. It has read a large
-repository, loaded tool schemas and issue history, reproduced the bug, prepared
-a working build environment, and narrowed the failure to a few plausible
-causes. That shared state is expensive; each candidate fix is comparatively
-cheap.
+Imagine a coding agent that has already read a large repository, loaded its tool
+schemas and issue history, reproduced a bug, and prepared a working build
+environment. It has reached a good branch point: the shared setup was expensive,
+but testing any one plausible fix is comparatively cheap.
 
-A completed agentfork integration could run the search as a tree:
+Fork the agent into 12 strategy branches from that exact state. Each branch
+inherits the warm context and initial filesystem state, then makes only its own
+code changes and generates only its own suffix tokens. Run formatting,
+compilation, focused tests, and a cheap critic first; kill failures immediately
+instead of carrying all 12 into the full suite.
 
-1. **Warm the root once.** The parent holds the analyzed repository context in
-   KV and a ready-to-test checkout in its sandbox.
-2. **Fan out strategies.** Fork 12 children from that exact point. Each child
-   explores a materially different fix while sharing the parent's KV prefix and
-   initial filesystem state.
-3. **Prune early.** Run formatting, compilation, focused unit tests, and a cheap
-   critic. Kill failures immediately instead of carrying all 12 branches into
-   expensive evaluation.
-4. **Fork the survivors again.** If two candidates remain, branch each into
-   targeted verification children: adversarial tests, race detection,
-   performance checks, and independent code review. These grandchildren inherit
-   both the root context and their candidate's additional reasoning and sandbox
-   changes.
-5. **Keep one result.** Run the full suite only on finalists, export the winning
-   patch and tests, and reclaim every other process and cache branch. Persisting
-   or merging that winner is application-specific.
+The strongest version is a tree, not a flat best-of-N batch. If two fixes
+survive, fork each one again into adversarial-test, race-detection, performance,
+and independent-review branches. Those grandchildren inherit the root context
+plus their candidate's reasoning and sandbox changes. Run the full suite only
+on finalists, export the winning patch and tests, and reclaim everything else.
+Winner persistence or merge remains application-specific.
 
 ![agentfork lifecycle: fork a live agent, race the branches, kill the losers](docs/img/lifecycle.svg)
 
-The important part is the second fanout. A flat prefix cache can reuse the
-original repository prompt, but it does not by itself model ownership of the
-candidate-specific context, keep that subtree pinned under a budget, or give the
-orchestrator one branch identity to cancel across sandbox and KV state. In the
-intended runtime, every edge pays only for the work added after its parent:
+The work changes from replaying the full root-to-leaf history for every leaf to
+paying once for the root and once for the unique work on each explored edge:
 
-```text
+```
 root work + sum(unique work on each explored edge)
 ```
 
-rather than independently replaying the full root-to-leaf history for every
-leaf. The advantage is largest when shared setup is long, branches are numerous
-and short, verification rejects most candidates early, and promising branches
-fan out recursively. It shrinks when fanout is small, branches do most of their
-work after diverging, or ordinary RadixAttention already provides all the
-lifecycle behavior the application needs.
-
-This repository validates the component operations behind that example; it does
-not yet provide the orchestrator that executes the workflow end to end.
+This shape is most attractive when shared setup is long, branches are numerous
+and short, cheap verification rejects most candidates, and promising candidates
+fan out again. The advantage shrinks when fanout is small, most work happens
+after divergence, or ordinary prefix caching already provides all the lifecycle
+behavior the application needs.
 
 ## Quickstart
 
-Requirements for the full demo and test suite:
-
-- Python 3.10+
-- Linux 5.4+ (`pidfd_open`, `pidfd_send_signal`, and `waitid(P_PIDFD)`)
-- no GPU or Firecracker
-
 ```bash
-python3 -m venv .venv
-. .venv/bin/activate
 pip install -e ".[dev]"
-ruff check agentfork tests
-pytest -q
-python demo/demo.py
+python demo/demo.py   # Linux, CPU-only reference fork/race/kill demo
+pytest -q             # non-Linux hosts skip pidfd integration tests
 ```
 
-The demo creates a synthetic 32k-token parent in the CPU reference cache,
-spawns 10 sleeping Python child processes, forks the cache 10 ways, adds an
-800-token unique suffix per child, and reaps every process and cache entry. KV
-residency is 11× deduplicated immediately after the fork and 9× after all
-branches diverge. The final ledger must contain zero resident reference-cache
-tokens and zero live trees.
+`demo.py` creates a synthetic 32k-token parent in the CPU reference cache,
+spawns 10 real Python child processes, forks the cache 10 ways with zero
+re-prefill, and ends with 0 resident reference-cache tokens and 0 live trees.
+KV residency is 11× deduplicated immediately after fork and 9× after each child
+adds an 800-token suffix. It does not run a real LLM or Firecracker guest.
 
-The demo is not a 32k-token LLM prefill: token IDs stand in for KV tensors. On
-macOS or another non-Linux host, run the platform-independent cache tests and
-cost model instead:
-
-```bash
-pytest -q tests/test_tree_cache.py
-python -m agentfork.bench.cost_model --children 10 --prefix 32000 --suffix 2000
-```
-
-## Reference API example
-
-Imports currently come from submodules; the package does not define a stable
-public API at `agentfork.*`.
+The same reference primitives in Python:
 
 ```python
 import sys
 
-from agentfork.kill.reaper import BranchReaper
 from agentfork.kv.tree_cache import TreeKVCache
+from agentfork.kill.reaper import BranchReaper
 
 cache = TreeKVCache()
-cache.create_tree("parent")
-cache.extend("parent", prefix_tokens)
+parent = cache.create_tree("tree-1")
+cache.extend(parent.tree_id, prefix_tokens)
 
-child = cache.fork_branch("parent", "candidate-1")
+child = cache.fork_branch("tree-1", "tree-1/branch-1")
 cache.extend(child.tree_id, unique_suffix_tokens)
 
 reaper = BranchReaper(kv_cache=cache)
 reaper.spawn(child.tree_id, [sys.executable, "-c", "import time; time.sleep(60)"])
-result = reaper.kill(child.tree_id)
+reaper.kill(child.tree_id)   # sequentially reaps process, then drops cache refs
 ```
 
-`BranchReaper.kill()` first signals and waits for the subprocess, then calls the
-cache's `kill(tree_id)`. The two steps share an ID but are sequential, not
-atomic. This example uses `TreeKVCache`; the patched SGLang API uses
-`create_agent_tree()`, `fork_branch()`, and `kill_tree()` instead.
+**Compatibility:** Python ≥ 3.10; Linux ≥ 5.4 for the `pidfd` reaper; SGLang @
+`40517b593b23870cf351a05a1d53e930cea6a58d` for the patch. Firecracker v1.7
+and an NVIDIA A10 on Modal are the measured environments, not a complete
+support matrix.
 
-## How the validated pieces work
+## How it works
 
-### Tree-keyed KV cache
+The intended runtime coordinates three lifetimes using one branch identity. In
+this repository they remain separate components:
 
-The SGLang patch adds `TreeRadixCache` on top of the existing `RadixCache` API.
-Branches in one tree share an `extra_key` namespace. A fork records the parent's
-token path and increments existing `lock_ref` pins; it does not copy KV slots.
-A kill drops the branch's pin and evicts pages that no live branch protects.
+1. **KV cache fork** — `patches/0001-sglang-tree-radix-cache.patch` adds
+   `TreeRadixCache` to SGLang. Children share the parent's existing KV slots and
+   pin the radix path through `lock_ref`; divergent suffixes get new slots.
+   `kill_tree()` releases the branch path. The patch also adds logical token
+   budgets, suffix reservations, demotion/promotion, invalidation, and
+   telemetry. These are direct cache APIs; no scheduler, model-runner, server,
+   or router currently calls them.
+2. **Sandbox fork** — `agentfork/sandbox/fc_bench.py` is a standalone
+   Firecracker full-snapshot/load benchmark. The file memory backend uses
+   `MAP_PRIVATE`, so clean pages can be shared and writes become private. The
+   recorded run used a ~76–83 ms parent pause window including snapshot creation
+   and a 2.1 ms p50 snapshot-load API time per child.
+3. **Process + reference-cache kill** — `agentfork/kill/reaper.py` supervises a
+   generic subprocess with Linux `pidfd`, waits for confirmed exit, then calls
+   the CPU cache's `kill(tree_id)`. The measured 0.53 ms p50 is this sequential
+   subprocess + reference-cache path, not Firecracker + GPU reclaim.
 
-The patch also implements per-tree token accounting, suffix reservations,
-branch demotion/promotion, explicit invalidation, and telemetry. These features
-have direct unit and allocator-level tests, but no scheduler or router currently
-calls them. Reservations and quotas are accounting/admission hooks; they do not
-reserve allocator slots by themselves.
+```
+Your control plane
+        │
+        ▼
+   coordinated branch ID
+   ├── TreeRadixCache patch    fork_branch / kill_tree / policy / telemetry
+   ├── Firecracker benchmark   snapshot / load / kill (standalone)
+   └── BranchReaper            pidfd process + CPU reference-cache kill
+```
 
-CUDA state is never passed through `fork(2)`. “CoW” here means multiple logical
-branches refer to the same paged KV slots until their token paths diverge.
-
-### Sandbox snapshot/restore
-
-`agentfork/sandbox/fc_bench.py` uses Firecracker's snapshot APIs directly. A
-full parent snapshot is loaded into separate Firecracker processes using the
-file memory backend. Firecracker maps that file with `MAP_PRIVATE`, so clean
-pages can be shared and writes become private pages.
-
-The measured benchmark used Firecracker v1.7 and 256 MiB CPU-only guests. The
-snapshot memory file must remain available for every restored VM's lifetime.
-The driver does not configure networking, disks beyond a read-only rootfs,
-identity regeneration, GPU access, or an agent workload inside the guest.
-
-### Process and cache reclaim
-
-`BranchReaper` launches a generic subprocess, obtains a pidfd, sends `SIGKILL`
-through `pidfd_send_signal`, waits with `waitid(P_PIDFD)`, and then drops the
-matching reference-cache entry. `PR_SET_PDEATHSIG` is used as a supervisor-death
-backstop. The current code does not use `CLONE_PIDFD_AUTOKILL`.
+CUDA state cannot be `fork(2)`-ed. The KV fork is logical CoW over shared paged
+KV slots, not an OS-level fork of GPU state. Independent agent trees use separate
+cache namespaces; only descendants of the same parent share that tree's prefix.
 
 ## Measured results
 
-These are recorded experiment results, not a production service benchmark.
-Hardware-dependent numbers are from the hosts described in
-[report/RESULTS.md](report/RESULTS.md).
+See [report/RESULTS.md](report/RESULTS.md) for the validation status, captured
+outputs, assumptions, and checks that fail or remain untested.
 
-| Result | Measurement | What it proves |
-|---|---|---|
-| CPU reference prefix reuse | 100% across a 10-way fork | Reference refcount and accounting semantics |
-| Patched SGLang cache on an A10 KV pool | 37k slots versus 357k with sharing disabled (**9.65×**); 10 create+extend operations in 22 ms; allocator returned to 0 | Patch can reuse and reclaim real GPU KV slots through SGLang's allocator |
-| Stock `sgl.Engine` prefix-cache baseline | 2,402–2,403 of 2,404 prompt tokens cached; 33 ms p50 sibling generation versus 9.07 s first request | Existing SGLang RadixAttention reuses identical prefixes; this path does **not** call the patch's branch APIs |
-| Process + CPU reference-cache kill | **0.53 ms p50 / 1.46 ms max**, 100 cycles | Sequential pidfd reap plus Python reference-cache reclaim on the measured host |
-| Supervisor crash injection | 0 surviving Python children in 50 × 5 cycles; 1.5 ms p50 | `PR_SET_PDEATHSIG` behavior for the tested subprocess workload |
-| Firecracker snapshot load | **2.1 ms p50** load API time per child; 25-way fanout in 150 ms | Standalone restore path on warm, CPU-only 256 MiB guests |
-| Firecracker page sharing | 117.7 MiB aggregate RSS versus 23.8 MiB PSS across 25 VMMs (**4.95×**) | Host page sharing in the measured idle-guest setup |
-| Patch size and tests | 299 implementation lines + 248 test lines; 17 test methods | Patch scope; test pass records are captured separately from this repo's test suite |
-| 10,000 logical branches | 0.95 s to fork; allocator unchanged until suffixes; 0.17 s to kill all | Patched cache metadata scaling on a CPU-backed SGLang allocator |
-| Tree controls | quotas, reservations, demotion/promotion, invalidation, telemetry exercised | Engine-local control semantics, not scheduler or multi-worker behavior |
+| Claim | Measured |
+|---|---|
+| CPU reference prefix reuse (10-way fanout) | **100%** of the parent prefix reused; independent trees remain isolated |
+| Patched cache on a real SGLang GPU pool (NVIDIA A10) | **9.65× vs an explicitly unshared allocation** (37k slots vs 357k), 10 create+extend operations in 22 ms, allocator back to 0 after kill-all |
+| Stock SGLang live-engine prefix-cache baseline | **2,402–2,403 of 2,404 tokens cached** per sibling; 33 ms p50 generation vs 9.07 s first request. This path does not invoke the patch's branch APIs |
+| Subprocess + CPU reference-cache kill | **0.53 ms p50 / 1.46 ms max**, 100 cycles on the recorded host |
+| Supervisor SIGKILLed (crash injection) | **0 surviving Python children** in 50×5 cycles; 1.5 ms p50 through `PR_SET_PDEATHSIG` |
+| Firecracker snapshot load | **2.1 ms p50 load API time/child**, 25-way fanout in 150 ms; full VMM teardown was 31 ms p50 |
+| Firecracker host-page sharing | RSS 117.7 MiB vs PSS 23.8 MiB across 25 idle VMMs → **4.95× RSS/PSS ratio** |
+| SGLang patch | **547 additive lines**: 299 implementation + 248 tests, with 17 test methods |
+| Scale: one prefix into 10,000 logical branches | **0.95 s (10.5k forks/s)** on a CPU-backed SGLang allocator; bulk kill of 10,001 in 0.17 s; allocator back to 0 |
+| Tree-native cache controls | Direct API checks cover budgets, reservations, demotion/promotion, invalidation, and telemetry; scheduler enforcement remains unimplemented |
 
-The 9.65× number is versus an intentionally unshared allocation, **not versus
-stock SGLang RadixAttention**. Stock SGLang already stores a shared cached prefix
-once. The corrected cost model therefore gives agentfork approximately 1.0×
-compute and 1.0× cache residency versus a well-run same-namespace self-hosted
-prefix cache. The proposed benefit over that baseline is lifecycle control and
-predictable ownership, not another 9.65× memory reduction.
+The 9.65× figure compares sharing with a deliberately unshared allocation, not
+with stock SGLang RadixAttention. Stock SGLang already stores an identical
+cached prefix once. The corrected cost model is therefore ~1.0× compute and
+~1.0× cache residency versus a well-run same-namespace self-hosted prefix cache.
+The proposed gain over that baseline is explicit ownership, pinning, policy,
+telemetry, and coordinated reclaim—not another 9.65× memory reduction.
 
-The provider comparison is token arithmetic using a 0.1× cached-read price and
-1.25× cache-write price. It is not based on measured invoices, latency, or HBM
-usage.
+Provider-cache comparisons are token arithmetic using a 0.1× cached-read price
+and 1.25× cache-write price, not measured invoices, latency, or HBM usage.
 
 ## Running benchmarks
-
-### Core Linux checks
 
 ```bash
 pytest -q
@@ -259,130 +191,66 @@ python demo/demo.py
 python -m agentfork.bench.kill_bench --cycles 100
 python -m agentfork.bench.crash_bench --cycles 50 --children 5
 python -m agentfork.bench.cost_model --children 10 --prefix 32000 --suffix 2000
+
+# SGLang direct-cache validation (run inside a patched SGLang environment):
+python patches/real_pool_validation.py
+python patches/scale_10k_branch_validation.py
+python patches/tree_native_features_validation.py
+
+# Firecracker (needs Linux, /dev/kvm, binary, guest kernel, and rootfs):
+python -m agentfork.sandbox.fc_bench --fc ./firecracker --kernel vmlinux --rootfs rootfs.ext4
+
+# GPU validation (needs Modal and a patched SGLang checkout):
+SGLANG_DIR=/path/to/sglang modal run modal_gpu_validation.py
 ```
 
-CI runs the repository test suite, Ruff, the demo, shorter kill/crash
-benchmarks, and the cost model on Python 3.10/Linux. It does not run SGLang,
-GPU, Modal, or Firecracker validation.
+CI runs Ruff, the repository tests, the demo, shorter kill/crash benchmarks, and
+the cost model on Python 3.10/Linux. It does not run SGLang, Modal, GPU, or
+Firecracker validation.
 
-### SGLang patch
+## Limitations
 
-The patch is pinned to public SGLang commit
-`40517b593b23870cf351a05a1d53e930cea6a58d`. Both files added by the patch are
-absent at that commit, and the imports it uses are present. Apply and test it in
-a separate SGLang checkout:
-
-```bash
-git checkout 40517b593b23870cf351a05a1d53e930cea6a58d
-git apply /path/to/agentfork/patches/0001-sglang-tree-radix-cache.patch
-pytest -q test/registered/unit/mem_cache/test_tree_radix_cache.py
-python /path/to/agentfork/patches/real_pool_validation.py
-python /path/to/agentfork/patches/scale_10k_branch_validation.py
-python /path/to/agentfork/patches/tree_native_features_validation.py
-```
-
-The three validation scripts require the patched SGLang environment and PyTorch.
-They use real SGLang pool/allocator classes on the CPU; “real pool” does not mean
-a running model server.
-
-### GPU validation
-
-```bash
-pip install modal
-SGLANG_DIR=/path/to/patched/sglang modal run modal_gpu_validation.py
-```
-
-This requires a Modal account and an SGLang checkout with the patch applied.
-The image currently starts from `lmsysorg/sglang:latest`, so reruns are not fully
-hermetic even though the mounted source is pinned.
-
-### Firecracker validation
-
-```bash
-python -m agentfork.sandbox.fc_bench \
-  --fc ./firecracker \
-  --kernel vmlinux \
-  --rootfs rootfs.ext4 \
-  --children 10
-```
-
-This requires Linux, `/dev/kvm`, a Firecracker binary, and compatible guest
-kernel/rootfs artifacts.
-
-## Limitations and unverified work
-
-### Integration
-
-- There is no unified production `fork()` implementation. Firecracker restore
-  and KV fork are separate operations that a control plane would coordinate.
-- There is no transaction, rollback, or crash-recovery protocol spanning the
-  sandbox and inference server. `BranchReaper.kill()` is sequential.
+- There is no unified production `fork()` API. Firecracker restore and KV fork
+  are separate operations, and `BranchReaper.kill()` is sequential rather than
+  transactional.
+- The SGLang patch is additive and pinned to one commit. It is not wired into
+  request scheduling, model execution, HTTP serving, tensor parallelism, or a
+  multi-worker router. The live-engine result above is a stock RadixAttention
+  baseline, not an end-to-end test of the patch.
+- Cache budgets and reservations are logical direct-API accounting hooks. They
+  do not reserve physical allocator slots until a scheduler uses them.
+- GPU validation uses one A10, a synthetic 2 GiB fp16 pool, and a Qwen3-0.6B
+  stock-engine baseline. 70B-class models, tensor/pipeline parallelism, mixed
+  workloads, allocator pressure, and scheduler contention are unmeasured.
+- Firecracker measurements use idle, CPU-only 256 MiB guests. Firecracker and GPU
+  inference have not been colocated or connected through an API proxy; guest
+  networking, identity handling, real agent readiness, and cold page faults can
+  change the results.
 - `TreeKVCache` and `BranchReaper` are single-controller reference components;
-  they do not synchronize concurrent callers.
-- There is no winner merge, durable artifact handoff, hibernation, migration,
-  or resume protocol.
-- The process reaper supervises `subprocess.Popen` children, not Firecracker
-  VMMs through the standalone `MicroVM` class.
-
-### Inference engine
-
-- The SGLang patch is additive and pinned to one commit. It is not upstreamed or
-  wired into SGLang request scheduling, model execution, HTTP serving, tensor
-  parallelism, or a multi-worker router.
-- The live `sgl.Engine` measurement exercises stock RadixAttention. End-to-end
-  requests carrying `tree_id`/`branch_id` through the patched cache remain
-  unvalidated.
-- GPU validation used one NVIDIA A10 and a synthetic 2 GiB fp16 KV pool. The
-  live baseline used Qwen3-0.6B. 70B-class models, tensor/pipeline parallelism,
-  mixed workloads, allocator pressure, and scheduler contention are unmeasured.
-- The 10k-branch and tree-control experiments use small CPU tensor shapes. They
-  validate metadata and allocator accounting, not 10k concurrent model
-  executions.
-- Quotas and reservations are cache-level token accounting. Without scheduler
-  integration they cannot prevent another caller from allocating first.
-
-### Sandbox and process lifecycle
-
-- Firecracker and GPU inference have not been colocated or connected through an
-  API proxy in these experiments.
-- Firecracker results use idle, CPU-only 256 MiB guests. A real agent, cold page
-  faults, writable disks, networking, and snapshot identity handling can change
-  latency and memory use. Full snapshot creation took 75–82 ms on the recorded
-  host in addition to the approximately 1 ms pause API call.
-- Full Firecracker process teardown was 31 ms p50 in the recorded run; the VMM
-  stopped at signal delivery, but teardown completed later.
-- `PR_SET_PDEATHSIG` was tested under crash injection, and the child rechecks
-  its parent PID after installing the signal. The implementation still uses
+  they do not synchronize concurrent callers. The reaper also uses
   `preexec_fn`, which Python warns is unsafe in threaded programs.
-- macOS and Windows cannot run the pidfd demo or reaper tests.
+- No winner merge, durable artifact handoff, hibernation, migration, or resume
+  protocol is implemented.
+- The observed workload-shape check failed on the available organic traces, and
+  those private traces are not included in the repository.
+- Provider-cache ratios are modeled rather than measured. The Modal image is
+  also based on `lmsysorg/sglang:latest`, so GPU reruns are not fully hermetic.
 
-### Evidence and economics
+## Why agentfork vs. alternatives
 
-- The observed workload-shape check failed: the available organic traces did not
-  show both fanout ≥ 8 and prompt-prefix fraction ≥ 0.2. Those private traces
-  are not included, so their exact census is not independently reproducible.
-- User-visible prompt text understates the full reusable prefix (system prompt,
-  tool schemas, repository context), but the size of that difference has not
-  been measured here.
-- Provider-cache comparisons use assumed public pricing ratios rather than
-  invoices. No end-to-end cost study includes orchestration, idle GPU capacity,
-  snapshot storage, or network traffic.
-- Captured benchmark outputs are in `report/RESULTS.md`, but not every original
-  environment or raw input is checked into the repo.
+Existing systems cover neighboring parts of the tree: fast sandbox snapshots,
+inference-session branching, shared-prefix caching, or KV movement. agentfork's
+target is one branch identity spanning sandbox state and explicit KV ownership.
+The current repository validates the pieces of that target but does not yet bind
+them into a production runtime.
 
-## Related systems
-
-These projects cover neighboring parts of the design. Their feature sets move
-quickly; this table describes the distinction relevant to this prototype, not a
-complete product comparison.
-
-| Project | Relevant capability | Remaining question for this prototype |
+| Project | What it covers | What remains for a fork-native agent runtime |
 |---|---|---|
-| [forkd](https://github.com/deeplethe/forkd), [Mitos](https://github.com/mitos-run/mitos) | microVM snapshot/fork and CoW memory | How to bind sandbox identity to inference KV ownership and reclaim |
-| [thaw](https://github.com/thaw-ai/thaw), [processfork](https://github.com/manav8498/processfork) | inference/session branching experiments | How to pair the inference branch with an isolated sandbox lifecycle |
-| [SGLang](https://github.com/sgl-project/sglang) RadixAttention, [vLLM](https://github.com/vllm-project/vllm) APC | automatic shared-prefix KV reuse | How to add explicit agent-tree identity, policy, and branch-scoped lifecycle controls |
-| [LMCache](https://github.com/LMCache/LMCache), [Mooncake](https://github.com/kvcache-ai/Mooncake), [Dynamo](https://github.com/ai-dynamo/dynamo) | KV movement, storage, and distributed serving | How tree ownership should compose with movement and routing |
-| **agentfork (this prototype)** | tree-aware cache patch, reference reaper, and separate sandbox benchmark | Production integration of all three pieces |
+| [forkd](https://github.com/deeplethe/forkd), [Mitos](https://github.com/mitos-run/mitos) | microVM snapshot/fork with CoW memory | Bind sandbox identity to inference KV ownership and reclaim |
+| [thaw](https://github.com/thaw-ai/thaw), [processfork](https://github.com/manav8498/processfork) | inference/session branching experiments | Pair the inference branch with an isolated sandbox lifecycle |
+| [SGLang](https://github.com/sgl-project/sglang) RadixAttention, [vLLM](https://github.com/vllm-project/vllm) APC | automatic shared-prefix KV reuse | Add explicit agent-tree ownership, branch policy, and sandbox coordination where required |
+| [LMCache](https://github.com/LMCache/LMCache), [Mooncake](https://github.com/kvcache-ai/Mooncake), [Dynamo](https://github.com/ai-dynamo/dynamo) | KV movement, storage, and distributed serving | Compose tree ownership with movement and routing |
+| **agentfork (this prototype)** | tree-aware SGLang patch, CPU reference cache/reaper, and separate Firecracker benchmark | Integrate all three paths behind one recoverable control-plane operation |
 
 ## License
 
