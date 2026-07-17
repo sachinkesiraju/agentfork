@@ -77,32 +77,35 @@ the work happens after the fork.
 
 ## Quickstart
 
+Requires Python 3.10 or newer. The demo also requires Linux 5.4 or newer.
+
 ```bash
+git clone https://github.com/sachinkesiraju/agentfork.git
+cd agentfork
+python -m venv .venv
+source .venv/bin/activate
 pip install -e ".[dev]"
-python demo/demo.py   # Linux, CPU-only reference demo
-pytest -q             # non-Linux hosts skip pidfd integration tests
+python demo/demo.py
 ```
 
-The demo does not run a model or a microVM: integer token IDs stand in for KV
-cache entries, and sleeping Python processes stand in for sandboxes. One
-parent owns a 32k-token prefix; ten children share it with no re-prefill, add
-their own suffixes, and are then killed, ending with zero live trees and zero
-resident cache tokens.
+The CPU-only demo forks a 32k-token parent into ten branches, kills the losing
+branches, and verifies that no processes or cache entries leak. It uses token
+IDs and sleeping processes, so it does not need a model, GPU, or microVM. A
+successful run ends with `CLEAN`.
 
-The same lifecycle through the Python API:
+Minimal Python API:
 
 ```python
 import sys
 
 from agentfork import ForkOrchestrator, ReaperSandbox
 
-prefix_tokens = list(range(32_000))
 sandbox = ReaperSandbox([sys.executable, "-c", "import time; time.sleep(60)"])
 
 with ForkOrchestrator(sandbox=sandbox, registry_path="branches.json",
                       default_lease_s=600) as orch:
-    orch.create_parent("parent", tokens=prefix_tokens)
-    children = orch.fork("parent", n=10)
+    orch.create_parent("parent", tokens=list(range(32_000)))
+    children = orch.fork("parent", n=3)
 
     for i, child in enumerate(children):
         start = 1_000_000 + i * 500
@@ -111,15 +114,8 @@ with ForkOrchestrator(sandbox=sandbox, registry_path="branches.json",
     orch.kill_losers(children[0].branch_id)
 ```
 
-`kill_losers()` keeps the winner and its ancestors, then calls `kill()` on
-every other branch: `kill()` reaps a branch's sandbox, then its KV state, then
-drops its registry record. `reconcile()` retries work a failed or crashed
-supervisor left behind. `agentfork.*` is the stable public surface from 0.2.0
-onward; submodule internals are not.
-
-**Compatibility:** Python ≥ 3.10; Linux ≥ 5.4 for the `pidfd` reaper; SGLang @
-`40517b593b23870cf351a05a1d53e930cea6a58d` for the patch. Firecracker v1.7 and
-an NVIDIA A10 on Modal are the measured environments.
+`kill_losers()` keeps the selected branch and its ancestors and cleans up every
+other branch. Run `pytest -q` to execute the test suite.
 
 ## How it works
 
