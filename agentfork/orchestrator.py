@@ -90,13 +90,17 @@ class ReaperSandbox:
 
     Every branch runs the same argv template. The reaper is used purely for
     process lifecycle; the orchestrator owns the KV half separately.
+    ``pdeathsig`` is forwarded to the default ``BranchReaper`` (ignored when
+    an explicit ``reaper`` is injected); pass ``False`` under threaded
+    supervisors.
     """
 
-    def __init__(self, argv: list[str], reaper: BranchReaper | None = None):
+    def __init__(self, argv: list[str], reaper: BranchReaper | None = None,
+                 pdeathsig: bool = True):
         if not argv:
             raise ValueError("argv must not be empty")
         self.argv = list(argv)
-        self.reaper = reaper or BranchReaper()
+        self.reaper = reaper or BranchReaper(pdeathsig=pdeathsig)
 
     def spawn(self, branch_id: str, parent_id: str | None) -> None:
         self.reaper.spawn(branch_id, self.argv)
@@ -181,11 +185,14 @@ class ForkOrchestrator:
         fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
+        except BlockingIOError:
             os.close(fd)
             raise RuntimeError(
                 f"registry {self.registry_path} is owned by another "
                 f"orchestrator (lock: {lock_path})") from None
+        except OSError:
+            os.close(fd)
+            raise
         self._registry_lock_fd = fd
 
     def _release_registry_lock(self) -> None:

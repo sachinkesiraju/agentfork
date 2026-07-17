@@ -106,3 +106,10 @@ def test_closing_after_failed_kill_still_releases_ownership(tmp_path):
 def test_reaper_pdeathsig_flag():
     assert BranchReaper().pdeathsig is True
     assert BranchReaper(pdeathsig=False).pdeathsig is False
+
+
+def test_reaper_sandbox_forwards_pdeathsig():
+    from agentfork import ReaperSandbox
+
+    assert ReaperSandbox(["true"]).reaper.pdeathsig is True
+    assert ReaperSandbox(["true"], pdeathsig=False).reaper.pdeathsig is False
