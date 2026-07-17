@@ -71,36 +71,55 @@ need a production-ready hibernate/migrate/resume system. No hibernation,
 checkpoint migration, winner merge, or durable artifact protocol is implemented
 here.
 
-## The target lifecycle
+## Example: tree-style agent fanout
 
-A fork-native agent workflow looks like this:
+Consider the strongest case for a fork-native runtime: a coding agent has spent
+most of its budget getting to a good branch point. It has read a large
+repository, loaded tool schemas and issue history, reproduced the bug, prepared
+a working build environment, and narrowed the failure to a few plausible
+causes. That shared state is expensive; each candidate fix is comparatively
+cheap.
 
-1. The parent reaches a branch point with a warm sandbox and KV prefix.
-2. The control plane restores or creates N sandboxes and calls
-   `fork_branch()` N times under one tree namespace.
-3. Each branch reuses the parent's cached prefix and allocates only its unique
-   suffix.
-4. The control plane scores branches and calls `kill()` on the losers.
-5. Application-specific code persists or merges the winner's output.
+A completed agentfork integration could run the search as a tree:
+
+1. **Warm the root once.** The parent holds the analyzed repository context in
+   KV and a ready-to-test checkout in its sandbox.
+2. **Fan out strategies.** Fork 12 children from that exact point. Each child
+   explores a materially different fix while sharing the parent's KV prefix and
+   initial filesystem state.
+3. **Prune early.** Run formatting, compilation, focused unit tests, and a cheap
+   critic. Kill failures immediately instead of carrying all 12 branches into
+   expensive evaluation.
+4. **Fork the survivors again.** If two candidates remain, branch each into
+   targeted verification children: adversarial tests, race detection,
+   performance checks, and independent code review. These grandchildren inherit
+   both the root context and their candidate's additional reasoning and sandbox
+   changes.
+5. **Keep one result.** Run the full suite only on finalists, export the winning
+   patch and tests, and reclaim every other process and cache branch. Persisting
+   or merging that winner is application-specific.
 
 ![agentfork lifecycle: fork a live agent, race the branches, kill the losers](docs/img/lifecycle.svg)
 
-For N branches, the idealized work changes from
+The important part is the second fanout. A flat prefix cache can reuse the
+original repository prompt, but it does not by itself model ownership of the
+candidate-specific context, keep that subtree pinned under a budget, or give the
+orchestrator one branch identity to cancel across sandbox and KV state. In the
+intended runtime, every edge pays only for the work added after its parent:
 
 ```text
-N × (shared parent work + unique branch work)
+root work + sum(unique work on each explored edge)
 ```
 
-to
+rather than independently replaying the full root-to-leaf history for every
+leaf. The advantage is largest when shared setup is long, branches are numerous
+and short, verification rejects most candidates early, and promising branches
+fan out recursively. It shrinks when fanout is small, branches do most of their
+work after diverging, or ordinary RadixAttention already provides all the
+lifecycle behavior the application needs.
 
-```text
-shared parent work + N × unique branch work
-```
-
-Stock prefix caches can already achieve much of the compute and physical KV
-reuse for identical prefixes. The patch in this repo is about adding explicit
-tree/branch identity, pinning, quotas, reservations, demotion, invalidation,
-telemetry, and branch-scoped reclaim.
+This repository validates the component operations behind that example; it does
+not yet provide the orchestrator that executes the workflow end to end.
 
 ## Quickstart
 
