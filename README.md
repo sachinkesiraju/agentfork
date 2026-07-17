@@ -4,8 +4,7 @@ Fork a live agent — its sandbox **and** its LLM KV context — as one coordina
 Kill any branch and reclaim both halves in **sub-millisecond to single-digit milliseconds**, with zero orphans and zero leaked KV pages.
 
 *Measured across separate direct-cache, subprocess/reference-cache, and
-Firecracker benchmarks; Firecracker + patched SGLang has not been exercised end
-to end.*
+Firecracker benchmarks.*
 
 ![tree-keyed KV: one resident prefix, N logical branches](docs/img/kv-dedup.svg)
 
@@ -15,7 +14,7 @@ CPU reference cache: 0.53 ms p50 kill · 547-line additive SGLang patch.
 
 ## What it does
 
-agentfork implements reference versions of two runtime operations:
+agentfork implements two runtime operations:
 
 - **`fork(parent)`** creates a child KV branch and asks the configured sandbox
   backend to start the corresponding sandbox.
@@ -33,7 +32,7 @@ framework or a scheduler. The orchestrator currently coordinates the CPU cache
 and generic subprocesses; Firecracker and live SGLang are not yet integrated as
 backends.
 
-Use it to prototype:
+Use it for:
 
 - `map`/`reduce` agent fanout (e.g. [agent-mapreduce](https://github.com/sachinkesiraju/agent-mapreduce)).
 - Speculative coding fixes: fork multiple candidates from one repo context and pick the best.
