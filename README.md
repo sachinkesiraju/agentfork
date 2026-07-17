@@ -189,14 +189,12 @@ the checks that fail or remain untested.
 | 10,000-branch cache test | 0.95 s to create branches and 0.17 s to bulk-kill them; allocator back to 0; this tests cache metadata, not concurrent inference |
 | Tree-native cache controls | Direct API tests cover budgets, reservations, demotion, invalidation, and telemetry; the scheduler does not enforce them |
 
-**9.65× means 37k KV slots with sharing versus 357k without in the
-[10-child GPU-pool test](patches/real_pool_validation.py).** It is not a gain
-over stock SGLang, which already shares cached prefixes; the patch adds explicit
-branch lifecycle controls.
+In the [10-child GPU test](patches/real_pool_validation.py), sharing reduced KV
+usage from 357k slots to 37k. Stock SGLang already shares cached prefixes, so
+agentfork adds branch tracking and cleanup—not lower memory use.
 
-**The provider-cache comparison is a pricing model, not a measurement.** It
-assumes cached reads cost 0.1× normal input tokens and cache writes cost
-1.25×. It does not measure real invoices, latency, or provider memory use.
+Provider-cache numbers are estimates based on assumed prices, not real-world
+measurements.
 
 ## Running benchmarks
 
