@@ -14,18 +14,20 @@ additive SGLang patch.
 
 ## What it does
 
-agentfork implements two runtime operations:
+agentfork implements two runtime operations, both given the same branch ID by
+`ForkOrchestrator`:
 
 - **`fork(parent)`** creates a child that shares the parent's cached context and
   runs in its own sandbox.
 - **`kill(child)`** stops the sandbox and releases the child's KV state.
 
-`ForkOrchestrator` gives both halves the same branch ID. The reference
-implementation uses `TreeKVCache`, a CPU model of the KV cache, and
-`ReaperSandbox`, fresh subprocesses supervised through `pidfd`. The SGLang
-cache patch and the Firecracker snapshot benchmark are tested separately and
-are not connected to the orchestrator yet. agentfork is not an agent framework
-or a scheduler.
+It is not an agent framework or a scheduler: it does not decide what an agent
+does, only how a branch of it is created and torn down.
+
+The reference backends, `TreeKVCache` and `ReaperSandbox`, run today. The
+SGLang cache patch and the Firecracker snapshot benchmark are validated
+separately and not yet wired into the orchestrator; see "How it works" below
+for the mechanism.
 
 Use it for:
 
@@ -34,7 +36,7 @@ Use it for:
 - Verification trees that run cheap checks first and kill branches before the
   expensive ones.
 - Search and planning agents that fork several next steps from the same state.
-- Evaluations that reuse one prepared context across policies or seeds.
+- Evaluations that reuse one cached context across policies or seeds.
 
 ## Example: tree-style agent fanout
 
