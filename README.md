@@ -95,14 +95,17 @@ python demo/demo.py   # Linux, CPU-only reference fork/race/kill demo
 pytest -q             # non-Linux hosts skip pidfd integration tests
 ```
 
-`demo.py` creates a synthetic 32k-token parent in the CPU reference cache,
-forks 10 branches (0 re-prefill, 11× KV dedup before divergence and 9× after),
-lets one win, kills the rest, and ends with 0 resident reference-cache tokens
-and 0 live trees. It does not run a real LLM or Firecracker guest.
+`demo.py` exercises the lifecycle without a model or microVM. Integer token IDs
+stand in for KV-cache tensors, and each sandbox is a sleeping Python subprocess.
+One parent owns a 32k-token prefix; 10 children reference that same prefix without
+copying or re-prefilling it. That is 11 logical copies backed by one resident
+prefix (11× dedup). After every child adds a distinct 800-token suffix, the ratio
+falls to 9× because those suffixes cannot be shared. The demo picks a winner,
+kills every branch and the parent, and verifies that no reference-cache tokens or
+tree records remain.
 
-The same reference lifecycle in Python (`agentfork.*` is the stable public
-surface from 0.2.0; submodule internals are not covered by semantic
-versioning):
+The supported Python API is exported directly from `agentfork` starting in
+v0.2.0:
 
 ```python
 import sys
