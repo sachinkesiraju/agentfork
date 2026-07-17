@@ -221,7 +221,7 @@ around. agentfork explores one branch identity spanning sandbox state and
 explicit KV ownership. This repository validates the pieces of that design but
 does not yet integrate them into a production runtime.
 
-| Project | What it covers | Remaining work |
+| Project | What it covers | The missing piece |
 |---|---|---|
 | [forkd](https://github.com/deeplethe/forkd), [Mitos](https://github.com/mitos-run/mitos) | microVM fork with CoW | Bind sandbox identity to inference KV ownership and reclaim |
 | [thaw](https://github.com/thaw-ai/thaw), [processfork](https://github.com/manav8498/processfork) | inference/session branching experiments | Pair the inference branch with an isolated sandbox lifecycle |
