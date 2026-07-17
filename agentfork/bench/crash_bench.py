@@ -46,7 +46,12 @@ def _alive(pid: int) -> bool:
 
 
 def run(cycles: int, n_children: int) -> dict:
+    if cycles < 1:
+        raise ValueError("cycles must be at least 1")
+    if n_children < 1:
+        raise ValueError("n_children must be at least 1")
     orphans_total = 0
+    timed_out_cycles = 0
     reap_times = []
     for _ in range(cycles):
         r, w = os.pipe()
@@ -68,17 +73,31 @@ def run(cycles: int, n_children: int) -> dict:
             if time.monotonic() > deadline:
                 break
             time.sleep(0.001)
-        reap_times.append(time.perf_counter() - t0)
-        orphans_total += sum(1 for p in child_pids if _alive(p))
+        alive_pids = [p for p in child_pids if _alive(p)]
+        orphans_total += len(alive_pids)
+        if alive_pids:
+            timed_out_cycles += 1
+            for pid in alive_pids:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        else:
+            reap_times.append(time.perf_counter() - t0)
+
     def pct(v, q):
         return round(sorted(v)[min(int(q * len(v)), len(v) - 1)] * 1000, 2)
+    timings = None
+    if reap_times:
+        timings = {"p50": pct(reap_times, 0.5),
+                   "p95": pct(reap_times, 0.95),
+                   "max": round(max(reap_times) * 1000, 2)}
     return {
         "cycles": cycles,
         "children_per_cycle": n_children,
         "orphans": orphans_total,
-        "kernel_reap_ms": {"p50": pct(reap_times, 0.5),
-                           "p95": pct(reap_times, 0.95),
-                           "max": round(max(reap_times) * 1000, 2)},
+        "timed_out_cycles": timed_out_cycles,
+        "kernel_reap_ms": timings,
     }
 
 

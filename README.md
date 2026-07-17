@@ -14,7 +14,7 @@ request**.
 **Selected experimental results:** 22 ms to create and extend 10 branches on a
 patched SGLang allocator backed by an NVIDIA A10 · 0.53 ms p50 to reap a Python
 child process and its CPU reference-cache entry · 9.65× KV-slot reduction versus
-an explicitly unshared baseline · 524 additive lines in the SGLang patch,
+an explicitly unshared baseline · 547 additive lines in the SGLang patch,
 including tests. See [Measured results](#measured-results) for the scope behind
 each number.
 
@@ -110,7 +110,7 @@ Requirements for the full demo and test suite:
 ```bash
 python3 -m venv .venv
 . .venv/bin/activate
-pip install -e . pytest ruff
+pip install -e ".[dev]"
 ruff check agentfork tests
 pytest -q
 python demo/demo.py
@@ -212,7 +212,7 @@ Hardware-dependent numbers are from the hosts described in
 | Supervisor crash injection | 0 surviving Python children in 50 × 5 cycles; 1.5 ms p50 | `PR_SET_PDEATHSIG` behavior for the tested subprocess workload |
 | Firecracker snapshot load | **2.1 ms p50** load API time per child; 25-way fanout in 150 ms | Standalone restore path on warm, CPU-only 256 MiB guests |
 | Firecracker page sharing | 117.7 MiB aggregate RSS versus 23.8 MiB PSS across 25 VMMs (**4.95×**) | Host page sharing in the measured idle-guest setup |
-| Patch size and tests | 279 implementation lines + 245 test lines; 17 test methods | Patch scope; test pass records are captured separately from this repo's 11-test CI suite |
+| Patch size and tests | 299 implementation lines + 248 test lines; 17 test methods | Patch scope; test pass records are captured separately from this repo's test suite |
 | 10,000 logical branches | 0.95 s to fork; allocator unchanged until suffixes; 0.17 s to kill all | Patched cache metadata scaling on a CPU-backed SGLang allocator |
 | Tree controls | quotas, reservations, demotion/promotion, invalidation, telemetry exercised | Engine-local control semantics, not scheduler or multi-worker behavior |
 
@@ -239,9 +239,9 @@ python -m agentfork.bench.crash_bench --cycles 50 --children 5
 python -m agentfork.bench.cost_model --children 10 --prefix 32000 --suffix 2000
 ```
 
-CI runs 11 repository tests, Ruff, the demo, shorter kill/crash benchmarks, and
-the cost model on Python 3.10/Linux. It does not run SGLang, GPU, Modal, or
-Firecracker validation.
+CI runs the repository test suite, Ruff, the demo, shorter kill/crash
+benchmarks, and the cost model on Python 3.10/Linux. It does not run SGLang,
+GPU, Modal, or Firecracker validation.
 
 ### SGLang patch
 
@@ -295,6 +295,8 @@ kernel/rootfs artifacts.
   and KV fork are separate operations that a control plane would coordinate.
 - There is no transaction, rollback, or crash-recovery protocol spanning the
   sandbox and inference server. `BranchReaper.kill()` is sequential.
+- `TreeKVCache` and `BranchReaper` are single-controller reference components;
+  they do not synchronize concurrent callers.
 - There is no winner merge, durable artifact handoff, hibernation, migration,
   or resume protocol.
 - The process reaper supervises `subprocess.Popen` children, not Firecracker
@@ -327,10 +329,9 @@ kernel/rootfs artifacts.
   host in addition to the approximately 1 ms pause API call.
 - Full Firecracker process teardown was 31 ms p50 in the recorded run; the VMM
   stopped at signal delivery, but teardown completed later.
-- `PR_SET_PDEATHSIG` was tested under crash injection, but the implementation
-  does not close every race around child setup and has not been hardened for
-  threaded supervisors. Python also warns against `preexec_fn` in threaded
-  programs.
+- `PR_SET_PDEATHSIG` was tested under crash injection, and the child rechecks
+  its parent PID after installing the signal. The implementation still uses
+  `preexec_fn`, which Python warns is unsafe in threaded programs.
 - macOS and Windows cannot run the pidfd demo or reaper tests.
 
 ### Evidence and economics

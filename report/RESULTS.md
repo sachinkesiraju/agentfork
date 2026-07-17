@@ -11,7 +11,7 @@ environments are not checked in are labeled below.
 
 | Check | Target | Measured | Verdict |
 |---|---|---|---|
-| SGLang patch size | ≤ 1.5 kLOC | **524 LOC** (additive: `tree_radix_cache.py` 279 + unit tests 245; incl. quotas/reservations/demotion/invalidation/telemetry) | PASS |
+| SGLang patch size | ≤ 1.5 kLOC | **547 LOC** (additive: `tree_radix_cache.py` 299 + unit tests 248; incl. quotas/reservations/demotion/invalidation/telemetry) | PASS |
 | Existing SGLang radix tests unaffected | no new failures | 26 pass / 7 fail **before and after** (all 7 pre-existing env failures: missing `-lcrypto` for HiCache cpp hash ext; `torch.cpu.memory_allocated` on CPU-only torch) | PASS |
 | Prefix reuse on 10-way fanout | ≥ 90% | **100%** — every sibling hits the full parent prefix in the SGLang `TreeRadixCache` unit test and CPU reference test. The previously quoted 320,063/39,937 run is omitted because its raw output is not checked in. | PASS |
 | Parent pause during fork | < 100 ms p50 | **~76–83 ms total recorded pause window**: ~1 ms pause API call followed by 75–82 ms full snapshot creation while the parent remains paused | PASS |
@@ -29,7 +29,7 @@ environments are not checked in are labeled below.
 
 ## Tree-native requirements matrix (10k-branch router shape)
 
-What the current SGLang patch (`TreeRadixCache`, 279 implementation lines plus
+What the current SGLang patch (`TreeRadixCache`, 299 implementation lines plus
 tests) covers of the tree-native requirement list. Status refers to the direct
 cache API unless the notes say otherwise:
 
@@ -116,9 +116,9 @@ needs an end-to-end trace from an actual fanout workload.
   accounting, not scheduler-enforced physical HBM reservations.
 - **Provider economics:** ratios use assumed cached-read/write prices rather
   than measured bills, latency, or total infrastructure cost.
-- **Crash hardening:** `PR_SET_PDEATHSIG` passed the recorded injection test, but
-  the implementation still uses `preexec_fn` and does not eliminate every
-  setup race in a threaded production supervisor.
+- **Crash hardening:** `PR_SET_PDEATHSIG` passed the recorded injection test and
+  the child now rechecks its parent PID after setup, but the implementation still
+  uses `preexec_fn`, which is unsafe in threaded supervisors.
 
 ## Raw benchmark outputs
 

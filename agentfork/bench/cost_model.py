@@ -32,6 +32,16 @@ class Scenario:
     provider_cached_discount: float = 0.1
     provider_write_mult: float = 1.25
 
+    def __post_init__(self) -> None:
+        if self.n_children < 1:
+            raise ValueError("n_children must be at least 1")
+        if self.prefix_tokens < 0 or self.suffix_tokens < 0:
+            raise ValueError("token counts must be nonnegative")
+        if self.prefix_tokens + self.suffix_tokens == 0:
+            raise ValueError("prefix_tokens and suffix_tokens cannot both be zero")
+        if self.provider_cached_discount < 0 or self.provider_write_mult < 0:
+            raise ValueError("provider price multipliers must be nonnegative")
+
 
 def model(s: Scenario) -> dict:
     n, p, u = s.n_children, s.prefix_tokens, s.suffix_tokens
@@ -54,7 +64,7 @@ def model(s: Scenario) -> dict:
     out["compute_gain_vs_independent"] = round(independent["prefill_charged"] / af, 2)
     out["compute_gain_vs_provider"] = round(provider["prefill_charged"] / af, 2)
     out["compute_gain_vs_self_hosted"] = round(self_hosted["prefill_charged"] / af, 2)
-    out["hbm_gain_vs_self_hosted"] = round(
+    out["cache_residency_gain_vs_self_hosted"] = round(
         self_hosted["resident"] / agentfork["resident"], 2)
     return out
 

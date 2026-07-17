@@ -20,6 +20,10 @@ from agentfork.kv.tree_cache import TreeKVCache
 
 
 def run(cycles: int, prefix_tokens: int, suffix_tokens: int) -> dict:
+    if cycles < 1:
+        raise ValueError("cycles must be at least 1")
+    if prefix_tokens < 0 or suffix_tokens < 0:
+        raise ValueError("token counts must be nonnegative")
     kv = TreeKVCache()
     kv.create_tree("parent")
     kv.extend("parent", list(range(prefix_tokens)))

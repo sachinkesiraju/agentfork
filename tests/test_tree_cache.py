@@ -42,6 +42,30 @@ def test_ten_way_fanout_prefix_reuse():
     assert s.dedup_ratio > 5.0
 
 
+def test_independent_trees_do_not_share_prefixes():
+    kv = TreeKVCache()
+    shared = toks("SAME-PREFIX")
+    kv.create_tree("a")
+    kv.create_tree("b")
+
+    assert kv.extend("a", shared) == len(shared)
+    assert kv.match_tree_prefix("b", shared) == 0
+    assert kv.extend("b", shared) == len(shared)
+    assert kv.resident_tokens() == 2 * len(shared)
+
+
+def test_forked_branches_share_one_namespace():
+    kv = TreeKVCache()
+    shared = toks("SHARED")
+    kv.create_tree("parent")
+    kv.extend("parent", shared)
+    child = kv.fork_branch("parent", "child")
+
+    assert child.namespace == "parent"
+    assert kv.match_tree_prefix("child", shared) == len(shared)
+    assert kv.resident_tokens() == len(shared)
+
+
 def test_kill_frees_only_unshared_pages():
     kv = TreeKVCache()
     kv.create_tree("p")
@@ -53,7 +77,7 @@ def test_kill_frees_only_unshared_pages():
     assert freed == len("child-only-suffix")
     assert kv.resident_tokens() == before - freed
     # parent prefix still matchable
-    assert kv.match_prefix(toks("SHARED" * 50)) == 300
+    assert kv.match_tree_prefix("p", toks("SHARED" * 50)) == 300
 
 
 def test_kill_last_owner_frees_whole_path():
@@ -65,17 +89,18 @@ def test_kill_last_owner_frees_whole_path():
     assert kv.kill("p") == 0  # idempotent
 
 
-def test_eviction_spares_pinned_trees():
+def test_kill_releases_capacity_without_disturbing_other_trees():
     kv = TreeKVCache(capacity_tokens=1000)
     kv.create_tree("live")
     kv.extend("live", toks("L" * 400))
-    kv.create_tree("dead")
-    kv.extend("dead", toks("D" * 400))
-    kv.kill("dead")  # now unreferenced -> evictable
+    kv.create_tree("temporary")
+    kv.extend("temporary", toks("T" * 400))
+
+    assert kv.kill("temporary") == 400
     kv.create_tree("new")
-    kv.extend("new", toks("N" * 500))  # forces eviction of dead pages
-    assert kv.match_prefix(toks("L" * 400)) == 400  # pinned tree survived
-    assert kv.stats.evicted_tokens >= 0
+    assert kv.extend("new", toks("N" * 500)) == 500
+    assert kv.match_tree_prefix("live", toks("L" * 400)) == 400
+    assert kv.resident_tokens() == 900
 
 
 def test_pinned_capacity_exhaustion_raises_not_deadlocks():
@@ -94,6 +119,26 @@ def test_per_tree_budget_enforced():
     kv.create_tree("t")
     with pytest.raises(MemoryError):
         kv.extend("t", toks("X" * 200))
+
+
+def test_per_tree_budget_covers_all_branches():
+    kv = TreeKVCache(per_tree_budget=10)
+    kv.create_tree("p")
+    kv.extend("p", toks("BASE"))
+    kv.fork_branch("p", "a")
+    kv.fork_branch("p", "b")
+    kv.extend("a", toks("AAA"))
+
+    with pytest.raises(MemoryError):
+        kv.extend("b", toks("BBBB"))
+    assert kv.resident_tokens() == 7
+
+
+def test_negative_limits_are_rejected():
+    with pytest.raises(ValueError):
+        TreeKVCache(capacity_tokens=-1)
+    with pytest.raises(ValueError):
+        TreeKVCache(per_tree_budget=-1)
 
 
 def test_refcount_no_leak_over_fork_kill_cycles():

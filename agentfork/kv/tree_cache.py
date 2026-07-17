@@ -10,12 +10,11 @@ A CPU-side reference implementation of the cache semantics the SGLang patch
   child pays zero prefill for the shared prefix;
 - ``kill(tree_id)`` drops every reference the tree holds and frees pages whose
   refcount reaches zero — the engine-side half of the pidfd kill path;
-- eviction respects pinned live trees but enforces a per-tree page budget so a
-  pinned tree can never deadlock the allocator.
+- eviction respects pinned live trees and enforces a per-tree token budget.
 
-Pages are the unit of accounting (one page = ``page_size`` tokens of KV).
-The structure mirrors SGLang's refcounted radix tree; token ids stand in for
-KV tensors so the semantics are testable without a GPU.
+Tokens are the unit of accounting in this reference model. The structure mirrors
+SGLang's refcounted radix tree; token ids stand in for KV tensors so the
+semantics are testable without a GPU.
 """
 
 from __future__ import annotations
@@ -30,6 +29,7 @@ class TreeId:
     tree_id: str
     parent_id: str | None = None
     child_seq: int = 0
+    namespace: str = ""
 
 
 class _Node:
@@ -64,6 +64,10 @@ class TreeKVCache:
 
     def __init__(self, capacity_tokens: int = 1_000_000,
                  per_tree_budget: int | None = None):
+        if capacity_tokens < 0:
+            raise ValueError("capacity_tokens must be nonnegative")
+        if per_tree_budget is not None and per_tree_budget < 0:
+            raise ValueError("per_tree_budget must be nonnegative")
         self.root = _Node((), None)
         self.capacity = capacity_tokens
         self.per_tree_budget = per_tree_budget
@@ -77,9 +81,10 @@ class TreeKVCache:
     def create_tree(self, tree_id: str) -> TreeId:
         if tree_id in self.trees:
             raise ValueError(f"tree exists: {tree_id}")
-        tid = TreeId(tree_id)
+        tid = TreeId(tree_id, namespace=tree_id)
         self.trees[tree_id] = tid
         self._tree_tokens[tree_id] = []
+        self.root.children[tree_id] = _Node((), self.root)
         return tid
 
     def fork_branch(self, parent_id: str, child_id: str | None = None) -> TreeId:
@@ -90,12 +95,14 @@ class TreeKVCache:
         child_id = child_id or f"{parent_id}/{seq}"
         if child_id in self.trees:
             raise ValueError(f"tree exists: {child_id}")
-        tid = TreeId(child_id, parent_id=parent_id, child_seq=seq)
+        namespace = self.trees[parent_id].namespace
+        tid = TreeId(child_id, parent_id=parent_id, child_seq=seq,
+                     namespace=namespace)
         self.trees[child_id] = tid
         parent_tokens = list(self._tree_tokens[parent_id])
         self._tree_tokens[child_id] = list(parent_tokens)
         # bump refcounts along the parent's cached path — no data copied
-        node = self.root
+        node = self.root.children[namespace]
         matched = 0
         while matched < len(parent_tokens):
             nxt = node.children.get(parent_tokens[matched])
@@ -118,7 +125,8 @@ class TreeKVCache:
         if tree_id not in self.trees:
             return 0
         freed = 0
-        node = self.root
+        namespace = self.trees[tree_id].namespace
+        node = self.root.children[namespace]
         tokens = self._tree_tokens.pop(tree_id)
         path: list[_Node] = []
         matched = 0
@@ -138,6 +146,8 @@ class TreeKVCache:
                 self.stats.resident_tokens -= len(n.tokens)
         self.stats.logical_tokens -= len(tokens)
         del self.trees[tree_id]
+        if not any(t.namespace == namespace for t in self.trees.values()):
+            del self.root.children[namespace]
         return freed
 
     # -- extend / lookup ----------------------------------------------------
@@ -147,15 +157,16 @@ class TreeKVCache:
         (i.e. not already cached along this tree's path — the CoW miss)."""
         if tree_id not in self.trees:
             raise KeyError(f"no such tree: {tree_id}")
-        if self.per_tree_budget is not None:
-            used = len(self._tree_tokens[tree_id])
-            if used + len(tokens) > self.per_tree_budget:
-                raise MemoryError(
-                    f"tree {tree_id} exceeds budget {self.per_tree_budget}")
+        namespace = self.trees[tree_id].namespace
         seq = self._tree_tokens[tree_id]
         full = seq + tokens
-        node, matched = self._walk(full)
+        node, matched = self._walk(full, namespace)
         charged = len(full) - matched
+        if (self.per_tree_budget is not None
+                and self._namespace_tokens(namespace) + charged
+                > self.per_tree_budget):
+            raise MemoryError(
+                f"tree {namespace} exceeds budget {self.per_tree_budget}")
         # insert the uncached suffix as a new node chain owned by this tree
         pos = matched
         if pos < len(full):
@@ -165,7 +176,7 @@ class TreeKVCache:
             node.children[full[pos]] = new
             self.stats.resident_tokens += len(new.tokens)
         # ensure this tree holds refs on the whole path (idempotent)
-        self._add_refs(full, tree_id)
+        self._add_refs(full, tree_id, namespace)
         self.stats.logical_tokens += len(tokens)
         self.stats.prefill_tokens_charged += charged
         self.stats.prefill_tokens_saved += len(tokens) - charged if charged < len(tokens) else 0
@@ -173,7 +184,13 @@ class TreeKVCache:
         return charged
 
     def match_prefix(self, tokens: list[int]) -> int:
-        _, matched = self._walk(tokens)
+        return max((self._walk(tokens, namespace)[1]
+                    for namespace in self.root.children), default=0)
+
+    def match_tree_prefix(self, tree_id: str, tokens: list[int]) -> int:
+        if tree_id not in self.trees:
+            raise KeyError(f"no such tree: {tree_id}")
+        _, matched = self._walk(tokens, self.trees[tree_id].namespace)
         return matched
 
     def resident_tokens(self) -> int:
@@ -181,8 +198,8 @@ class TreeKVCache:
 
     # -- internals -----------------------------------------------------------
 
-    def _walk(self, tokens: list[int]) -> tuple[_Node, int]:
-        node, matched = self.root, 0
+    def _walk(self, tokens: list[int], namespace: str) -> tuple[_Node, int]:
+        node, matched = self.root.children[namespace], 0
         while matched < len(tokens):
             nxt = node.children.get(tokens[matched])
             if nxt is None:
@@ -212,8 +229,8 @@ class TreeKVCache:
         node.parent = head
         head.children[tail_tokens[0]] = node
 
-    def _add_refs(self, tokens: list[int], tree_id: str) -> None:
-        node, matched = self.root, 0
+    def _add_refs(self, tokens: list[int], tree_id: str, namespace: str) -> None:
+        node, matched = self.root.children[namespace], 0
         while matched < len(tokens):
             nxt = node.children.get(tokens[matched])
             if nxt is None or tokens[matched:matched + len(nxt.tokens)] != list(nxt.tokens):
@@ -223,6 +240,16 @@ class TreeKVCache:
                 nxt.ref += 1
             matched += len(nxt.tokens)
             node = nxt
+
+    def _namespace_tokens(self, namespace: str) -> int:
+        root = self.root.children[namespace]
+        stack = list(root.children.values())
+        total = 0
+        while stack:
+            node = stack.pop()
+            total += len(node.tokens)
+            stack.extend(node.children.values())
+        return total
 
     def _maybe_evict(self, need: int) -> None:
         if self.stats.resident_tokens + need <= self.capacity:
@@ -242,7 +269,8 @@ class TreeKVCache:
                 "capacity (per-tree budgets prevent unbounded pinning)")
 
     def _all_nodes(self):
-        stack = list(self.root.children.values())
+        stack = [node for root in self.root.children.values()
+                 for node in root.children.values()]
         while stack:
             n = stack.pop()
             stack.extend(n.children.values())

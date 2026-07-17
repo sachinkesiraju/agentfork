@@ -14,14 +14,18 @@ import signal
 import subprocess
 import time
 from dataclasses import dataclass
+from functools import partial
 
 PR_SET_PDEATHSIG = 1
 _libc = ctypes.CDLL(None, use_errno=True)
 
 
-def _preexec_pdeathsig():
+def _preexec_pdeathsig(parent_pid: int):
     """Child dies with SIGKILL if the supervisor dies first (orphan backstop)."""
-    _libc.prctl(PR_SET_PDEATHSIG, signal.SIGKILL, 0, 0, 0)
+    if _libc.prctl(PR_SET_PDEATHSIG, signal.SIGKILL, 0, 0, 0) != 0:
+        os._exit(127)
+    if os.getppid() != parent_pid:
+        os.kill(os.getpid(), signal.SIGKILL)
 
 
 @dataclass
@@ -40,27 +44,58 @@ class KillResult:
 class BranchReaper:
     """Owns (process, tree_id) pairs; kill() reaps both in one call."""
 
+    @staticmethod
+    def supported() -> bool:
+        return all((hasattr(os, "pidfd_open"), hasattr(os, "P_PIDFD"),
+                    hasattr(signal, "pidfd_send_signal")))
+
     def __init__(self, kv_cache=None):
         self.kv = kv_cache
         self._branches: dict[str, tuple[subprocess.Popen, int]] = {}
 
     def spawn(self, tree_id: str, argv: list[str]) -> int:
-        proc = subprocess.Popen(argv, preexec_fn=_preexec_pdeathsig,
-                                stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL)
-        pidfd = os.pidfd_open(proc.pid)
+        if not self.supported():
+            raise RuntimeError("BranchReaper requires Linux pidfd support")
+        if tree_id in self._branches:
+            raise ValueError(f"branch exists: {tree_id}")
+        if not argv:
+            raise ValueError("argv must not be empty")
+        proc = subprocess.Popen(
+            argv,
+            preexec_fn=partial(_preexec_pdeathsig, os.getpid()),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            pidfd = os.pidfd_open(proc.pid)
+        except BaseException:
+            proc.kill()
+            proc.wait()
+            raise
         self._branches[tree_id] = (proc, pidfd)
         return proc.pid
 
     def kill(self, tree_id: str) -> KillResult:
-        proc, pidfd = self._branches.pop(tree_id)
+        proc, pidfd = self._branches[tree_id]
         t0 = time.perf_counter_ns()
-        signal.pidfd_send_signal(pidfd, signal.SIGKILL)
-        t1 = time.perf_counter_ns()
-        os.waitid(os.P_PIDFD, pidfd, os.WEXITED)
-        proc.wait()
-        t2 = time.perf_counter_ns()
-        os.close(pidfd)
+        try:
+            try:
+                signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            t1 = time.perf_counter_ns()
+            try:
+                os.waitid(os.P_PIDFD, pidfd, os.WEXITED)
+            except ChildProcessError:
+                pass
+            proc.wait()
+            t2 = time.perf_counter_ns()
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+            os.close(pidfd)
+            self._branches.pop(tree_id, None)
         freed = 0
         t3 = time.perf_counter_ns()
         if self.kv is not None:
@@ -77,3 +112,19 @@ class BranchReaper:
     def alive(self, tree_id: str) -> bool:
         proc, _ = self._branches[tree_id]
         return proc.poll() is None
+
+    def close(self) -> None:
+        error = None
+        for tree_id in list(self._branches):
+            try:
+                self.kill(tree_id)
+            except Exception as exc:
+                error = error or exc
+        if error is not None:
+            raise error
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        self.close()
