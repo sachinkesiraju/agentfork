@@ -2,8 +2,8 @@
 
 agentfork is a runtime prototype for tree-style agent fanout.
 
-Forking creates two linked branches: one for the sandbox and one for the LLM KV
-cache. They share one branch ID and are cleaned up together.
+Fork the sandbox and LLM KV cache together under one branch ID. Kill the branch
+to clean up both.
 
 ![tree-keyed KV: one resident prefix, N logical branches](docs/img/kv-dedup.svg)
 
