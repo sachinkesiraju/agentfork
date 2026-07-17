@@ -20,8 +20,11 @@ semantics are testable without a GPU.
 from __future__ import annotations
 
 import itertools
+import threading
 import time
 from dataclasses import dataclass
+
+from agentfork._locking import locked
 
 
 @dataclass(frozen=True)
@@ -74,10 +77,12 @@ class TreeKVCache:
         self.trees: dict[str, TreeId] = {}
         self._tree_tokens: dict[str, list[int]] = {}   # full token seq per tree
         self._child_seq = itertools.count(1)
+        self._lock = threading.RLock()
         self.stats = CacheStats()
 
     # -- tree lifecycle ----------------------------------------------------
 
+    @locked
     def create_tree(self, tree_id: str) -> TreeId:
         if tree_id in self.trees:
             raise ValueError(f"tree exists: {tree_id}")
@@ -87,6 +92,7 @@ class TreeKVCache:
         self.root.children[tree_id] = _Node((), self.root)
         return tid
 
+    @locked
     def fork_branch(self, parent_id: str, child_id: str | None = None) -> TreeId:
         """CoW fork: child inherits the parent's cached prefix, zero copy."""
         if parent_id not in self.trees:
@@ -116,6 +122,7 @@ class TreeKVCache:
         self.stats.logical_tokens += len(parent_tokens)
         return tid
 
+    @locked
     def kill(self, tree_id: str) -> int:
         """Drop the tree's references; free pages that hit refcount zero.
 
@@ -152,6 +159,7 @@ class TreeKVCache:
 
     # -- extend / lookup ----------------------------------------------------
 
+    @locked
     def extend(self, tree_id: str, tokens: list[int]) -> int:
         """Append tokens to a tree (decode/prefill). Returns tokens charged
         (i.e. not already cached along this tree's path — the CoW miss)."""
@@ -183,16 +191,19 @@ class TreeKVCache:
         self._tree_tokens[tree_id] = full
         return charged
 
+    @locked
     def match_prefix(self, tokens: list[int]) -> int:
         return max((self._walk(tokens, namespace)[1]
                     for namespace in self.root.children), default=0)
 
+    @locked
     def match_tree_prefix(self, tree_id: str, tokens: list[int]) -> int:
         if tree_id not in self.trees:
             raise KeyError(f"no such tree: {tree_id}")
         _, matched = self._walk(tokens, self.trees[tree_id].namespace)
         return matched
 
+    @locked
     def resident_tokens(self) -> int:
         return self.stats.resident_tokens
 

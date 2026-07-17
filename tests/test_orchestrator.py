@@ -160,6 +160,9 @@ def test_reconcile_collects_crashed_supervisor_leftovers(tmp_path):
     first.fork("parent", n=3)
     # simulate a crash mid-fork: journal says forking, sandbox never spawned
     first._record(Branch("parent/ghost", "parent", "forking", clock.now, None))
+    # a real crash ends the process, so the kernel drops its registry flock;
+    # release it by hand since this "crash" stays in-process
+    first._release_registry_lock()
     del first  # crash: no close(), external sandbox files remain
 
     assert len(list(sandbox_root.iterdir())) == 4

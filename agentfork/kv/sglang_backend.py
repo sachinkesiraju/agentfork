@@ -25,27 +25,36 @@ SGLang engine.
 
 from __future__ import annotations
 
+import threading
+
+from agentfork._locking import locked
+
 
 class SGLangKVBackend:
     def __init__(self, cache):
         self._cache = cache
+        self._lock = threading.RLock()
         self._lengths: dict[str, int] = {}
 
+    @locked
     def create_tree(self, tree_id: str):
         branch = self._cache.create_agent_tree(tree_id)
         self._lengths[tree_id] = 0
         return branch
 
+    @locked
     def fork_branch(self, parent_id: str, child_id: str | None = None):
         parent_len = self._lengths[parent_id]
         branch = self._cache.fork_branch(parent_id, child_id)
         self._lengths[branch.branch_id] = parent_len
         return branch
 
+    @locked
     def kill(self, tree_id: str) -> int:
         self._lengths.pop(tree_id, None)
         return self._cache.kill_tree(tree_id)
 
+    @locked
     def extend(self, tree_id: str, tokens: list[int]) -> int:
         old_len = self._lengths[tree_id]  # before extend_tree: never mutate the engine for an untracked branch
         hit = self._cache.extend_tree(tree_id, tokens)

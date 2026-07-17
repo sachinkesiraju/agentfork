@@ -117,8 +117,9 @@ needs an end-to-end trace from an actual fanout workload.
 - **Provider economics:** ratios use assumed cached-read/write prices rather
   than measured bills, latency, or total infrastructure cost.
 - **Crash hardening:** `PR_SET_PDEATHSIG` passed the recorded injection test and
-  the child now rechecks its parent PID after setup, but the implementation still
-  uses `preexec_fn`, which is unsafe in threaded supervisors.
+  the child now rechecks its parent PID after setup, but setting it still
+  requires `preexec_fn`, which is unsafe in threaded supervisors; the backstop
+  is opt-out (`BranchReaper(pdeathsig=False)`) rather than fixed.
 
 ## Raw benchmark outputs
 

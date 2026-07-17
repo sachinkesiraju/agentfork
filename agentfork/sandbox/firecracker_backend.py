@@ -18,8 +18,10 @@ Firecracker binary or guest kernel.
 from __future__ import annotations
 
 import os
+import threading
 from typing import Callable
 
+from agentfork._locking import locked
 from agentfork.sandbox.fc_bench import MicroVM
 
 
@@ -31,6 +33,7 @@ class FirecrackerSandbox:
         self.rootfs = rootfs
         self.work_dir = work_dir
         self._microvm_factory = microvm_factory
+        self._lock = threading.RLock()
         self._vms: dict[str, object] = {}
         self._snapshots: dict[str, tuple[str, str]] = {}
 
@@ -39,6 +42,7 @@ class FirecrackerSandbox:
         os.makedirs(d, exist_ok=True)
         return d
 
+    @locked
     def spawn(self, branch_id: str, parent_id: str | None) -> None:
         if branch_id in self._vms:
             raise ValueError(f"branch exists: {branch_id}")
@@ -64,6 +68,7 @@ class FirecrackerSandbox:
                 pass
             raise
 
+    @locked
     def kill(self, branch_id: str) -> None:
         vm = self._vms.pop(branch_id, None)
         self._snapshots.pop(branch_id, None)
@@ -74,6 +79,7 @@ class FirecrackerSandbox:
         except RuntimeError:
             pass
 
+    @locked
     def alive(self, branch_id: str) -> bool:
         vm = self._vms.get(branch_id)
         if vm is None:

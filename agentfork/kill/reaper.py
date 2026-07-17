@@ -12,9 +12,12 @@ import ctypes
 import os
 import signal
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from functools import partial
+
+from agentfork._locking import locked
 
 PR_SET_PDEATHSIG = 1
 _libc = ctypes.CDLL(None, use_errno=True)
@@ -42,17 +45,28 @@ class KillResult:
 
 
 class BranchReaper:
-    """Owns (process, tree_id) pairs; kill() reaps both in one call."""
+    """Owns (process, tree_id) pairs; kill() reaps both in one call.
+
+    ``pdeathsig=True`` (the default) arms the ``PR_SET_PDEATHSIG`` orphan
+    backstop, which requires ``preexec_fn`` — CPython documents that as
+    unsafe if any other thread exists in the calling process at spawn time.
+    Pass ``pdeathsig=False`` under a threaded supervisor; orphans of a died
+    supervisor are then collected by ``ForkOrchestrator.reconcile()`` on the
+    next start instead of by the kernel immediately.
+    """
 
     @staticmethod
     def supported() -> bool:
         return all((hasattr(os, "pidfd_open"), hasattr(os, "P_PIDFD"),
                     hasattr(signal, "pidfd_send_signal")))
 
-    def __init__(self, kv_cache=None):
+    def __init__(self, kv_cache=None, pdeathsig: bool = True):
         self.kv = kv_cache
+        self.pdeathsig = pdeathsig
+        self._lock = threading.RLock()
         self._branches: dict[str, tuple[subprocess.Popen, int]] = {}
 
+    @locked
     def spawn(self, tree_id: str, argv: list[str]) -> int:
         if not self.supported():
             raise RuntimeError("BranchReaper requires Linux pidfd support")
@@ -60,9 +74,11 @@ class BranchReaper:
             raise ValueError(f"branch exists: {tree_id}")
         if not argv:
             raise ValueError("argv must not be empty")
+        preexec = (partial(_preexec_pdeathsig, os.getpid())
+                   if self.pdeathsig else None)
         proc = subprocess.Popen(
             argv,
-            preexec_fn=partial(_preexec_pdeathsig, os.getpid()),
+            preexec_fn=preexec,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -75,6 +91,7 @@ class BranchReaper:
         self._branches[tree_id] = (proc, pidfd)
         return proc.pid
 
+    @locked
     def kill(self, tree_id: str) -> KillResult:
         proc, pidfd = self._branches[tree_id]
         t0 = time.perf_counter_ns()
@@ -109,10 +126,12 @@ class BranchReaper:
             kv_free_us=(t4 - t3) / 1e3,
         )
 
+    @locked
     def alive(self, tree_id: str) -> bool:
         proc, _ = self._branches[tree_id]
         return proc.poll() is None
 
+    @locked
     def close(self) -> None:
         error = None
         for tree_id in list(self._branches):
