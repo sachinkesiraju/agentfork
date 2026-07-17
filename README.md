@@ -27,8 +27,7 @@ does, only how a branch of it is created and torn down.
 Right now, `ForkOrchestrator` only drives the reference backends: `TreeKVCache`
 for KV state and `ReaperSandbox` for the process. The SGLang cache patch and
 the Firecracker snapshot benchmark have each been tested on their own, but
-neither is connected to the orchestrator yet; see
-[How it works](#how-it-works) for how each one works.
+neither is connected to the orchestrator yet.
 
 Use it for:
 
