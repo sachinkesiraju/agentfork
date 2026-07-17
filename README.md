@@ -3,14 +3,14 @@
 agentfork is a runtime prototype for tree-style agent fanout.
 
 Fork a live agent, its sandbox and its LLM KV context together, as one branch.
-Kill the branch and both halves are reclaimed: no orphan processes, no leaked
-KV pages.
+Kill the branch and both halves are reclaimed in 0.53 ms p50: no orphan
+processes, no leaked KV pages.
 
 ![tree-keyed KV: one resident prefix, N logical branches](docs/img/kv-dedup.svg)
 
-**Measured at a glance:** 0.53 ms p50 subprocess + reference-cache kill ·
-22 ms for 10 create+extend operations on an A10 · 9.65× fewer KV slots than an
-explicitly unshared allocation · 547-line additive SGLang patch.
+**Measured at a glance:** 22 ms for 10 create+extend operations on an A10 ·
+9.65× fewer KV slots than an explicitly unshared allocation · 547-line
+additive SGLang patch.
 
 ## What it does
 
