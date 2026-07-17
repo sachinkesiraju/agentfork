@@ -1,9 +1,9 @@
 # agentfork
 
-agentfork is a runtime prototype for branching both sides of a live agent: its
-sandbox and its LLM KV cache.
+agentfork is a runtime prototype for tree-style agent fanout.
 
-One branch ID tracks both from fork through cleanup.
+Each branch pairs a sandbox with its LLM KV-cache state under one ID, so both
+can be created, tracked, and reclaimed together.
 
 ![tree-keyed KV: one resident prefix, N logical branches](docs/img/kv-dedup.svg)
 
