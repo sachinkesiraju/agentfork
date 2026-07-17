@@ -233,32 +233,22 @@ SGLANG_DIR="$SGLANG_DIR" modal run modal_gpu_validation.py
 
 ## Limitations
 
-- `ForkOrchestrator` coordinates the CPU reference cache and generic
-  subprocesses. There is no production backend spanning a Firecracker microVM
-  and the patched SGLang cache; failed cleanup stays journaled for an explicit
-  retry, but remains sequential rather than transactional.
+- `ForkOrchestrator` currently wires only the CPU `TreeKVCache` and fresh-process
+  `ReaperSandbox`. The SGLang patch and Firecracker benchmark are not backends,
+  and no production path spans a microVM and live inference engine. Cleanup is
+  sequential, and winner/artifact handoff remains application-specific.
 - The JSON registry uses temporary-file + `os.replace`, but no `fsync` or
-  cross-process locking. It assumes one orchestrator owns a registry path, and
-  `reconcile()` / `reap_expired()` are caller-driven rather than background jobs.
-- The SGLang patch is not wired into request scheduling, model execution, HTTP
-  serving, tensor parallelism, or a multi-worker router. The live-engine result
-  above is a stock RadixAttention baseline, not an end-to-end patch test.
-- Cache budgets and reservations are logical direct-API accounting hooks, not
-  scheduler-enforced physical HBM reservations.
-- GPU validation uses one A10 and a Qwen3-0.6B stock-engine baseline; 70B-scale
-  behavior, tensor parallelism, and scheduler contention are unmeasured.
-- Firecracker measurements use idle, CPU-only 256 MiB guests; Firecracker and GPU
-  inference have not been colocated or connected through an API proxy.
+  cross-process locking. It assumes one orchestrator owns a registry path;
+  cleanup retries and lease collection are caller-driven.
 - `ForkOrchestrator`, `TreeKVCache`, and `BranchReaper` do not synchronize
-  concurrent callers, and the reaper uses `preexec_fn`, which Python warns is
-  unsafe in threaded code.
-- No winner merge, durable artifact handoff, hibernation, migration, or resume
-  protocol is implemented.
-- Private organic traces did not simultaneously reach fanout ≥ 8 and
-  visible-prompt prefix fraction ≥ 0.2. The traces are not checked in, and
-  visible-prompt overlap may understate full KV-prefix overlap.
-- Provider-cache ratios are modeled rather than measured, and the Modal image
-  is not digest-pinned.
+  concurrent callers. `BranchReaper` also uses `preexec_fn`, which Python warns
+  is unsafe in threaded code.
+- SGLang budgets and reservations are direct cache-API accounting hooks, not
+  scheduler-enforced physical HBM reservations.
+- Validation is limited to one A10 direct-cache pool, a stock Qwen3-0.6B engine
+  baseline, and idle CPU-only Firecracker guests. 70B-scale behavior,
+  tensor/pipeline parallelism, scheduler contention, guest readiness, and
+  microVM+GPU colocation are unmeasured; the Modal base image is not digest-pinned.
 
 ## Why agentfork vs. alternatives
 
