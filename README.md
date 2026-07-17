@@ -24,10 +24,12 @@ agentfork implements two runtime operations, both given the same branch ID by
 It is not an agent framework or a scheduler: it does not decide what an agent
 does, only how a branch of it is created and torn down.
 
-Right now, `ForkOrchestrator` only drives the reference backends: `TreeKVCache`
-for KV state and `ReaperSandbox` for the process. The SGLang cache patch and
-the Firecracker snapshot benchmark have each been tested on their own, but
-neither is connected to the orchestrator yet.
+By default, `ForkOrchestrator` drives the reference backends: `TreeKVCache`
+for KV state and `ReaperSandbox` for the process. Adapters also exist for the
+SGLang cache patch and a Firecracker sandbox (`SGLangKVBackend`,
+`FirecrackerSandbox`), satisfying the same `KVBackend`/`SandboxBackend`
+protocols the reference backends do. They're unit-tested against mocks only;
+neither has been run against a live SGLang engine or a real Firecracker guest.
 
 Use it for:
 
@@ -131,8 +133,9 @@ copied. `ReaperSandbox` spawns a fresh subprocess for the child. On kill,
 `agentfork/kill/reaper.py` reaps the subprocess through Linux `pidfd` and
 drops the matching cache entry; the combined path measured 0.53 ms p50.
 
-Two production backends are validated on their own and not yet wired into the
-orchestrator:
+Two production backends have adapters satisfying those same protocols, but
+each adapter is unit-tested against a mock only, not a live SGLang engine or a
+real Firecracker guest:
 
 1. **KV cache fork**: `patches/0001-sglang-tree-radix-cache.patch` adds
    `TreeRadixCache` to SGLang. Children inherit the parent's KV prefix
@@ -140,11 +143,17 @@ orchestrator:
    machinery; `kill_tree()` releases a branch's pins. The patch also adds
    token budgets, reservations, demotion, invalidation, and per-tree
    telemetry. No scheduler, model-runner, server, or router changes are
-   included.
+   included. `agentfork/kv/sglang_backend.py`'s `SGLangKVBackend` adapts an
+   already-constructed `TreeRadixCache` instance to `KVBackend`; it assumes
+   in-process access to that instance, not a call over SGLang's server API.
 2. **Sandbox fork**: `agentfork/sandbox/fc_bench.py` measures Firecracker
    snapshot and restore, with each child sharing the parent's memory pages
    copy-on-write. The recorded parent pause was 76–83 ms including snapshot
    creation, and snapshot-load API time was 2.1 ms p50 per child.
+   `agentfork/sandbox/firecracker_backend.py`'s `FirecrackerSandbox` adapts
+   `fc_bench`'s `MicroVM` to `SandboxBackend`, snapshotting every branch so it
+   can itself be forked again; guest networking, identity, and readiness are
+   not handled.
 
 ```
 ForkOrchestrator  (registry / leases / rollback / reconcile)
@@ -154,11 +163,11 @@ ForkOrchestrator  (registry / leases / rollback / reconcile)
    │
    ├── KV branch
    │    ├── TreeKVCache            CPU reference cache (live)
-   │    └── TreeRadixCache patch   validated on SGLang, not wired in
+   │    └── TreeRadixCache patch   via SGLangKVBackend (mock-tested only)
    │
    └── sandbox branch
         ├── ReaperSandbox          pidfd subprocess (live)
-        └── Firecracker benchmark  validated separately, not wired in
+        └── Firecracker benchmark  via FirecrackerSandbox (mock-tested only)
 ```
 
 "Fork" here is not Linux `fork(2)`: CUDA state cannot be duplicated by forking
@@ -224,9 +233,10 @@ SGLANG_DIR="$SGLANG_DIR" modal run modal_gpu_validation.py
 
 ## Limitations
 
-- No production backend spans a Firecracker microVM and the patched SGLang
-  cache. The orchestrator only coordinates the CPU reference cache and fresh
-  subprocesses today, and cleanup is retried, not atomic.
+- Adapters exist for the patched SGLang cache and a Firecracker microVM
+  (`SGLangKVBackend`, `FirecrackerSandbox`), but neither has been run against
+  a live SGLang engine or a real Firecracker guest, only mocks; cleanup is
+  retried, not atomic.
 - The SGLang patch is not wired into request scheduling, model execution, or
   serving, and its budgets and reservations are accounting only: the
   scheduler does not enforce them.
@@ -254,7 +264,7 @@ covers ownership and cleanup on both sides.
 | [thaw](https://github.com/thaw-ai/thaw), [processfork](https://github.com/manav8498/processfork) | Branches an inference session across generations | An isolated sandbox lifecycle paired with that branch |
 | [SGLang](https://github.com/sgl-project/sglang) RadixAttention, [vLLM](https://github.com/vllm-project/vllm) APC | Automatically reuses KV for requests sharing a prefix | Explicit agent-tree ownership, branch policy, and sandbox coordination |
 | [LMCache](https://github.com/LMCache/LMCache), [Mooncake](https://github.com/kvcache-ai/Mooncake), [Dynamo](https://github.com/ai-dynamo/dynamo) | Moves and tiers KV cache across memory and workers | Branch identity and sandbox coordination on top of that movement |
-| **agentfork** | Forks a sandbox and its KV cache under one branch ID, and reclaims both on kill | Turning it into a hosted service with the production backends wired in |
+| **agentfork** | Forks a sandbox and its KV cache under one branch ID, and reclaims both on kill | Validating the production adapters against a live SGLang engine and a real Firecracker guest, then hosting it as a service |
 
 ## License
 
