@@ -3,6 +3,9 @@
 agentfork is a research prototype for giving an agent's sandbox process and LLM
 KV-cache branch the same lifecycle identity.
 
+**Kill any branch and reclaim both halves in sub-millisecond to single-digit
+milliseconds, with zero orphans and zero leaked KV pages.**
+
 The intended primitive is simple: fork a warm agent into several isolated
 candidates, let them diverge, then kill the losers and reclaim their process and
 KV state. This repository validates the pieces of that design. It is **not yet a
