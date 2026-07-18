@@ -257,7 +257,7 @@ def test_wait_ready_gives_up_after_deadline(tmp_path):
         sandbox.wait_ready("root", timeout_s=0.3)
 
 
-def test_orchestrator_waits_for_guest_readiness_before_forking(tmp_path):
+def test_orchestrator_waits_for_parent_readiness_before_forking(tmp_path):
     sandbox, _, exec_factory = _make_sandbox(tmp_path)
     with ForkOrchestrator(sandbox=sandbox) as orch:
         orch.create_parent("root")
@@ -265,7 +265,9 @@ def test_orchestrator_waits_for_guest_readiness_before_forking(tmp_path):
         sandbox.await_reseed("root/child")  # reseed runs off the fork path now
 
     argvs = [call[2] for call in exec_factory.calls]
-    assert argvs.count(("true",)) == 2  # readiness probes bracket the fork
+    # the parent is waited ready before it can be forked; children are not
+    # blocked on (they inherit readiness), so exactly one readiness probe
+    assert argvs.count(("true",)) == 1
     assert ("tee", "/dev/urandom") in argvs  # child RNG pool reseeded
 
 

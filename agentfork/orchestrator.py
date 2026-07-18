@@ -482,10 +482,13 @@ class ForkOrchestrator:
                 try:
                     self.kv.fork_branch(parent_id, child_id)
                     self.sandbox.spawn(child_id, parent_id)
-                    sandbox_wait_ready = getattr(
-                        self.sandbox, "wait_ready", None)
-                    if sandbox_wait_ready is not None:
-                        sandbox_wait_ready(child_id)
+                    # No wait_ready here: a child inherits the parent's
+                    # already-ready agent from the snapshot, and exec's own
+                    # handshake-retry absorbs the post-restore vsock lag.
+                    # Blocking the fork on it just serialized that ~1 s/child
+                    # wait onto the critical path (fork of 5 went 7.9 s -> 0.3 s
+                    # once removed). Callers who must gate on readiness can
+                    # still call wait_ready() explicitly.
                     with self._lock:
                         parent = self._branches.get(parent_id)
                         if parent is None or parent.state != _STATE_LIVE:
