@@ -198,11 +198,13 @@ In the [10-child GPU test](patches/real_pool_validation.py), sharing reduced KV
 usage from 357k slots to 37k. Stock SGLang already shares cached prefixes, so
 agentfork adds branch tracking and cleanup, not lower memory use.
 
-Grounding: forking a branch's microVM takes 28–145 ms here, comparable to
-managed providers like [Morph](https://cloud.morph.so/docs/developers), which
-branches a full VM in under 250 ms. What they don't do is fork the LLM's KV
-cache too, so a fanout on agentfork skips re-prefilling the shared prompt. The
-sandbox and KV halves were measured separately, not yet together.
+Grounding: forking both halves of a branch (sandbox microVM + KV cache) runs
+28–145 ms per child, of which the KV fork is under 1.3%. That is the same
+class as managed providers, which fork the sandbox alone
+([Morph](https://cloud.morph.so/docs/developers) branches a full VM in under
+250 ms). agentfork also forking the KV cache is why a fanout skips
+re-prefilling the shared prompt. This used the reference KV cache; a real GPU
+SGLang engine plus Firecracker has not been co-located.
 
 ## Running benchmarks
 
