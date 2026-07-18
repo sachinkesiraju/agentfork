@@ -127,11 +127,10 @@ Run `pytest -q` to execute the test suite.
 single-owner, fsynced registry: it rolls back partial forks, retries
 interrupted cleanup, and bounds every branch with a lease.
 
-**The reference path works today, on CPU.** Forking a KV branch just adds a
-reference count along the shared prefix; no tokens are copied. Each branch
-runs as an ordinary subprocess. Killing a branch stops that subprocess with a
-Linux `pidfd` and releases its cache entry; together that takes 0.53 ms
-(median).
+Forking a KV branch just adds a reference count along the shared prefix; no
+tokens are copied. Each branch runs as an ordinary subprocess. Killing a
+branch stops that subprocess with a Linux `pidfd` and releases its cache
+entry; together that takes 0.53 ms (median).
 
 Two heavier backends implement the same interfaces:
 
