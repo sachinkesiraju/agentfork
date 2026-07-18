@@ -32,7 +32,8 @@ done
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+# unsquashfs runs under sudo and writes root-owned files, so cleanup needs it
+trap 'sudo rm -rf "$WORK"' EXIT
 ROOT="$WORK/squashfs-root"
 
 sudo unsquashfs -q -d "$ROOT" "$BASE" >/dev/null

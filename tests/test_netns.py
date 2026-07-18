@@ -40,8 +40,10 @@ def test_setup_creates_netns_tap_veth_and_nat_in_order():
     assert any(f"ip tuntap add {TAP_DEV} mode tap" in j for j in joined)
     assert any("veth" in j and "peer name" in j for j in joined)
     assert any("route add default" in j for j in joined)
-    assert any("POSTROUTING" in j and "MASQUERADE" in j and "eth0" in j
-               for j in joined)
+    # host NAT masquerades the veth subnet (not the guest subnet, which the
+    # netns has already SNAT'd away before the packet reaches the host)
+    assert any("POSTROUTING -s 10.200" in j and "MASQUERADE" in j
+               and "eth0" in j for j in joined)
     # the tap gateway IP is configured inside the namespace
     assert any(f"addr add {GUEST_GW}" in j for j in joined)
 

@@ -79,11 +79,24 @@ class NetnsManager:
         hosts = list(net.hosts())
         return (f"afh{index}", f"afg{index}", str(hosts[0]), str(hosts[1]))
 
+    def _veth_net(self, index: int) -> str:
+        return str(list(ipaddress.ip_network(self.config.host_subnet).subnets(
+            new_prefix=30))[index])
+
     def setup_cmds(self, branch_id: str, index: int) -> list[list[str]]:
         """Every command to stand up the netns, tap, veth, and NAT for one
-        branch. Ordered; idempotent teardown undoes them."""
+        branch. Ordered; idempotent teardown undoes them.
+
+        Two-stage NAT: inside the netns the guest (172.16.0.2) is SNAT'd to
+        the veth IP, so the host — which only knows the veth /30, not the
+        guest subnet behind it — can route return traffic back. The host
+        then SNATs the veth /30 out the uplink. A host rule matching the
+        guest subnet would never fire: by the time the packet reaches the
+        host it already carries the veth source.
+        """
         ns = self.netns_name(branch_id)
         h_veth, g_veth, h_ip, g_ip = self._veth_pair(index)
+        veth_net = self._veth_net(index)
         up = self.config.uplink
         return [
             ["ip", "netns", "add", ns],
@@ -108,8 +121,8 @@ class NetnsManager:
              "via", h_ip],
             ["ip", "netns", "exec", ns, "iptables", "-t", "nat", "-A",
              "POSTROUTING", "-o", g_veth, "-j", "MASQUERADE"],
-            ["iptables", "-t", "nat", "-A", "POSTROUTING", "-s",
-             f"{GUEST_GW}/{GUEST_MASK}", "-o", up, "-j", "MASQUERADE"],
+            ["iptables", "-t", "nat", "-A", "POSTROUTING", "-s", veth_net,
+             "-o", up, "-j", "MASQUERADE"],
             ["iptables", "-A", "FORWARD", "-i", h_veth, "-o", up, "-j",
              "ACCEPT"],
             ["iptables", "-A", "FORWARD", "-i", up, "-o", h_veth, "-m",
@@ -119,15 +132,17 @@ class NetnsManager:
     def teardown_cmds(self, branch_id: str, index: int) -> list[list[str]]:
         ns = self.netns_name(branch_id)
         h_veth, _, _, _ = self._veth_pair(index)
+        veth_net = self._veth_net(index)
         up = self.config.uplink
-        # reverse the NAT/forward rules, then drop the veth and netns
+        # reverse the host NAT/forward rules, then drop the veth and netns
+        # (the netns-internal rules die with the namespace)
         return [
             ["iptables", "-D", "FORWARD", "-i", up, "-o", h_veth, "-m",
              "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"],
             ["iptables", "-D", "FORWARD", "-i", h_veth, "-o", up, "-j",
              "ACCEPT"],
-            ["iptables", "-t", "nat", "-D", "POSTROUTING", "-s",
-             f"{GUEST_GW}/{GUEST_MASK}", "-o", up, "-j", "MASQUERADE"],
+            ["iptables", "-t", "nat", "-D", "POSTROUTING", "-s", veth_net,
+             "-o", up, "-j", "MASQUERADE"],
             ["ip", "link", "del", h_veth],
             ["ip", "netns", "del", ns],
         ]
