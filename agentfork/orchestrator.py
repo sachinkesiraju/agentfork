@@ -190,6 +190,7 @@ class OrchestratorMetrics:
     reconciles: int = 0       # reconcile() passes
     reaped_expired: int = 0   # branches collected for lapsed leases
     swept_dead: int = 0       # branches collected because their VMM died
+    restarted: int = 0        # dead branches restarted from a checkpoint
 
 
 class ForkOrchestrator:
@@ -771,13 +772,18 @@ class ForkOrchestrator:
 
     # -- background collection -------------------------------------------------
 
-    def start_reaper(self, interval_s: float = 5.0) -> None:
+    def start_reaper(self, interval_s: float = 5.0,
+                     restart_dead: bool = False) -> None:
         """Run ``reconcile()`` (which includes lease reaping) every
-        ``interval_s`` seconds on a daemon thread, and collect branches
-        whose sandbox died out from under them (backends may expose
-        ``sweep_dead() -> list[branch_id]``, as ``FirecrackerSandbox``
-        does). Errors are logged, never fatal to the loop. Idempotent;
-        ``close()`` stops it."""
+        ``interval_s`` seconds on a daemon thread, and handle branches whose
+        sandbox died out from under them (backends may expose
+        ``sweep_dead() -> list[branch_id]``, as ``FirecrackerSandbox`` does).
+
+        With ``restart_dead=True``, a swept-dead branch is first offered to
+        the backend's ``restart(branch_id)`` (restore from its checkpoint);
+        only if that is unavailable or returns False is the branch collected.
+        Default is to collect. Errors are logged, never fatal to the loop.
+        Idempotent; ``close()`` stops it."""
         if interval_s <= 0:
             raise ValueError("interval_s must be positive")
         with self._lock:
@@ -789,7 +795,7 @@ class ForkOrchestrator:
             # on an event nobody will set
             stop = self._reaper_stop = threading.Event()
             self._reaper_thread = threading.Thread(
-                target=self._reaper_loop, args=(interval_s, stop),
+                target=self._reaper_loop, args=(interval_s, stop, restart_dead),
                 name="agentfork-reaper", daemon=True)
             self._reaper_thread.start()
 
@@ -800,13 +806,22 @@ class ForkOrchestrator:
         if thread is not None and thread is not threading.current_thread():
             thread.join()
 
-    def _reaper_loop(self, interval_s: float, stop: threading.Event) -> None:
+    def _reaper_loop(self, interval_s: float, stop: threading.Event,
+                     restart_dead: bool = False) -> None:
+        restart = getattr(self.sandbox, "restart", None) if restart_dead else None
         while not stop.wait(interval_s):
             try:
                 self.reconcile()
                 sweep = getattr(self.sandbox, "sweep_dead", None)
                 if sweep is not None:
                     for branch_id in sweep():
+                        with self._lock:
+                            live = (branch_id in self._branches
+                                    and self._branches[branch_id].state == _STATE_LIVE
+                                    and branch_id not in self._killing)
+                        if restart is not None and live and self._try_restart(
+                                restart, branch_id):
+                            continue
                         _log.warning("branch %s: sandbox died; collecting",
                                      branch_id)
                         if self.kill(branch_id).reaped:
@@ -821,6 +836,19 @@ class ForkOrchestrator:
                 _log.exception("background reaper pass failed")
             except Exception:
                 _log.exception("background reaper pass failed")
+
+    def _try_restart(self, restart, branch_id: str) -> bool:
+        """Best-effort restart of a swept-dead branch; False (fall back to
+        collect) on any failure or if the backend can't restart it."""
+        try:
+            if restart(branch_id):
+                with self._lock:
+                    self.metrics.restarted += 1
+                _log.info("branch %s: restarted after sandbox death", branch_id)
+                return True
+        except Exception:
+            _log.exception("restart of %s failed; will collect", branch_id)
+        return False
 
     def metrics_snapshot(self) -> dict:
         """A consistent copy of the counters, as a plain dict."""
