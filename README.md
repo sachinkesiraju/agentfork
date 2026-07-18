@@ -26,10 +26,14 @@ does, only how a branch of it is created and torn down.
 
 By default, `ForkOrchestrator` drives the reference backends: `TreeKVCache`
 for KV state and `ReaperSandbox` for the process. Adapters for the SGLang
-cache patch and a Firecracker sandbox (`SGLangKVBackend`, `FirecrackerSandbox`)
-satisfy the same `KVBackend`/`SandboxBackend` protocols. The Firecracker
-adapter runs end to end against real microVMs (`demo/fc_demo.py`); the SGLang
-adapter is mock-tested only.
+cache patch and a Firecracker sandbox (`SGLangKVBackend`/`SGLangHTTPBackend`,
+`FirecrackerSandbox`) satisfy the same `KVBackend`/`SandboxBackend` protocols.
+The Firecracker adapter is validated end to end against real microVMs
+(`demo/fc_demo.py`): guest exec over vsock, per-child writable overlays,
+per-branch networking, and the jailer. On the KV side, the in-process
+`SGLangKVBackend` is mock-tested, while the branch request path through
+`SGLangHTTPBackend` has run against a live engine on an A10G (see
+[report/RESULTS.md](report/RESULTS.md)).
 
 Use it for:
 
@@ -171,12 +175,13 @@ ForkOrchestrator  (registry / leases / rollback / reconcile)
    │
    ├── KV branch
    │    ├── TreeKVCache            CPU reference cache (live)
-   │    └── TreeRadixCache patch   via SGLangKVBackend (mock-tested only)
+   │    ├── TreeRadixCache patch   via SGLangKVBackend (in-process, mock-tested)
+   │    └── SGLang engine          via SGLangHTTPBackend (request path live on A10G)
    │
    └── sandbox branch
         ├── ReaperSandbox          pidfd subprocess (live)
-        └── Firecracker microVMs   via FirecrackerSandbox (live: exec,
-                                   overlays, jailer)
+        └── Firecracker microVMs   via FirecrackerSandbox (live: exec, stdin,
+                                   overlays, networking, jailer)
 ```
 
 "Fork" here is not Linux `fork(2)`: CUDA state cannot be duplicated by forking
@@ -249,16 +254,22 @@ SGLANG_DIR="$SGLANG_DIR" modal run modal_gpu_validation.py
   before queue admission, but it has only been measured on one A10G with a
   0.6B model. Cross-worker routing, tensor parallelism, allocator contention,
   and mixed-tenant pressure remain unmeasured.
-- The Firecracker adapter has only driven idle guests: no guest networking,
-  identity, or readiness probes. Cleanup is retried, not atomic.
-- GPU validation used one A10 with a Qwen3-0.6B baseline, and Firecracker
-  validation used idle, CPU-only 256 MiB guests. Neither covers production
-  scale or GPU-plus-microVM colocation.
-- Each component serializes callers behind one coarse lock: concurrent
-  threads are safe but parallel forks gain no throughput. The reaper's
-  default `PR_SET_PDEATHSIG` backstop uses `preexec_fn`, which CPython
-  documents as thread-unsafe; pass `pdeathsig=False` under threaded
-  supervisors.
+- The Firecracker adapter runs guest workloads end to end — exec (with
+  stdin and detached background processes), writable overlays, per-branch
+  networking (netns + NAT egress, with per-clone entropy/identity regen),
+  and `wait_ready()` readiness probes — but it is single-host: snapshots
+  are not distributed across machines, and the background reaper *collects*
+  a crashed VMM rather than restarting it. Cleanup is retried, not atomic.
+- Validation used one A10 with a Qwen3-0.6B baseline on the KV side and
+  aarch64 nested-KVM Ubuntu guests on the sandbox side; neither covers
+  production scale or GPU-plus-microVM colocation.
+- Multi-branch operations (`fork(n)`, `kill_losers`, `reconcile`) fan out
+  across branches when the sandbox backend declares `parallel_lifecycle`
+  (`FirecrackerSandbox`, `NullSandbox`); the orchestrator lock covers only
+  registry bookkeeping, with backend I/O outside it. `ReaperSandbox` stays
+  serial because its `PR_SET_PDEATHSIG` orphan backstop uses `preexec_fn`,
+  which CPython documents as thread-unsafe; pass `pdeathsig=False` under
+  threaded supervisors.
 - No winner merge, artifact handoff, hibernation, migration, or resume
   protocol is implemented.
 
