@@ -34,8 +34,7 @@ from dataclasses import dataclass
 _log = logging.getLogger("agentfork.sandbox.netns")
 
 TAP_DEV = "tap0"
-GUEST_IP = "172.16.0.2"
-GUEST_GW = "172.16.0.1"
+GUEST_GW = "172.16.0.1"   # tap IP inside every netns (the guest's gateway)
 GUEST_MAC = "06:00:ac:10:00:02"
 GUEST_MASK = 30
 
@@ -199,8 +198,3 @@ class NetnsManager:
             except Exception:
                 _log.debug("net teardown step failed (continuing): %s", cmd)
         self.release(index)
-
-
-def netns_exec_prefix(netns: str) -> list[str]:
-    """Argv prefix that runs a command inside ``netns``."""
-    return ["ip", "netns", "exec", netns]

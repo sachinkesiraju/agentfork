@@ -3,13 +3,7 @@ calls are captured through an injected runner — no root, no real netns."""
 
 import pytest
 
-from agentfork.sandbox.netns import (
-    GUEST_GW,
-    TAP_DEV,
-    NetnsManager,
-    NetworkConfig,
-    netns_exec_prefix,
-)
+from agentfork.sandbox.netns import GUEST_GW, TAP_DEV, NetnsManager, NetworkConfig
 
 CFG = NetworkConfig(uplink="eth0", host_subnet="10.200.0.0/16",
                     nameserver="1.1.1.1")
@@ -142,7 +136,3 @@ def test_setup_rolls_back_and_frees_index_on_partial_failure():
     # ...and the index was freed, so the next setup reuses index 0
     _, index = mgr.setup("b")
     assert index == 0
-
-
-def test_netns_exec_prefix():
-    assert netns_exec_prefix("af-x") == ["ip", "netns", "exec", "af-x"]
