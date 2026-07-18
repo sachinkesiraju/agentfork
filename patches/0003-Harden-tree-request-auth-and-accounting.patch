@@ -1,0 +1,107 @@
+diff --git a/python/sglang/srt/entrypoints/http_server.py b/python/sglang/srt/entrypoints/http_server.py
+index 027a24a68..32d2b507e 100644
+--- a/python/sglang/srt/entrypoints/http_server.py
++++ b/python/sglang/srt/entrypoints/http_server.py
+@@ -819,6 +819,13 @@ if os.environ.get("DUMPER_SERVER_PORT") == "reuse":
+ )
+ async def generate_request(obj: GenerateReqInput, request: Request):
+     """Handle a generate request."""
++    if obj.branch_id is not None and request.url.path != "/tree_generate":
++        return ORJSONResponse(
++            status_code=403,
++            content={
++                "error": "agent-tree fields require the admin /tree_generate endpoint"
++            },
++        )
+     if envs.SGLANG_ENABLE_REQUEST_HEADER_OVERRIDES.get():
+         apply_header_overrides(obj, request.headers)
+     if obj.stream:
+@@ -865,6 +872,17 @@ async def generate_request(obj: GenerateReqInput, request: Request):
+             return _create_error_response(e)
+ 
+ 
++@app.api_route(
++    "/tree_generate",
++    methods=["POST", "PUT"],
++    response_class=SGLangORJSONResponse,
++)
++@auth_level(AuthLevel.ADMIN_FORCE)
++async def tree_generate_request(obj: GenerateReqInput, request: Request):
++    """Admin-authenticated native generation with agent-tree lifecycle fields."""
++    return await generate_request(obj, request)
++
++
+ @app.api_route("/encode", methods=["POST", "PUT"])
+ async def encode_request(obj: EmbeddingReqInput, request: Request):
+     """Handle an embedding request."""
+@@ -1650,6 +1668,11 @@ async def continue_generation(
+ @app.post("/v1/completions", dependencies=[Depends(validate_json_request)])
+ async def openai_v1_completions(request: CompletionRequest, raw_request: Request):
+     """OpenAI-compatible text completion endpoint."""
++    if request.branch_id is not None:
++        return ORJSONResponse(
++            status_code=403,
++            content={"error": "agent-tree fields require /tree_generate"},
++        )
+     return await raw_request.app.state.openai_serving_completion.handle_request(
+         request, raw_request
+     )
+@@ -1660,6 +1683,11 @@ async def openai_v1_chat_completions(
+     request: ChatCompletionRequest, raw_request: Request
+ ):
+     """OpenAI-compatible chat completion endpoint."""
++    if request.branch_id is not None:
++        return ORJSONResponse(
++            status_code=403,
++            content={"error": "agent-tree fields require /tree_generate"},
++        )
+     return await raw_request.app.state.openai_serving_chat.handle_request(
+         request, raw_request
+     )
+diff --git a/python/sglang/srt/mem_cache/tree_radix_cache.py b/python/sglang/srt/mem_cache/tree_radix_cache.py
+index 6c381f6d0..c67b06ad7 100644
+--- a/python/sglang/srt/mem_cache/tree_radix_cache.py
++++ b/python/sglang/srt/mem_cache/tree_radix_cache.py
+@@ -292,8 +292,19 @@ class TreeRadixCache(RadixCache):
+             extra_key=br.namespace,
+             is_bigram=self.is_eagle,
+         ).page_aligned(self.page_size)
++        committed = list(br.token_ids)
++        candidate = list(key.raw_token_ids())
++        if (len(candidate) < len(committed)
++                or candidate[: len(committed)] != committed):
++            raise ValueError(
++                f"request for branch {br.branch_id} does not extend its "
++                "committed token prefix"
++            )
+         hit = len(self.match_prefix(MatchPrefixParams(key=key)).device_indices)
+         charged = len(key) - max(hit, len(br.token_ids))
++        if charged < 0:
++            raise ValueError(
++                f"request for branch {br.branch_id} produced negative charge")
+         self._validate_charge(br, charged)
+         return br, key, hit, charged
+ 
+diff --git a/test/registered/unit/mem_cache/test_tree_radix_cache.py b/test/registered/unit/mem_cache/test_tree_radix_cache.py
+index a8fdea06e..ad3cb21bc 100644
+--- a/test/registered/unit/mem_cache/test_tree_radix_cache.py
++++ b/test/registered/unit/mem_cache/test_tree_radix_cache.py
+@@ -310,6 +310,18 @@ class TestTreeRadixCache(CustomTestCase):
+         self.assertTrue(killed.success)
+         self.assertEqual(cache.live_branches(), 0)
+ 
++    def test_request_update_must_extend_committed_branch_prefix(self):
++        cache = _make_cache()
++        cache.create_agent_tree("root")
++        cache.extend_tree("root", list(range(100)))
++        req = SimpleNamespace(branch_id="root")
++
++        with self.assertRaisesRegex(ValueError, "does not extend"):
++            cache._prepare_request_update(req, list(range(10)))
++        with self.assertRaisesRegex(ValueError, "does not extend"):
++            cache._prepare_request_update(
++                req, list(range(99)) + [999, 100])
++
+     def test_reset_clears_branch_lifecycle_state(self):
+         cache = _make_cache()
+         cache.create_agent_tree("root")

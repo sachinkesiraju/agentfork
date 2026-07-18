@@ -8,12 +8,14 @@ Only the muxer is fake: it speaks Firecracker's ``CONNECT <port>`` /
 covered here: AF_VSOCK itself and a real VMM's muxer — those need a guest.
 """
 
+import json
 import os
 import shutil
 import socket
 import sys
 import tempfile
 import threading
+import time
 
 import pytest
 
@@ -177,7 +179,6 @@ def test_concurrent_execs_are_served_concurrently(channel):
         results[i] = channel.exec(
             [sys.executable, "-c", f"import time; time.sleep(0.3); print({i})"])
     threads = [threading.Thread(target=run, args=(i,)) for i in range(4)]
-    import time
     t0 = time.perf_counter()
     for t in threads:
         t.start()
@@ -187,3 +188,17 @@ def test_concurrent_execs_are_served_concurrently(channel):
     assert [r.stdout for r in results] == [b"0\n", b"1\n", b"2\n", b"3\n"]
     # four 0.3s sleeps served serially take >=1.2s; generous margin for CI
     assert elapsed < 1.0
+
+
+def test_guest_agent_rejects_non_string_argv():
+    client, server = socket.socketpair()
+    thread = threading.Thread(
+        target=guest_agent.handle_connection, args=(server,))
+    thread.start()
+    client.sendall(
+        json.dumps({"argv": [123], "timeout_s": None}).encode() + b"\n")
+    reply = json.loads(client.makefile().readline())
+    thread.join(1)
+    client.close()
+
+    assert "non-empty strings" in reply["error"]

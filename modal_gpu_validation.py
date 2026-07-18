@@ -9,10 +9,12 @@ over the lmsysorg/sglang image (for CUDA torch + deps) and, on a real GPU:
 3. stock live-engine baseline: sgl.Engine (Qwen3-0.6B) — 10 requests sharing
    a long prefix. This measures SGLang's existing RadixAttention reuse; the
    engine is not configured to call TreeRadixCache's branch APIs.
+4. patched live-engine branch path and sustained-pressure comparison using
+   request-carried tree/branch identity.
 
 Run: SGLANG_DIR=/path/to/sglang python3 -m modal run modal_gpu_validation.py
-(SGLANG_DIR defaults to ~/sglang; it must be a checkout with the
-patches/0001-sglang-tree-radix-cache.patch applied.)
+(SGLANG_DIR defaults to ~/sglang; it must be a checkout with patches 0001,
+0002, and 0003 applied in order.)
 """
 
 import json

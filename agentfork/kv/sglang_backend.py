@@ -62,3 +62,7 @@ class SGLangKVBackend:
         charged = new_total - max(hit, old_len)
         self._lengths[tree_id] = new_total
         return charged
+
+    @locked
+    def has_tree(self, tree_id: str) -> bool:
+        return tree_id in self._lengths

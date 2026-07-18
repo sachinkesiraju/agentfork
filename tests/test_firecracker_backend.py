@@ -8,12 +8,19 @@ factory via the ``microvm_factory`` constructor argument, and a fake exec
 client via ``exec_client_factory``.
 """
 
+import json
 import os
+import subprocess
+import sys
+import threading
+import time
 
 import pytest
 
+from agentfork import ForkOrchestrator
 from agentfork.sandbox.firecracker_backend import FirecrackerSandbox
-from agentfork.sandbox.vsock import ExecResult
+from agentfork.sandbox.fc_bench import JailerConfig
+from agentfork.sandbox.vsock import ExecResult, VsockError
 
 
 class FakeProc:
@@ -206,8 +213,6 @@ def test_exec_routes_to_branch_uds_and_returns_result(tmp_path):
 
 
 def test_wait_ready_retries_until_agent_answers(tmp_path):
-    from agentfork.sandbox.vsock import VsockError
-
     class SlowBootExecClient(FakeExecClient):
         failures = [3]  # class-level countdown shared across instances
 
@@ -234,8 +239,6 @@ def test_wait_ready_retries_until_agent_answers(tmp_path):
 
 
 def test_wait_ready_gives_up_after_deadline(tmp_path):
-    from agentfork.sandbox.vsock import VsockError
-
     class NeverReadyClient(FakeExecClient):
         def exec(self, argv, timeout_s=None, stdin=None):
             raise VsockError("nobody home")
@@ -252,6 +255,16 @@ def test_wait_ready_gives_up_after_deadline(tmp_path):
 
     with pytest.raises(VsockError, match="not ready"):
         sandbox.wait_ready("root", timeout_s=0.3)
+
+
+def test_orchestrator_waits_for_guest_readiness_before_forking(tmp_path):
+    sandbox, _, exec_factory = _make_sandbox(tmp_path)
+    with ForkOrchestrator(sandbox=sandbox) as orch:
+        orch.create_parent("root")
+        orch.fork("root", child_ids=["root/child"])
+
+    assert [call[2] for call in exec_factory.calls] == [
+        ("true",), ("tee", "/dev/urandom"), ("true",)]
 
 
 def test_exec_unknown_branch_raises_key_error(tmp_path):
@@ -349,34 +362,28 @@ def test_spawn_records_pid_and_kill_removes_it(tmp_path):
     sandbox.spawn("root", None)
 
     pid_path = tmp_path / "root" / "fc.pid"
-    assert pid_path.read_text() == "54321"
+    assert json.loads(pid_path.read_text()) == {"pid": 54321}
 
     sandbox.kill("root")
     assert not pid_path.exists()
 
 
 def test_kill_reclaims_orphan_from_pid_file_after_restart(tmp_path):
-    import subprocess
-    import sys
-
     orphan = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     try:
         # simulate a restarted supervisor: fresh adapter, no in-memory
-        # handles, only the pid file a previous life recorded. fc_bin is the
-        # python interpreter so the orphan passes the /proc comm check the
-        # way a real leftover VMM would.
+        # handles, only the pid record a previous life wrote.
         (tmp_path / "ghost").mkdir()
-        (tmp_path / "ghost" / "fc.pid").write_text(str(orphan.pid))
-        sandbox = FirecrackerSandbox(
-            fc_bin=sys.executable, kernel="kernel", rootfs="rootfs.ext4",
-            work_dir=str(tmp_path), microvm_factory=FakeMicroVMFactory(),
-            exec_client_factory=FakeExecClientFactory())
+        sandbox, factory, _ = _make_sandbox(tmp_path)
+        record = sandbox._process_identity(orphan.pid)
+        assert record is not None
+        (tmp_path / "ghost" / "fc.pid").write_text(json.dumps(record))
 
         assert sandbox.alive("ghost") is (os.path.exists("/proc"))
         sandbox.kill("ghost")
 
         assert orphan.wait(timeout=5) != 0  # SIGKILLed
-        assert not (tmp_path / "ghost" / "fc.pid").exists()
+        assert not (tmp_path / "ghost").exists()
     finally:
         if orphan.poll() is None:
             orphan.kill()
@@ -385,14 +392,10 @@ def test_kill_reclaims_orphan_from_pid_file_after_restart(tmp_path):
 
 @pytest.mark.skipif(not os.path.exists("/proc"), reason="needs /proc comm")
 def test_recycled_pid_with_wrong_comm_is_spared(tmp_path):
-    import subprocess
-    import sys
-
     bystander = subprocess.Popen([sys.executable, "-c",
                                   "import time; time.sleep(60)"])
     try:
-        # the recorded pid now belongs to a non-VMM process (recycled): the
-        # comm check must spare it instead of SIGKILLing an innocent
+        # legacy plain-pid file whose pid now belongs to a non-VMM process
         (tmp_path / "ghost").mkdir()
         (tmp_path / "ghost" / "fc.pid").write_text(str(bystander.pid))
         sandbox, _, _ = _make_sandbox(tmp_path)  # fc_bin="fc-bin"
@@ -401,7 +404,7 @@ def test_recycled_pid_with_wrong_comm_is_spared(tmp_path):
         sandbox.kill("ghost")
 
         assert bystander.poll() is None  # still running, unharmed
-        assert not (tmp_path / "ghost" / "fc.pid").exists()  # record cleared
+        assert not (tmp_path / "ghost").exists()  # artifacts cleared
     finally:
         bystander.kill()
         bystander.wait()
@@ -467,6 +470,130 @@ def test_sweep_dead_lists_branches_whose_vmm_exited(tmp_path):
     assert sandbox.alive("root") is True
 
 
+def test_branch_paths_cannot_escape_or_collide(tmp_path):
+    sandbox, _, _ = _make_sandbox(tmp_path)
+
+    with pytest.raises(ValueError, match="branch_id"):
+        sandbox._vm_dir("..")
+    with pytest.raises(ValueError, match="branch_id"):
+        sandbox._vm_dir("")
+    assert sandbox._vm_dir("a/b") != sandbox._vm_dir("a_b")
+    encoded_name = os.path.basename(sandbox._vm_dir("a/b"))
+    with pytest.raises(ValueError, match="branch_id"):
+        sandbox._vm_dir(encoded_name)
+
+
+def test_pid_reuse_identity_mismatch_never_kills_process(tmp_path):
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        sandbox, _, _ = _make_sandbox(tmp_path)
+        vm_dir = tmp_path / "ghost"
+        vm_dir.mkdir()
+        record = sandbox._process_identity(process.pid)
+        assert record is not None
+        record["start_time"] += 1
+        (vm_dir / "fc.pid").write_text(json.dumps(record))
+
+        sandbox.kill("ghost")
+
+        assert process.poll() is None
+        assert not vm_dir.exists()
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+
+
+def test_kill_removes_snapshot_and_overlay_artifacts(tmp_path):
+    sandbox, _, _ = _make_sandbox(
+        tmp_path, overlay_mib=1, mkfs="true")
+    sandbox.spawn("root", None)
+    sandbox.spawn("child", "root")
+    assert (tmp_path / "root" / "mem").exists()
+    assert (tmp_path / "root" / "overlay.ext4").exists()
+
+    sandbox.kill("root")
+
+    assert not (tmp_path / "root").exists()
+
+
+def test_parent_kill_waits_until_child_restore_finishes(tmp_path):
+    restore_started = threading.Event()
+    release_restore = threading.Event()
+
+    class BlockingRestoreVM(FakeMicroVM):
+        def restore(self, mem_path, state_path):
+            restore_started.set()
+            release_restore.wait(2)
+            return super().restore(mem_path, state_path)
+
+    class Factory(FakeMicroVMFactory):
+        def __call__(self, fc_bin, vm_dir):
+            vm = BlockingRestoreVM(fc_bin, vm_dir)
+            self.instances.append(vm)
+            self.by_dir[vm_dir] = vm
+            return vm
+
+    sandbox, _, _ = _make_sandbox(tmp_path, factory=Factory())
+    sandbox.spawn("root", None)
+    child = threading.Thread(
+        target=sandbox.spawn, args=("child", "root"))
+    child.start()
+    assert restore_started.wait(1)
+    killed = threading.Event()
+    kill = threading.Thread(
+        target=lambda: (sandbox.kill("root"), killed.set()))
+    kill.start()
+
+    time.sleep(0.05)
+    assert not killed.is_set()
+    release_restore.set()
+    child.join(2)
+    kill.join(2)
+
+    assert killed.is_set()
+    assert sandbox.alive("child")
+
+
+def test_fork_waits_for_in_flight_exec_before_snapshot(tmp_path):
+    exec_started = threading.Event()
+    release_exec = threading.Event()
+
+    class BlockingClient(FakeExecClient):
+        def exec(self, argv, timeout_s=None, stdin=None):
+            exec_started.set()
+            release_exec.wait(2)
+            return super().exec(argv, timeout_s, stdin=stdin)
+
+    class ExecFactory(FakeExecClientFactory):
+        def __call__(self, uds_path, port):
+            return BlockingClient(uds_path, port, self.calls)
+
+    factory = FakeMicroVMFactory()
+    sandbox = FirecrackerSandbox(
+        fc_bin="fc-bin", kernel="kernel", rootfs="rootfs.ext4",
+        work_dir=str(tmp_path), microvm_factory=factory,
+        exec_client_factory=ExecFactory())
+    sandbox.spawn("root", None)
+    root = factory.instances[0]
+    execute = threading.Thread(
+        target=sandbox.exec, args=("root", ["touch", "/tmp/x"]))
+    execute.start()
+    assert exec_started.wait(1)
+    fork = threading.Thread(
+        target=sandbox.spawn, args=("child", "root"))
+    fork.start()
+
+    time.sleep(0.05)
+    assert "snapshot" not in _events(root)
+    release_exec.set()
+    execute.join(2)
+    fork.join(2)
+
+    assert "snapshot" in _events(root)
+
+
 class JailAwareFakeFactory(FakeMicroVMFactory):
     """Fake factory matching the 3-arg signature the adapter uses when a
     jailer is configured."""
@@ -481,8 +608,6 @@ class JailAwareFakeFactory(FakeMicroVMFactory):
 
 
 def test_jailed_child_gets_snapshot_pair_and_rootfs_staged(tmp_path):
-    from agentfork.sandbox.fc_bench import JailerConfig
-
     rootfs = tmp_path / "rootfs.squashfs"
     rootfs.write_bytes(b"rootfs-bytes")
     # uid/gid = our own so the _chown_into_jail call is permitted in tests
