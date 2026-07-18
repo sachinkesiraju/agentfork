@@ -1,0 +1,940 @@
+From d85e5dc7980898b7269529912d570ca263089ad3 Mon Sep 17 00:00:00 2001
+From: Sachin Kesiraju <kesirajusachin@gmail.com>
+Date: Fri, 17 Jul 2026 21:13:28 -0400
+Subject: [PATCH] Wire branch lifecycle through the SGLang request path.
+
+Generated with [Devin](https://devin.ai)
+
+Co-Authored-By: Devin <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ python/sglang/srt/entrypoints/engine.py       |  42 +++++++
+ python/sglang/srt/entrypoints/http_server.py  |  13 ++
+ .../sglang/srt/entrypoints/openai/protocol.py |  12 ++
+ .../srt/entrypoints/openai/serving_chat.py    |   5 +
+ .../entrypoints/openai/serving_completions.py |   5 +
+ python/sglang/srt/managers/io_struct.py       |  47 +++++++
+ python/sglang/srt/managers/schedule_batch.py  |  11 ++
+ python/sglang/srt/managers/scheduler.py       |  21 ++++
+ .../srt/managers/tokenizer_control_mixin.py   |  13 ++
+ .../sglang/srt/managers/tokenizer_manager.py  |   5 +
+ .../srt/managers/tree_cache_lifecycle.py      | 113 +++++++++++++++++
+ python/sglang/srt/mem_cache/registry.py       |  12 ++
+ .../sglang/srt/mem_cache/tree_radix_cache.py  | 119 +++++++++++++++---
+ python/sglang/srt/server_args.py              |   4 +
+ .../unit/mem_cache/test_tree_radix_cache.py   |  74 +++++++++++
+ 15 files changed, 482 insertions(+), 14 deletions(-)
+ create mode 100644 python/sglang/srt/managers/tree_cache_lifecycle.py
+
+diff --git a/python/sglang/srt/entrypoints/engine.py b/python/sglang/srt/entrypoints/engine.py
+index 6e822d6af..2cb206369 100644
+--- a/python/sglang/srt/entrypoints/engine.py
++++ b/python/sglang/srt/entrypoints/engine.py
+@@ -75,6 +75,7 @@ from sglang.srt.managers.io_struct import (
+     ResumeMemoryOccupationReqInput,
+     RpcReqInput,
+     RpcReqOutput,
++    TreeCacheOpReqInput,
+     UnloadLoRAAdapterReqInput,
+     UpdateWeightFromDiskReqInput,
+     UpdateWeightsFromDistributedReqInput,
+@@ -358,6 +359,11 @@ class Engine(EngineScoreMixin, EngineBase):
+         session_params: Optional[Dict] = None,
+         priority: Optional[int] = None,
+         session_id: Optional[str] = None,
++        tree_id: Optional[str] = None,
++        branch_id: Optional[str] = None,
++        parent_id: Optional[str] = None,
++        branch_end: bool = False,
++        branch_reserve_tokens: Optional[int] = None,
+     ) -> Union[Dict, Iterator[Dict]]:
+         """
+         The arguments of this function is the same as `sglang/srt/managers/io_struct.py::GenerateReqInput`.
+@@ -396,6 +402,11 @@ class Engine(EngineScoreMixin, EngineBase):
+             session_id=session_id,
+             session_params=session_params,
+             priority=priority,
++            tree_id=tree_id,
++            branch_id=branch_id,
++            parent_id=parent_id,
++            branch_end=branch_end,
++            branch_reserve_tokens=branch_reserve_tokens,
+         )
+         generator = self.tokenizer_manager.generate_request(obj, None)
+ 
+@@ -462,6 +473,11 @@ class Engine(EngineScoreMixin, EngineBase):
+         session_params: Optional[Dict] = None,
+         priority: Optional[int] = None,
+         session_id: Optional[str] = None,
++        tree_id: Optional[str] = None,
++        branch_id: Optional[str] = None,
++        parent_id: Optional[str] = None,
++        branch_end: bool = False,
++        branch_reserve_tokens: Optional[int] = None,
+     ) -> Union[Dict, AsyncIterator[Dict]]:
+         """
+         The arguments of this function is the same as `sglang/srt/managers/io_struct.py::GenerateReqInput`.
+@@ -500,6 +516,11 @@ class Engine(EngineScoreMixin, EngineBase):
+             session_id=session_id,
+             session_params=session_params,
+             priority=priority,
++            tree_id=tree_id,
++            branch_id=branch_id,
++            parent_id=parent_id,
++            branch_end=branch_end,
++            branch_reserve_tokens=branch_reserve_tokens,
+         )
+         generator = self.tokenizer_manager.generate_request(obj, None)
+ 
+@@ -934,6 +955,27 @@ class Engine(EngineScoreMixin, EngineBase):
+     def flush_cache(self):
+         return self.loop.run_until_complete(self.tokenizer_manager.flush_cache())
+ 
++    def tree_cache_op(
++        self,
++        operation: str,
++        branch_id: str,
++        *,
++        tree_id: Optional[str] = None,
++        parent_id: Optional[str] = None,
++        tokens: Optional[int] = None,
++    ):
++        return self.loop.run_until_complete(
++            self.tokenizer_manager.tree_cache_op(
++                TreeCacheOpReqInput(
++                    operation=operation,
++                    branch_id=branch_id,
++                    tree_id=tree_id,
++                    parent_id=parent_id,
++                    tokens=tokens,
++                )
++            )
++        )
++
+     def open_session(
+         self,
+         capacity_of_str_len: int,
+diff --git a/python/sglang/srt/entrypoints/http_server.py b/python/sglang/srt/entrypoints/http_server.py
+index d7bae9633..dd089d827 100644
+--- a/python/sglang/srt/entrypoints/http_server.py
++++ b/python/sglang/srt/entrypoints/http_server.py
+@@ -136,6 +136,7 @@ from sglang.srt.managers.io_struct import (
+     SeparateReasoningReqInput,
+     SetInternalStateReq,
+     SlowDownReqInput,
++    TreeCacheOpReqInput,
+     UnloadLoRAAdapterReqInput,
+     UpdateWeightFromDiskReqInput,
+     UpdateWeightsFromDistributedReqInput,
+@@ -888,6 +889,18 @@ async def classify_request(obj: EmbeddingReqInput, request: Request):
+         return _create_error_response(e)
+ 
+ 
++@app.post("/tree_cache")
++@auth_level(AuthLevel.ADMIN_OPTIONAL)
++async def tree_cache(request: TreeCacheOpReqInput):
++    result = await _global_state.tokenizer_manager.tree_cache_op(request)
++    if not result.success:
++        return ORJSONResponse(
++            {"success": False, "message": result.message},
++            status_code=400,
++        )
++    return {"success": True, "value": result.value}
++
++
+ @app.api_route("/flush_cache", methods=["GET", "POST"])
+ @auth_level(AuthLevel.ADMIN_OPTIONAL)
+ async def flush_cache(timeout: float = Query(0.0, ge=0.0)):
+diff --git a/python/sglang/srt/entrypoints/openai/protocol.py b/python/sglang/srt/entrypoints/openai/protocol.py
+index 2677a0637..29d1fd896 100644
+--- a/python/sglang/srt/entrypoints/openai/protocol.py
++++ b/python/sglang/srt/entrypoints/openai/protocol.py
+@@ -385,6 +385,12 @@ class CompletionRequest(BaseModel):
+     # Priority for the request
+     priority: Optional[int] = None
+ 
++    tree_id: Optional[str] = None
++    branch_id: Optional[str] = None
++    parent_id: Optional[str] = None
++    branch_end: bool = False
++    branch_reserve_tokens: Optional[int] = None
++
+     # For custom metric labels
+     custom_labels: Optional[Dict[str, str]] = None
+ 
+@@ -760,6 +766,12 @@ class ChatCompletionRequest(BaseModel):
+     # Priority for the request
+     priority: Optional[int] = None
+ 
++    tree_id: Optional[str] = None
++    branch_id: Optional[str] = None
++    parent_id: Optional[str] = None
++    branch_end: bool = False
++    branch_reserve_tokens: Optional[int] = None
++
+     # For PD disaggregation
+     bootstrap_host: Optional[Union[List[str], str]] = None
+     bootstrap_port: Optional[Union[List[Optional[int]], int]] = None
+diff --git a/python/sglang/srt/entrypoints/openai/serving_chat.py b/python/sglang/srt/entrypoints/openai/serving_chat.py
+index 3a678173f..6720387fe 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_chat.py
++++ b/python/sglang/srt/entrypoints/openai/serving_chat.py
+@@ -624,6 +624,11 @@ class OpenAIServingChat(OpenAIServingBase):
+             extra_key=self._compute_extra_key(request),
+             require_reasoning=require_reasoning,
+             priority=request.priority,
++            tree_id=request.tree_id,
++            branch_id=request.branch_id,
++            parent_id=request.parent_id,
++            branch_end=request.branch_end,
++            branch_reserve_tokens=request.branch_reserve_tokens,
+             routing_key=self.extract_routing_key(raw_request),
+             custom_labels=custom_labels,
+             custom_logit_processor=request.custom_logit_processor,
+diff --git a/python/sglang/srt/entrypoints/openai/serving_completions.py b/python/sglang/srt/entrypoints/openai/serving_completions.py
+index 0b88c1a2e..127002e6b 100644
+--- a/python/sglang/srt/entrypoints/openai/serving_completions.py
++++ b/python/sglang/srt/entrypoints/openai/serving_completions.py
+@@ -128,6 +128,11 @@ class OpenAIServingCompletion(OpenAIServingBase):
+             session_id=request.session_id,
+             extra_key=self._compute_extra_key(request),
+             priority=request.priority,
++            tree_id=request.tree_id,
++            branch_id=request.branch_id,
++            parent_id=request.parent_id,
++            branch_end=request.branch_end,
++            branch_reserve_tokens=request.branch_reserve_tokens,
+             routing_key=self.extract_routing_key(raw_request),
+             custom_labels=custom_labels,
+             custom_logit_processor=request.custom_logit_processor,
+diff --git a/python/sglang/srt/managers/io_struct.py b/python/sglang/srt/managers/io_struct.py
+index 5029c8b13..5b885da2c 100644
+--- a/python/sglang/srt/managers/io_struct.py
++++ b/python/sglang/srt/managers/io_struct.py
+@@ -270,6 +270,13 @@ class GenerateReqInput:
+     # Extra cache key for classifying the request (e.g. cache_salt)
+     extra_key: Optional[Union[List[str], str]] = None
+ 
++    # Agent-tree KV lifecycle. Tree fields are single-request only.
++    tree_id: Optional[str] = None
++    branch_id: Optional[str] = None
++    parent_id: Optional[str] = None
++    branch_end: bool = False
++    branch_reserve_tokens: Optional[int] = None
++
+     # Whether to disallow logging for this request (e.g. due to ZDR)
+     no_logs: bool = False
+     # For custom metric labels
+@@ -349,6 +356,7 @@ class GenerateReqInput:
+         if self.session_id is not None and self.session_params is not None:
+             raise ValueError("session_id and session_params cannot both be set.")
+         self._handle_parallel_sampling()
++        self._validate_tree_fields()
+ 
+         if self.is_single:
+             self._normalize_single_inputs()
+@@ -357,6 +365,25 @@ class GenerateReqInput:
+ 
+         self._validate_rid_uniqueness()
+ 
++    def _validate_tree_fields(self):
++        if self.branch_id is None:
++            if any(
++                (
++                    self.tree_id is not None,
++                    self.parent_id is not None,
++                    self.branch_end,
++                    self.branch_reserve_tokens is not None,
++                )
++            ):
++                raise ValueError("branch_id is required for agent-tree requests")
++            return
++        if not self.is_single:
++            raise ValueError("agent-tree fields are only supported for single requests")
++        if self.session_id is not None or self.session_params is not None:
++            raise ValueError("agent-tree fields cannot be combined with sessions")
++        if self.branch_reserve_tokens is not None and self.branch_reserve_tokens < 0:
++            raise ValueError("branch_reserve_tokens must be nonnegative")
++
+     def _validate_inputs(self):
+         """Validate that the input configuration is valid."""
+         if (
+@@ -855,6 +882,12 @@ class TokenizedGenerateReqInput(BaseReq, kw_only=True):
+     # Extra cache key for classifying the request (e.g. cache_salt)
+     extra_key: Optional[str] = None
+ 
++    tree_id: Optional[str] = None
++    branch_id: Optional[str] = None
++    parent_id: Optional[str] = None
++    branch_end: bool = False
++    branch_reserve_tokens: Optional[int] = None
++
+     # Whether to disallow logging for this request (e.g. due to ZDR)
+     no_logs: bool = False
+ 
+@@ -1424,6 +1457,20 @@ class FlushCacheReqOutput(BaseReq, kw_only=True):
+     message: str = ""
+ 
+ 
++class TreeCacheOpReqInput(BaseReq, kw_only=True):
++    operation: str
++    branch_id: str
++    tree_id: Optional[str] = None
++    parent_id: Optional[str] = None
++    tokens: Optional[int] = None
++
++
++class TreeCacheOpReqOutput(BaseReq, kw_only=True):
++    success: bool
++    message: str
++    value: Any = None
++
++
+ class AddExternalCorpusReqInput(BaseReq, kw_only=True):
+     corpus_id: Optional[str] = None
+     file_path: Optional[str] = None
+diff --git a/python/sglang/srt/managers/schedule_batch.py b/python/sglang/srt/managers/schedule_batch.py
+index cb22ac7dc..56d43698a 100755
+--- a/python/sglang/srt/managers/schedule_batch.py
++++ b/python/sglang/srt/managers/schedule_batch.py
+@@ -721,6 +721,11 @@ class Req(ReqDllmMixin):
+         return_pooled_hidden_states: bool = False,
+         multi_item_delimiter_indices: Optional[List[int]] = None,
+         session_id: Optional[str] = None,
++        tree_id: Optional[str] = None,
++        branch_id: Optional[str] = None,
++        parent_id: Optional[str] = None,
++        branch_end: bool = False,
++        branch_reserve_tokens: Optional[int] = None,
+     ):
+         # Input and output info
+         self.rid = rid
+@@ -744,6 +749,12 @@ class Req(ReqDllmMixin):
+ 
+         self.session = session
+         self.session_id = session_id
++        self.tree_id = tree_id
++        self.branch_id = branch_id
++        self.parent_id = parent_id
++        self.branch_end = branch_end
++        self.branch_reserve_tokens = branch_reserve_tokens
++        self.tree_branch_created = False
+         self.input_embeds = input_embeds
+         self.positional_embed_overrides = positional_embed_overrides
+         self.multi_item_delimiter_indices = multi_item_delimiter_indices
+diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/managers/scheduler.py
+index ea11a15a3..e7143807a 100644
+--- a/python/sglang/srt/managers/scheduler.py
++++ b/python/sglang/srt/managers/scheduler.py
+@@ -136,6 +136,7 @@ from sglang.srt.managers.io_struct import (
+     SlowDownReqOutput,
+     TokenizedEmbeddingReqInput,
+     TokenizedGenerateReqInput,
++    TreeCacheOpReqInput,
+     UnloadLoRAAdapterReqInput,
+     UnloadLoRAAdapterReqOutput,
+     UpdateWeightFromDiskReqInput,
+@@ -218,6 +219,7 @@ from sglang.srt.managers.scheduler_components.weight_updater import (
+     SchedulerWeightUpdaterManager,
+ )
+ from sglang.srt.managers.scheduler_input_blocker import SchedulerInputBlocker
++from sglang.srt.managers.tree_cache_lifecycle import TreeCacheLifecycle
+ from sglang.srt.managers.scheduler_pp_mixin import SchedulerPPMixin
+ from sglang.srt.managers.utils import (
+     EmbeddingBatchResult,
+@@ -465,6 +467,7 @@ class Scheduler(
+         if (c := self.tp_worker.model_runner.canary_manager) is not None:
+             c.attach_radix_cache(self.tree_cache)
+ 
++        self.init_tree_cache_lifecycle()
+         self.init_hisparse_coordinator()
+ 
+         if (
+@@ -1324,6 +1327,9 @@ class Scheduler(
+             get_int_env_var(env_var, default_size) if env_var else None
+         )
+ 
++    def init_tree_cache_lifecycle(self):
++        self.tree_cache_lifecycle = TreeCacheLifecycle(self.tree_cache)
++
+     def init_request_dispatcher(self):
+         self._request_dispatcher = TypeBasedDispatcher(
+             [
+@@ -1332,6 +1338,7 @@ class Scheduler(
+                 (BatchTokenizedGenerateReqInput, self.handle_batch_generate_request),
+                 (BatchTokenizedEmbeddingReqInput, self.handle_batch_embedding_request),
+                 (FlushCacheReqInput, self.flush_wrapper.handle),
++                (TreeCacheOpReqInput, self.tree_cache_lifecycle.handle),
+                 (ClearHiCacheReqInput, self.clear_hicache_storage_wrapped),
+                 (AttachHiCacheStorageReqInput, self.attach_hicache_storage_wrapped),
+                 (DetachHiCacheStorageReqInput, self.detach_hicache_storage_wrapped),
+@@ -2069,6 +2076,11 @@ class Scheduler(
+                 dllm_config=self.dllm_config,
+                 time_stats=recv_req.time_stats,
+                 multi_item_delimiter_indices=recv_req.multi_item_delimiter_indices,
++                tree_id=recv_req.tree_id,
++                branch_id=recv_req.branch_id,
++                parent_id=recv_req.parent_id,
++                branch_end=recv_req.branch_end,
++                branch_reserve_tokens=recv_req.branch_reserve_tokens,
+             )
+             req.tokenizer = self.tokenizer
+ 
+@@ -2280,6 +2292,12 @@ class Scheduler(
+                 self._add_request_to_queue(req)
+                 return
+ 
++        tree_error = self.tree_cache_lifecycle.prepare_request(req)
++        if tree_error is not None:
++            req.set_finish_with_abort(tree_error)
++            self._add_request_to_queue(req)
++            return
++
+         added_to_grammar_queue = self.grammar_manager.process_req_with_grammar(req)
+         if not added_to_grammar_queue:
+             self._add_request_to_queue(req)
+@@ -3941,6 +3959,7 @@ class Scheduler(
+     def abort_request(self, recv_req: AbortReq):
+         if (chunked_req := self.chunked_req) is not None:
+             if recv_req.abort_all or chunked_req.rid.startswith(recv_req.rid):
++                chunked_req.branch_end = chunked_req.tree_branch_created
+                 self._pending_chunked_abort_req = chunked_req
+ 
+         # todo hisparse, release resources for abort requests in hisparse coordinator
+@@ -3956,6 +3975,7 @@ class Scheduler(
+             # This only works for requests that have not started anything.
+             # We still need to send something back to TokenizerManager to clean up the state.
+             req = self.waiting_queue.pop(i)
++            self.tree_cache_lifecycle.abort_request(req)
+             if self.enable_hicache_storage:
+                 # to release prefetch events associated with the request
+                 self.tree_cache.release_aborted_request(req.rid)
+@@ -4052,6 +4072,7 @@ class Scheduler(
+                 # The request will still run one decode forward pass.
+                 # Then we reuse all existing code to clean up the KV cache allocation.
+                 logger.debug(f"Abort running request. {req.rid=}")
++                req.branch_end = req.tree_branch_created
+                 req.to_finish = FINISH_ABORT()
+ 
+     def _pause_engine(self) -> Tuple[List[Req], int]:
+diff --git a/python/sglang/srt/managers/tokenizer_control_mixin.py b/python/sglang/srt/managers/tokenizer_control_mixin.py
+index 9cbec3725..7c946d162 100644
+--- a/python/sglang/srt/managers/tokenizer_control_mixin.py
++++ b/python/sglang/srt/managers/tokenizer_control_mixin.py
+@@ -32,6 +32,8 @@ from sglang.srt.managers.io_struct import (
+     ExpertDistributionReqType,
+     FlushCacheReqInput,
+     FlushCacheReqOutput,
++    TreeCacheOpReqInput,
++    TreeCacheOpReqOutput,
+     GetInternalStateReq,
+     GetInternalStateReqOutput,
+     GetWeightsByNameReqInput,
+@@ -106,6 +108,7 @@ _COMMUNICATOR_SPECS = [
+     ("check_weights", CheckWeightsReqOutput),
+     ("slow_down", SlowDownReqOutput),
+     ("flush_cache", FlushCacheReqOutput),
++    ("tree_cache_op", TreeCacheOpReqOutput),
+     ("add_external_corpus", AddExternalCorpusReqOutput),
+     ("remove_external_corpus", RemoveExternalCorpusReqOutput),
+     ("list_external_corpora", ListExternalCorporaReqOutput),
+@@ -261,6 +264,16 @@ class TokenizerControlMixin:
+             await self.flush_cache_communicator(FlushCacheReqInput(timeout_s=timeout_s))
+         )[0]
+ 
++    async def tree_cache_op(
++        self: TokenizerManager, request: TreeCacheOpReqInput
++    ) -> TreeCacheOpReqOutput:
++        self.auto_create_handle_loop()
++        results = await self.tree_cache_op_communicator(request)
++        failures = [result.message for result in results if not result.success]
++        if failures:
++            return TreeCacheOpReqOutput(success=False, message="; ".join(failures))
++        return results[0]
++
+     async def clear_hicache_storage(self: TokenizerManager) -> ClearHiCacheReqOutput:
+         """Clear the hierarchical cache storage."""
+         self.auto_create_handle_loop()
+diff --git a/python/sglang/srt/managers/tokenizer_manager.py b/python/sglang/srt/managers/tokenizer_manager.py
+index 6d066b198..46b44a5bf 100644
+--- a/python/sglang/srt/managers/tokenizer_manager.py
++++ b/python/sglang/srt/managers/tokenizer_manager.py
+@@ -1201,6 +1201,11 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+                 disagg_prefill_dp_rank=obj.disagg_prefill_dp_rank,
+                 priority=obj.priority,
+                 extra_key=obj.extra_key,
++                tree_id=obj.tree_id,
++                branch_id=obj.branch_id,
++                parent_id=obj.parent_id,
++                branch_end=obj.branch_end,
++                branch_reserve_tokens=obj.branch_reserve_tokens,
+                 routing_key=obj.routing_key,
+                 token_type_ids=token_type_ids,
+                 need_wait_for_mm_inputs=obj.need_wait_for_mm_inputs,
+diff --git a/python/sglang/srt/managers/tree_cache_lifecycle.py b/python/sglang/srt/managers/tree_cache_lifecycle.py
+new file mode 100644
+index 000000000..8fc1d7ee9
+--- /dev/null
++++ b/python/sglang/srt/managers/tree_cache_lifecycle.py
+@@ -0,0 +1,113 @@
++from __future__ import annotations
++
++from sglang.srt.managers.io_struct import TreeCacheOpReqInput, TreeCacheOpReqOutput
++from sglang.srt.mem_cache.tree_radix_cache import TreeQuotaExceeded, TreeRadixCache
++
++
++class TreeCacheLifecycle:
++    def __init__(self, tree_cache):
++        self.tree_cache = tree_cache
++        self.enabled = isinstance(tree_cache, TreeRadixCache)
++
++    def prepare_request(self, req) -> str | None:
++        if req.branch_id is None:
++            return None
++        if not self.enabled:
++            return "agent-tree request requires --radix-cache-backend=tree_radix"
++        namespace = self._namespace(req.tree_id, req.extra_key, req.branch_id)
++        created = False
++        try:
++            if self.tree_cache.has_branch(req.branch_id):
++                branch = self.tree_cache.branch(req.branch_id)
++                if branch.namespace != namespace:
++                    raise ValueError(
++                        f"branch {req.branch_id} belongs to tree {branch.namespace}, "
++                        f"not {namespace}"
++                    )
++                if req.parent_id is not None and branch.parent_id != req.parent_id:
++                    raise ValueError(
++                        f"branch {req.branch_id} has parent {branch.parent_id}, "
++                        f"not {req.parent_id}"
++                    )
++            elif req.parent_id is None:
++                self.tree_cache.create_agent_tree(req.branch_id, namespace=namespace)
++                created = True
++            else:
++                parent = self.tree_cache.branch(req.parent_id)
++                if parent.namespace != namespace:
++                    raise ValueError(
++                        f"parent {req.parent_id} belongs to tree {parent.namespace}, "
++                        f"not {namespace}"
++                    )
++                self.tree_cache.fork_branch(req.parent_id, req.branch_id)
++                created = True
++            req.extra_key = namespace
++            req.tree_branch_created = created
++            if req.branch_reserve_tokens:
++                self.tree_cache.reserve(req.branch_id, req.branch_reserve_tokens)
++            return None
++        except (KeyError, TreeQuotaExceeded, ValueError) as exc:
++            if created:
++                self.tree_cache.kill_tree(req.branch_id)
++            req.branch_id = None
++            return str(exc)
++
++    def abort_request(self, req) -> None:
++        if self.enabled and req.tree_branch_created and req.branch_id is not None:
++            self.tree_cache.kill_tree(req.branch_id)
++
++    def handle(self, request: TreeCacheOpReqInput) -> TreeCacheOpReqOutput:
++        if not self.enabled:
++            return TreeCacheOpReqOutput(
++                success=False,
++                message="tree_radix cache backend is not enabled",
++            )
++        try:
++            value = None
++            if request.operation == "create":
++                self.tree_cache.create_agent_tree(
++                    request.branch_id,
++                    namespace=request.tree_id or request.branch_id,
++                )
++            elif request.operation == "fork":
++                if request.parent_id is None:
++                    raise ValueError("parent_id is required for fork")
++                self.tree_cache.fork_branch(request.parent_id, request.branch_id)
++            elif request.operation == "kill":
++                value = self.tree_cache.kill_tree(request.branch_id)
++            elif request.operation == "reserve":
++                if request.tokens is None:
++                    raise ValueError("tokens is required for reserve")
++                self.tree_cache.reserve(request.branch_id, request.tokens)
++            elif request.operation == "demote":
++                value = self.tree_cache.demote_branch(request.branch_id)
++            elif request.operation == "promote":
++                value = self.tree_cache.promote_branch(request.branch_id)
++            elif request.operation == "invalidate":
++                value = self.tree_cache.invalidate_tree(request.branch_id)
++            elif request.operation == "telemetry":
++                branch = self.tree_cache.branch(request.branch_id)
++                telemetry = self.tree_cache.tree_telemetry(branch.namespace)
++                return TreeCacheOpReqOutput(
++                    success=True,
++                    message="",
++                    value={
++                        "live_branches": telemetry.live_branches,
++                        "charged_tokens": telemetry.charged_tokens,
++                        "pinned_tokens": telemetry.pinned_tokens,
++                        "reserved_tokens": telemetry.reserved_tokens,
++                        "saved_tokens": telemetry.saved_tokens,
++                        "invalidations": telemetry.invalidations,
++                        "demotions": telemetry.demotions,
++                    },
++                )
++            else:
++                raise ValueError(f"unknown tree cache operation: {request.operation}")
++            return TreeCacheOpReqOutput(success=True, message="", value=value)
++        except (KeyError, TreeQuotaExceeded, ValueError) as exc:
++            return TreeCacheOpReqOutput(success=False, message=str(exc))
++
++    @staticmethod
++    def _namespace(tree_id: str | None, extra_key: str | None, branch_id: str) -> str:
++        namespace = tree_id or branch_id
++        return f"{namespace}:{extra_key}" if extra_key else namespace
+diff --git a/python/sglang/srt/mem_cache/registry.py b/python/sglang/srt/mem_cache/registry.py
+index 744134e01..0fe0b9a39 100644
+--- a/python/sglang/srt/mem_cache/registry.py
++++ b/python/sglang/srt/mem_cache/registry.py
+@@ -76,6 +76,18 @@ def registered_radix_cache_backends() -> list[str]:
+     return list(_RADIX_CACHE_REGISTRY.keys())
+ 
+ 
++def _tree_radix_cache_factory(ctx: TreeCacheBuildContext) -> BasePrefixCache:
++    from sglang.srt.mem_cache.tree_radix_cache import TreeRadixCache
++
++    return TreeRadixCache(
++        ctx.params,
++        tree_quota_tokens=ctx.server_args.tree_cache_quota_tokens,
++    )
++
++
++register_radix_cache_backend("tree_radix", _tree_radix_cache_factory)
++
++
+ def default_radix_cache_factory(ctx: TreeCacheBuildContext) -> BasePrefixCache:
+     """Built-in Radix Cache selection chain."""
+     server_args = ctx.server_args
+diff --git a/python/sglang/srt/mem_cache/tree_radix_cache.py b/python/sglang/srt/mem_cache/tree_radix_cache.py
+index a6aa75c1f..6c381f6d0 100644
+--- a/python/sglang/srt/mem_cache/tree_radix_cache.py
++++ b/python/sglang/srt/mem_cache/tree_radix_cache.py
+@@ -74,9 +74,34 @@ class TreeRadixCache(RadixCache):
+ 
+     # ---- quotas / reservations / telemetry -------------------------------
+ 
++    def reset(self):
++        super().reset()
++        if hasattr(self, "_branches"):
++            self._branches.clear()
++            self._telemetry.clear()
++
+     def tree_telemetry(self, namespace: str) -> TreeTelemetry:
+         return self._telemetry.setdefault(namespace, TreeTelemetry())
+ 
++    def has_branch(self, branch_id: str) -> bool:
++        return branch_id in self._branches
++
++    def branch(self, branch_id: str) -> AgentBranch:
++        return self._branches[branch_id]
++
++    def _refresh_pinned_tokens(self, namespace: str) -> None:
++        nodes = set()
++        for branch in self._branches.values():
++            if branch.namespace != namespace or branch.speculative:
++                continue
++            node = branch.locked_node
++            while node is not None and node is not self.root_node:
++                nodes.add(node)
++                node = node.parent
++        self.tree_telemetry(namespace).pinned_tokens = sum(
++            len(node.key) for node in nodes
++        )
++
+     def _prioritize_unpinned_path(self, node: Optional[TreeNode]) -> None:
+         while (
+             node is not None
+@@ -86,8 +111,7 @@ class TreeRadixCache(RadixCache):
+             node.last_access_time = float("-inf")
+             node = node.parent
+ 
+-    def _charge(self, br: AgentBranch, tokens: int) -> None:
+-        """Enforce the per-tree quota; reserved tokens are pre-charged."""
++    def _validate_charge(self, br: AgentBranch, tokens: int) -> None:
+         tel = self.tree_telemetry(br.namespace)
+         from_reserve = min(br.reserved_tokens, tokens)
+         extra = tokens - from_reserve
+@@ -102,6 +126,12 @@ class TreeRadixCache(RadixCache):
+                 f"> quota {self.tree_quota_tokens}"
+             )
+ 
++    def _charge(self, br: AgentBranch, tokens: int) -> None:
++        """Enforce the per-tree quota; reserved tokens are pre-charged."""
++        self._validate_charge(br, tokens)
++        tel = self.tree_telemetry(br.namespace)
++        from_reserve = min(br.reserved_tokens, tokens)
++        extra = tokens - from_reserve
+         br.reserved_tokens -= from_reserve
+         tel.reserved_tokens -= from_reserve
+         tel.charged_tokens += from_reserve
+@@ -136,7 +166,7 @@ class TreeRadixCache(RadixCache):
+         delta = self.dec_lock_ref(br.locked_node).delta
+         br.speculative = True
+         tel = self.tree_telemetry(br.namespace)
+-        tel.pinned_tokens -= delta
++        self._refresh_pinned_tokens(br.namespace)
+         tel.demotions += 1
+         return delta
+ 
+@@ -150,9 +180,9 @@ class TreeRadixCache(RadixCache):
+         res = self.match_prefix(MatchPrefixParams(key=key))
+         br.locked_node = res.last_device_node
+         br.token_ids = br.token_ids[: len(res.device_indices)]
+-        pinned = -self.inc_lock_ref(br.locked_node).delta
++        self.inc_lock_ref(br.locked_node)
+         br.speculative = False
+-        self.tree_telemetry(br.namespace).pinned_tokens += pinned
++        self._refresh_pinned_tokens(br.namespace)
+         return len(br.token_ids)
+ 
+     def invalidate_tree(self, branch_id: str) -> int:
+@@ -168,9 +198,9 @@ class TreeRadixCache(RadixCache):
+         br.locked_node = None
+         br.speculative = False
+         tel = self.tree_telemetry(br.namespace)
+-        tel.pinned_tokens -= released
+         tel.invalidations += 1
+         br.token_ids = array("q")
++        self._refresh_pinned_tokens(br.namespace)
+         if released > 0:
+             self._prioritize_unpinned_path(released_node)
+             self.evict(EvictParams(num_tokens=released))
+@@ -209,22 +239,21 @@ class TreeRadixCache(RadixCache):
+             child_seq=seq,
+             token_ids=array("q", parent.token_ids),
+         )
+-        pinned = 0
+         if parent.speculative:
+             # parent's node may have been partially evicted; re-match
+             key = RadixKey(array("q", parent.token_ids), extra_key=parent.namespace)
+             res = self.match_prefix(MatchPrefixParams(key=key))
+             node = res.last_device_node
+             child.token_ids = child.token_ids[: len(res.device_indices)]
+-            pinned = -self.inc_lock_ref(node).delta
++            self.inc_lock_ref(node)
+             child.locked_node = node
+         elif parent.locked_node is not None:
+-            pinned = -self.inc_lock_ref(parent.locked_node).delta
++            self.inc_lock_ref(parent.locked_node)
+             child.locked_node = parent.locked_node
+         self._branches[child_id] = child
+         tel = self.tree_telemetry(child.namespace)
+-        tel.pinned_tokens += pinned
+         tel.live_branches += 1
++        self._refresh_pinned_tokens(child.namespace)
+         tel.saved_tokens += len(child.token_ids)
+         return child
+ 
+@@ -248,12 +277,74 @@ class TreeRadixCache(RadixCache):
+             self.evict(EvictParams(num_tokens=delta))
+         tel = self.tree_telemetry(br.namespace)
+         tel.live_branches -= 1
+-        tel.pinned_tokens -= delta
+         tel.reserved_tokens -= br.reserved_tokens
++        self._refresh_pinned_tokens(br.namespace)
+         return delta
+ 
+     # ---- data path -------------------------------------------------------
+ 
++    def _prepare_request_update(self, req, token_ids):
++        if req.branch_id is None:
++            return None
++        br = self._branches[req.branch_id]
++        key = RadixKey(
++            array("q", token_ids),
++            extra_key=br.namespace,
++            is_bigram=self.is_eagle,
++        ).page_aligned(self.page_size)
++        hit = len(self.match_prefix(MatchPrefixParams(key=key)).device_indices)
++        charged = len(key) - max(hit, len(br.token_ids))
++        self._validate_charge(br, charged)
++        return br, key, hit, charged
++
++    def _commit_request_update(self, prepared) -> None:
++        if prepared is None:
++            return
++        br, key, hit, charged = prepared
++        match = self.match_prefix(MatchPrefixParams(key=key))
++        if len(match.device_indices) != len(key):
++            raise RuntimeError(
++                f"tree branch {br.branch_id} cached {len(match.device_indices)} "
++                f"of {len(key)} committed tokens"
++            )
++        self._charge(br, charged)
++        old_len = len(br.token_ids)
++        br.token_ids = array("q", key.raw_token_ids())
++        tel = self.tree_telemetry(br.namespace)
++        tel.saved_tokens += max(hit - old_len, 0)
++        new_node = match.last_device_node
++        self.inc_lock_ref(new_node)
++        if br.locked_node is not None and not br.speculative:
++            self.dec_lock_ref(br.locked_node)
++        br.locked_node = new_node
++        br.speculative = False
++        self._refresh_pinned_tokens(br.namespace)
++
++    def cache_finished_req(
++        self, req, is_insert: bool = True, *, kv_len_to_handle: int
++    ):
++        token_ids = (req.origin_input_ids + req.output_ids)[:kv_len_to_handle]
++        prepared = (
++            self._prepare_request_update(req, token_ids)
++            if is_insert and req.branch_id is not None
++            else None
++        )
++        super().cache_finished_req(
++            req, is_insert=is_insert, kv_len_to_handle=kv_len_to_handle
++        )
++        self._commit_request_update(prepared)
++        if req.branch_id is not None and req.branch_end:
++            self.kill_tree(req.branch_id)
++
++    def cache_unfinished_req(self, req, chunked=False):
++        prepared = (
++            self._prepare_request_update(req, req.get_fill_ids())
++            if req.branch_id is not None
++            else None
++        )
++        super().cache_unfinished_req(req, chunked=chunked)
++        self._commit_request_update(prepared)
++
+     def extend_tree(
+         self,
+         branch_id: str,
+@@ -281,12 +372,12 @@ class TreeRadixCache(RadixCache):
+         new_node = self.match_prefix(
+             MatchPrefixParams(key=key)
+         ).last_device_node
+-        pinned = -self.inc_lock_ref(new_node).delta
++        self.inc_lock_ref(new_node)
+         if br.locked_node is not None and not br.speculative:
+-            pinned -= self.dec_lock_ref(br.locked_node).delta
++            self.dec_lock_ref(br.locked_node)
+         br.locked_node = new_node
+         br.speculative = False
+-        tel.pinned_tokens += pinned
++        self._refresh_pinned_tokens(br.namespace)
+         return hit
+ 
+     def match_tree_prefix(self, branch_id: str, token_ids: list[int]) -> int:
+diff --git a/python/sglang/srt/server_args.py b/python/sglang/srt/server_args.py
+index 90f29b841..6bffdb8af 100644
+--- a/python/sglang/srt/server_args.py
++++ b/python/sglang/srt/server_args.py
+@@ -1407,6 +1407,10 @@ class ServerArgs:
+         Optional[str],
+         "Name of a radix-cache backend previously registered via register_radix_cache_backend. Omit this flag to use the built-in default cache selection chain.",
+     ] = None
++    tree_cache_quota_tokens: A[
++        Optional[int],
++        "Per-tree token quota used by the tree_radix cache backend.",
++    ] = None
+     mm_attention_backend: A[
+         Optional[str],
+         Arg(
+diff --git a/test/registered/unit/mem_cache/test_tree_radix_cache.py b/test/registered/unit/mem_cache/test_tree_radix_cache.py
+index a60b26d2d..a8fdea06e 100644
+--- a/test/registered/unit/mem_cache/test_tree_radix_cache.py
++++ b/test/registered/unit/mem_cache/test_tree_radix_cache.py
+@@ -2,10 +2,13 @@
+ 
+ import unittest
+ import unittest.mock
++from types import SimpleNamespace
+ 
+ import torch
+ 
+ from sglang.srt.mem_cache.cache_init_params import CacheInitParams
++from sglang.srt.managers.io_struct import GenerateReqInput, TreeCacheOpReqInput
++from sglang.srt.managers.tree_cache_lifecycle import TreeCacheLifecycle
+ from sglang.srt.mem_cache.tree_radix_cache import TreeQuotaExceeded, TreeRadixCache
+ from sglang.test.ci.ci_register import register_cpu_ci
+ from sglang.test.test_utils import CustomTestCase
+@@ -243,6 +246,77 @@ class TestTreeRadixCache(CustomTestCase):
+         cache.kill_tree("t")
+         self.assertEqual(cache.protected_size(), 0)
+ 
++    def test_tree_request_validation_rejects_batch_and_orphan_fields(self):
++        with self.assertRaisesRegex(ValueError, "single requests"):
++            GenerateReqInput(
++                text=["a", "b"],
++                branch_id="branch",
++            ).normalize_batch_and_arguments()
++        with self.assertRaisesRegex(ValueError, "branch_id is required"):
++            GenerateReqInput(
++                text="a",
++                tree_id="tree",
++            ).normalize_batch_and_arguments()
++
++    def test_request_lifecycle_creates_forks_and_reserves(self):
++        cache = _make_cache(tree_quota_tokens=200)
++        lifecycle = TreeCacheLifecycle(cache)
++        parent = SimpleNamespace(
++            tree_id="tree",
++            branch_id="parent",
++            parent_id=None,
++            branch_end=False,
++            branch_reserve_tokens=100,
++            extra_key=None,
++            tree_branch_created=False,
++        )
++        self.assertIsNone(lifecycle.prepare_request(parent))
++        self.assertTrue(parent.tree_branch_created)
++        self.assertEqual(parent.extra_key, "tree")
++
++        child = SimpleNamespace(
++            tree_id="tree",
++            branch_id="child",
++            parent_id="parent",
++            branch_end=True,
++            branch_reserve_tokens=50,
++            extra_key=None,
++            tree_branch_created=False,
++        )
++        self.assertIsNone(lifecycle.prepare_request(child))
++        self.assertEqual(cache.branch("child").parent_id, "parent")
++        self.assertEqual(cache.tree_telemetry("tree").reserved_tokens, 150)
++        lifecycle.abort_request(child)
++        self.assertFalse(cache.has_branch("child"))
++        self.assertTrue(cache.has_branch("parent"))
++
++    def test_control_operations_return_telemetry_and_kill_receipt(self):
++        cache = _make_cache()
++        lifecycle = TreeCacheLifecycle(cache)
++        self.assertTrue(
++            lifecycle.handle(
++                TreeCacheOpReqInput(
++                    operation="create", branch_id="root", tree_id="tree"
++                )
++            ).success
++        )
++        telemetry = lifecycle.handle(
++            TreeCacheOpReqInput(operation="telemetry", branch_id="root")
++        )
++        self.assertEqual(telemetry.value["live_branches"], 1)
++        killed = lifecycle.handle(
++            TreeCacheOpReqInput(operation="kill", branch_id="root")
++        )
++        self.assertTrue(killed.success)
++        self.assertEqual(cache.live_branches(), 0)
++
++    def test_reset_clears_branch_lifecycle_state(self):
++        cache = _make_cache()
++        cache.create_agent_tree("root")
++        cache.reset()
++        self.assertEqual(cache.live_branches(), 0)
++        self.assertEqual(cache._telemetry, {})
++
+ 
+ if __name__ == "__main__":
+     unittest.main()
+-- 
+2.50.1 (Apple Git-155)
+

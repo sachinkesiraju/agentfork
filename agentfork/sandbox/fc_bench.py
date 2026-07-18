@@ -21,11 +21,50 @@ import argparse
 import http.client
 import json
 import os
+import re
+import shutil
 import signal
 import socket
 import subprocess
 import tempfile
 import time
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class JailerConfig:
+    """Run each VMM under Firecracker's ``jailer``: chroot, cgroup-ready,
+    privileges dropped to ``uid``/``gid``. The supervisor itself must run as
+    root (jailer chroots and setuids), and kernel/rootfs must be readable by
+    ``uid`` after being hard-linked into the jail. One ``chroot_base`` must
+    not be shared by two sandboxes that can mint the same branch IDs."""
+
+    jailer_bin: str
+    uid: int
+    gid: int
+    chroot_base: str = "/srv/jailer"
+
+
+def jail_id_for(vm_dir: str) -> str:
+    """Jailer IDs allow only alphanumerics and hyphens, max 64 chars."""
+    return re.sub(r"[^A-Za-z0-9-]", "-", os.path.basename(vm_dir))[:64]
+
+
+def jail_root(jailer: JailerConfig, fc_bin: str, vm_dir: str) -> str:
+    """The chroot directory the jailer builds for this VM: every per-VM file
+    (API socket, vsock UDS, overlay, snapshots) lives here when jailed."""
+    return os.path.join(jailer.chroot_base,
+                        os.path.basename(os.path.abspath(fc_bin)),
+                        jail_id_for(vm_dir), "root")
+
+
+def jailer_argv(jailer: JailerConfig, fc_bin: str, vm_dir: str) -> list[str]:
+    return [os.path.abspath(jailer.jailer_bin),
+            "--id", jail_id_for(vm_dir),
+            "--exec-file", os.path.abspath(fc_bin),
+            "--uid", str(jailer.uid), "--gid", str(jailer.gid),
+            "--chroot-base-dir", jailer.chroot_base,
+            "--", "--api-sock", "fc.sock"]
 
 
 class _UDSHTTP:
@@ -64,15 +103,36 @@ class _UDSHTTP:
 
 
 class MicroVM:
-    def __init__(self, fc_bin: str, vm_dir: str):
+    """One Firecracker VMM.
+
+    The VMM runs with ``cwd=vm_dir`` and every per-VM path (API socket,
+    vsock UDS, overlay drive) is configured *relative*. Relative paths are
+    resolved against the VMM's own cwd, and device paths are recorded
+    verbatim in snapshots — so a child restored in its own directory from a
+    parent's snapshot binds its own ``v.sock`` and opens its own copy of
+    ``overlay.ext4`` instead of colliding on the parent's files. Shared
+    read-only inputs (kernel, rootfs) are passed absolute for the same
+    reason: every VM must resolve the same file.
+    """
+
+    def __init__(self, fc_bin: str, vm_dir: str,
+                 jailer: JailerConfig | None = None):
         self.vm_dir = vm_dir
-        self.sock = os.path.join(vm_dir, "fc.sock")
+        self.jailer = jailer
+        # jailed VMMs live in the jailer-built chroot; per-VM paths resolve
+        # there instead of vm_dir (which keeps host-side logs and pid files)
+        self.host_dir = jail_root(jailer, fc_bin, vm_dir) if jailer else vm_dir
+        if jailer:
+            os.makedirs(self.host_dir, exist_ok=True)
+            argv = jailer_argv(jailer, fc_bin, vm_dir)
+        else:
+            argv = [os.path.abspath(fc_bin), "--api-sock", "fc.sock"]
+        self.sock = os.path.join(self.host_dir, "fc.sock")
         # output goes to a file, not DEVNULL: a VMM that dies at startup is
         # otherwise undiagnosable
         with open(os.path.join(vm_dir, "fc.log"), "wb") as log:
             self.proc = subprocess.Popen(
-                [fc_bin, "--api-sock", self.sock],
-                stdout=log, stderr=subprocess.STDOUT)
+                argv, cwd=vm_dir, stdout=log, stderr=subprocess.STDOUT)
         self.pidfd = None
         try:
             self.pidfd = os.pidfd_open(self.proc.pid)
@@ -105,14 +165,35 @@ class MicroVM:
             raise RuntimeError(
                 f"Firecracker {method} {path} returned HTTP {status}")
 
-    def boot(self, kernel: str, rootfs: str) -> float:
+    def boot(self, kernel: str, rootfs: str, overlay: str | None = None,
+             vsock_uds: str | None = None) -> float:
+        """Configure and start the guest.
+
+        ``overlay`` and ``vsock_uds`` must be paths relative to ``vm_dir``
+        (e.g. ``"overlay.ext4"``, ``"v.sock"``): they are per-VM and their
+        configured strings survive into snapshots, where a restoring child
+        must resolve its own copies. Kernel and rootfs are absolutized:
+        they are shared, read-only, and must mean the same file from every
+        VM's cwd.
+        """
+        for rel in (overlay, vsock_uds):
+            if rel is not None and os.path.isabs(rel):
+                raise ValueError(f"per-VM path must be relative: {rel}")
         t0 = time.perf_counter()
         self._request("PUT", "/boot-source", {
-            "kernel_image_path": kernel,
+            "kernel_image_path": self._shared_input(kernel, "vmlinux"),
             "boot_args": "console=ttyS0 reboot=k panic=1 pci=off quiet"})
         self._request("PUT", "/drives/rootfs", {
-            "drive_id": "rootfs", "path_on_host": rootfs,
+            "drive_id": "rootfs",
+            "path_on_host": self._shared_input(rootfs, "rootfs.img"),
             "is_root_device": True, "is_read_only": True})
+        if overlay is not None:
+            self._request("PUT", "/drives/overlay", {
+                "drive_id": "overlay", "path_on_host": overlay,
+                "is_root_device": False, "is_read_only": False})
+        if vsock_uds is not None:
+            self._request("PUT", "/vsock", {
+                "guest_cid": 3, "uds_path": vsock_uds})
         self._request("PUT", "/machine-config", {
             "vcpu_count": 1, "mem_size_mib": 256})
         self._request("PUT", "/actions", {"action_type": "InstanceStart"})
@@ -124,18 +205,46 @@ class MicroVM:
     def resume(self) -> None:
         self._request("PATCH", "/vm", {"state": "Resumed"})
 
+    def _shared_input(self, path: str, jail_name: str) -> str:
+        """Resolve a shared read-only input (kernel, rootfs) for the VMM.
+        Unjailed: absolutize. Jailed: the VMM cannot see outside its chroot,
+        so hard-link (or copy, across filesystems) the file into the jail
+        and return the chroot-relative name."""
+        if self.jailer is None:
+            return os.path.abspath(path)
+        dst = os.path.join(self.host_dir, jail_name)
+        if not os.path.exists(dst):
+            try:
+                os.link(os.path.abspath(path), dst)
+            except OSError:
+                shutil.copyfile(path, dst)
+        return jail_name
+
+    def _vm_path(self, host_path: str) -> str:
+        """Translate a host-side path to what the VMM should be told.
+        Unjailed: absolutize (the VMM's cwd is vm_dir, not the caller's).
+        Jailed: the path must live in the chroot; make it chroot-relative."""
+        if self.jailer is None:
+            return os.path.abspath(host_path)
+        rel = os.path.relpath(os.path.abspath(host_path), self.host_dir)
+        if rel.startswith(".."):
+            raise ValueError(f"path outside jail chroot: {host_path}")
+        return rel
+
     def snapshot(self, mem_path: str, state_path: str) -> float:
         t0 = time.perf_counter()
         self._request("PUT", "/snapshot/create", {
             "snapshot_type": "Full",
-            "snapshot_path": state_path, "mem_file_path": mem_path})
+            "snapshot_path": self._vm_path(state_path),
+            "mem_file_path": self._vm_path(mem_path)})
         return time.perf_counter() - t0
 
     def restore(self, mem_path: str, state_path: str) -> float:
         t0 = time.perf_counter()
         self._request("PUT", "/snapshot/load", {
-            "snapshot_path": state_path,
-            "mem_backend": {"backend_type": "File", "backend_path": mem_path},
+            "snapshot_path": self._vm_path(state_path),
+            "mem_backend": {"backend_type": "File",
+                            "backend_path": self._vm_path(mem_path)},
             "resume_vm": True})
         return time.perf_counter() - t0
 

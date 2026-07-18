@@ -103,6 +103,92 @@ def test_closing_after_failed_kill_still_releases_ownership(tmp_path):
     second.close()
 
 
+class SlowSandbox:
+    """Parallel-safe sandbox whose spawn/kill take real wall-clock time, to
+    observe whether multi-branch operations overlap."""
+
+    parallel_lifecycle = True
+
+    def __init__(self, delay=0.15):
+        import threading
+        self.delay = delay
+        self.live = set()
+        self._lock = threading.Lock()
+
+    def spawn(self, branch_id, parent_id):
+        import time
+        time.sleep(self.delay)
+        with self._lock:
+            self.live.add(branch_id)
+
+    def kill(self, branch_id):
+        import time
+        time.sleep(self.delay)
+        with self._lock:
+            self.live.discard(branch_id)
+
+    def alive(self, branch_id):
+        return branch_id in self.live
+
+
+def test_fork_fans_out_when_sandbox_is_parallel_safe():
+    import time
+
+    sandbox = SlowSandbox(delay=0.15)
+    with ForkOrchestrator(sandbox=sandbox) as orch:
+        orch.create_parent("root", tokens=PREFIX)
+        t0 = time.perf_counter()
+        children = orch.fork("root", n=6)
+        fork_s = time.perf_counter() - t0
+        assert len(children) == 6
+        assert all(orch.alive(c.branch_id) for c in children)
+        # six 0.15s spawns serialized would take >=0.9s
+        assert fork_s < 0.7
+
+        t0 = time.perf_counter()
+        receipts = orch.kill_losers(children[0].branch_id)
+        kill_s = time.perf_counter() - t0
+        assert len(receipts) == 5
+        assert kill_s < 0.7
+
+
+def test_parallel_fork_failure_rolls_back_only_failed_children():
+    class HalfFailingSandbox(SlowSandbox):
+        def spawn(self, branch_id, parent_id):
+            if branch_id.endswith(("1", "3")):
+                raise RuntimeError(f"spawn failed: {branch_id}")
+            super().spawn(branch_id, parent_id)
+
+    orch = ForkOrchestrator(sandbox=HalfFailingSandbox(delay=0.01))
+    orch.create_parent("root", tokens=PREFIX)
+
+    with pytest.raises(RuntimeError, match="spawn failed"):
+        orch.fork("root", child_ids=[f"root/c{i}" for i in range(5)], n=5)
+
+    survivors = {b.branch_id for b in orch.branches()}
+    assert survivors == {"root", "root/c0", "root/c2", "root/c4"}
+    assert all(orch.alive(b) for b in survivors)
+
+
+def test_kill_is_noop_while_same_branch_kill_is_in_flight():
+    import threading
+
+    sandbox = SlowSandbox(delay=0.3)
+    orch = ForkOrchestrator(sandbox=sandbox)
+    orch.create_parent("root", tokens=PREFIX)
+
+    slow = threading.Thread(target=orch.kill, args=("root",))
+    slow.start()
+    try:
+        import time
+        time.sleep(0.05)  # let the slow kill journal intent and enter I/O
+        receipt = orch.kill("root")  # concurrent duplicate: no-op
+        assert receipt.kv_freed_tokens == 0
+    finally:
+        slow.join()
+    assert orch.branches() == []
+
+
 def test_reaper_pdeathsig_flag():
     assert BranchReaper().pdeathsig is True
     assert BranchReaper(pdeathsig=False).pdeathsig is False
