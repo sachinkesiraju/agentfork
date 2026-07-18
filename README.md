@@ -191,11 +191,20 @@ the checks that fail or remain untested.
 | Subprocess + CPU reference-cache kill | 0.53 ms p50 and 1.46 ms max over 100 cycles |
 | Data plane + parallel lifecycle on real Firecracker (v0.3.0) | 5-way fork 28–145 ms per child amortized (lazy fork-time snapshot, parallel restores); exec over vsock in every child; per-child overlay mount+write; fork-after-exec freshness and divergence isolation verified; identical results under the jailer; zero surviving VMMs |
 | Guest networking on real Firecracker (v0.4.0) | Two children forked from one snapshot each reached the internet (GET https://example.com → HTTP 200) over per-branch netns + NAT; netns and NAT rules torn down with zero leaks; vsock exec 44–73 ms per call |
-| SGLang patch set size | 1,080 additive lines: 547 cache primitive + 482 request/control integration + 51 auth/accounting hardening |
+| Sustained-pressure VGE | A10G synthetic contention: 1.596× stock SGLang, paired-bootstrap 95% CI [1.576×, 1.619×] |
+| Locked synthetic holdout | 12 children and 80 pressure requests: 1.537×, 95% CI [1.518×, 1.554×]; partner validation still required |
 
 In the [10-child GPU test](patches/real_pool_validation.py), sharing reduced KV
 usage from 357k slots to 37k. Stock SGLang already shares cached prefixes, so
 agentfork adds branch tracking and cleanup, not lower memory use.
+
+For grounding against current alternatives: managed microVM platforms (Modal,
+E2B, Morph) already ship VM snapshot/branch for the sandbox half, and SGLang's
+own RadixAttention already shares identical prefixes for the KV half.
+agentfork's distinction is not beating either in isolation but coupling both
+under one branch identity with coordinated fork and cleanup, which the
+end-to-end rows measure together; the VGE numbers are its edge over stock
+prefix sharing under eviction pressure, not on the happy path.
 
 ## Running benchmarks
 
