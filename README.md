@@ -126,7 +126,7 @@ with ForkOrchestrator(sandbox=sandbox, registry_path="branches.json",
 `kill_losers()` keeps the selected branch and its ancestors and cleans up every
 other branch. Run `pytest -q` to execute the test suite.
 
-Remote SGLang uses inference requests—not `extend()`—as its data path. Start
+Remote SGLang uses inference requests, not `extend()`, as its data path. Start
 the patched server with `--admin-api-key`, then keep lifecycle and inference
 under the same orchestrator:
 
@@ -152,7 +152,7 @@ single-owner, fsynced registry: it rolls back partial forks, retries
 interrupted cleanup, and bounds every branch with a lease.
 
 **The reference path works today, on CPU.** Forking a KV branch just adds a
-reference count along the shared prefix — no tokens are copied. Each branch
+reference count along the shared prefix; no tokens are copied. Each branch
 runs as an ordinary subprocess. Killing a branch stops that subprocess with a
 Linux `pidfd` and releases its cache entry; together that takes 0.53 ms
 (median).
@@ -267,8 +267,8 @@ SGLANG_DIR="$SGLANG_DIR" modal run modal_gpu_validation.py
 - SGLang is measured on only one A10G/0.6B; scale, tensor parallelism, and
   multi-tenant pressure need a GPU fleet (a live-server test exists but is
   unrun here).
-- Firecracker is single-host — moving migration bundles between hosts is the
-  deployer's job — and cleanup is retried, not atomic.
+- Firecracker is single-host: moving migration bundles between hosts is the
+  deployer's job, and cleanup is retried, not atomic.
 - Nothing is validated at production GPU scale or with GPU-plus-microVM
   colocation.
 - `ReaperSandbox` runs spawns serially by default; `pdeathsig="shim"` fans
