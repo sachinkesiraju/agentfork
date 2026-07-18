@@ -9,10 +9,10 @@ import os
 import pytest
 
 from agentfork.sandbox.firecracker_backend import FirecrackerSandbox
-from tests.test_firecracker_backend import (
-    FakeExecClientFactory,
-    FakeMicroVMFactory,
-)
+# pytest puts the tests/ dir on sys.path, so the sibling module is imported by
+# its bare name (the `tests.` package prefix isn't importable under the pytest
+# console script, only under `python -m pytest`)
+from test_firecracker_backend import FakeExecClientFactory, FakeMicroVMFactory
 
 
 def _sandbox(tmp_path, **kwargs):
