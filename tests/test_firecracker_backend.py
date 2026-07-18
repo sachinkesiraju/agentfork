@@ -36,8 +36,9 @@ class FakeMicroVM:
         self.events = []
         self.proc = FakeProc()
 
-    def boot(self, kernel, rootfs, overlay=None, vsock_uds=None):
+    def boot(self, kernel, rootfs, overlay=None, vsock_uds=None, tap=None):
         self.events.append(("boot", kernel, rootfs, overlay, vsock_uds))
+        self.tap = tap
         return 0.001
 
     def pause(self):
@@ -71,8 +72,10 @@ class FakeMicroVMFactory:
         self.instances = []
         self.by_dir = {}
 
-    def __call__(self, fc_bin, vm_dir):
+    def __call__(self, fc_bin, vm_dir, jailer=None, netns=None):
         vm = FakeMicroVM(fc_bin, vm_dir)
+        vm.jailer = jailer
+        vm.netns = netns
         self.instances.append(vm)
         self.by_dir[vm_dir] = vm
         return vm
@@ -81,13 +84,13 @@ class FakeMicroVMFactory:
 class FailingBootMicroVM(FakeMicroVM):
     """Fails boot(), the way a real MicroVM would on a bad kernel/rootfs."""
 
-    def boot(self, kernel, rootfs, overlay=None, vsock_uds=None):
+    def boot(self, kernel, rootfs, overlay=None, vsock_uds=None, tap=None):
         self.events.append(("boot", kernel, rootfs, overlay, vsock_uds))
         raise RuntimeError("Firecracker PUT /actions returned HTTP 400")
 
 
 class FailingBootMicroVMFactory(FakeMicroVMFactory):
-    def __call__(self, fc_bin, vm_dir):
+    def __call__(self, fc_bin, vm_dir, jailer=None, netns=None):
         vm = FailingBootMicroVM(fc_bin, vm_dir)
         self.instances.append(vm)
         self.by_dir[vm_dir] = vm
@@ -100,9 +103,14 @@ class FakeExecClient:
         self.port = port
         self.calls = calls
 
-    def exec(self, argv, timeout_s=None):
+    def exec(self, argv, timeout_s=None, stdin=None):
         self.calls.append((self.uds_path, self.port, tuple(argv), timeout_s))
         return ExecResult(exit_code=0, stdout=b"ok\n", stderr=b"")
+
+    def exec_detached(self, argv, timeout_s=30.0):
+        from agentfork.sandbox.vsock import DetachedExec
+        self.calls.append((self.uds_path, self.port, tuple(argv), "detach"))
+        return DetachedExec(pid=4242, log_path="/tmp/fake.log")
 
 
 class FakeExecClientFactory:
@@ -203,7 +211,7 @@ def test_wait_ready_retries_until_agent_answers(tmp_path):
     class SlowBootExecClient(FakeExecClient):
         failures = [3]  # class-level countdown shared across instances
 
-        def exec(self, argv, timeout_s=None):
+        def exec(self, argv, timeout_s=None, stdin=None):
             if self.failures[0] > 0:
                 self.failures[0] -= 1
                 raise VsockError("guest still booting")
@@ -229,7 +237,7 @@ def test_wait_ready_gives_up_after_deadline(tmp_path):
     from agentfork.sandbox.vsock import VsockError
 
     class NeverReadyClient(FakeExecClient):
-        def exec(self, argv, timeout_s=None):
+        def exec(self, argv, timeout_s=None, stdin=None):
             raise VsockError("nobody home")
 
     class NeverReadyFactory(FakeExecClientFactory):
@@ -274,8 +282,9 @@ def test_overlay_created_for_root_and_copied_per_child(tmp_path):
     sandbox.spawn("child", "root")
 
     assert (tmp_path / "child" / "overlay.ext4").exists()
-    # the copy is taken while the parent is paused, after a best-effort sync
-    assert [c[2] for c in exec_factory.calls] == [("sync",)]
+    # the copy is taken while the parent is paused after a best-effort sync,
+    # then the restored child's RNG pool is reseeded to de-correlate siblings
+    assert [c[2] for c in exec_factory.calls] == [("sync",), ("tee", "/dev/urandom")]
 
 
 def test_spawn_duplicate_branch_id_raises_value_error(tmp_path):
@@ -353,11 +362,17 @@ def test_kill_reclaims_orphan_from_pid_file_after_restart(tmp_path):
     orphan = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     try:
         # simulate a restarted supervisor: fresh adapter, no in-memory
-        # handles, only the pid file a previous life recorded
+        # handles, only the pid file a previous life recorded. fc_bin is the
+        # python interpreter so the orphan passes the /proc comm check the
+        # way a real leftover VMM would.
         (tmp_path / "ghost").mkdir()
         (tmp_path / "ghost" / "fc.pid").write_text(str(orphan.pid))
-        sandbox, factory, _ = _make_sandbox(tmp_path)
+        sandbox = FirecrackerSandbox(
+            fc_bin=sys.executable, kernel="kernel", rootfs="rootfs.ext4",
+            work_dir=str(tmp_path), microvm_factory=FakeMicroVMFactory(),
+            exec_client_factory=FakeExecClientFactory())
 
+        assert sandbox.alive("ghost") is (os.path.exists("/proc"))
         sandbox.kill("ghost")
 
         assert orphan.wait(timeout=5) != 0  # SIGKILLed
@@ -368,13 +383,98 @@ def test_kill_reclaims_orphan_from_pid_file_after_restart(tmp_path):
             orphan.wait()
 
 
+@pytest.mark.skipif(not os.path.exists("/proc"), reason="needs /proc comm")
+def test_recycled_pid_with_wrong_comm_is_spared(tmp_path):
+    import subprocess
+    import sys
+
+    bystander = subprocess.Popen([sys.executable, "-c",
+                                  "import time; time.sleep(60)"])
+    try:
+        # the recorded pid now belongs to a non-VMM process (recycled): the
+        # comm check must spare it instead of SIGKILLing an innocent
+        (tmp_path / "ghost").mkdir()
+        (tmp_path / "ghost" / "fc.pid").write_text(str(bystander.pid))
+        sandbox, _, _ = _make_sandbox(tmp_path)  # fc_bin="fc-bin"
+
+        assert sandbox.alive("ghost") is False  # not one of our VMMs
+        sandbox.kill("ghost")
+
+        assert bystander.poll() is None  # still running, unharmed
+        assert not (tmp_path / "ghost" / "fc.pid").exists()  # record cleared
+    finally:
+        bystander.kill()
+        bystander.wait()
+
+
+def test_copy_overlay_preserves_content_and_sparseness(tmp_path):
+    src, dst = tmp_path / "src.img", tmp_path / "dst.img"
+    logical = 8 * 1024 * 1024
+    with open(src, "wb") as f:
+        f.truncate(logical)  # sparse: no data blocks yet
+        f.seek(1024 * 1024)
+        f.write(b"A" * 4096)
+        f.seek(5 * 1024 * 1024)
+        f.write(b"B" * 4096)
+
+    FirecrackerSandbox._copy_overlay(str(src), str(dst))
+
+    assert dst.stat().st_size == logical
+    assert src.read_bytes() == dst.read_bytes()
+    # the copy must not materialize the holes: a reflink or sparse-aware
+    # copy allocates far fewer blocks than the 8 MiB logical size
+    if src.stat().st_blocks * 512 < logical // 2:  # fs tracks sparseness
+        assert dst.stat().st_blocks * 512 < logical // 2
+
+
+def test_sparse_copy_reraises_real_io_errors_instead_of_truncating(tmp_path):
+    import errno
+
+    src, dst = tmp_path / "s.img", tmp_path / "d.img"
+    with open(src, "wb") as f:
+        f.truncate(1 << 20)
+        f.write(b"data")
+
+    real_lseek = os.lseek
+
+    def exploding_lseek(fd, pos, how):
+        if how == os.SEEK_DATA:
+            raise OSError(errno.EIO, "injected I/O error")
+        return real_lseek(fd, pos, how)
+
+    # a genuine I/O error mid-copy must propagate (so _copy_overlay's outer
+    # fallback fires), not be mistaken for ENXIO end-of-data and truncate
+    orig = os.lseek
+    os.lseek = exploding_lseek
+    try:
+        with open(src, "rb") as fs, open(dst, "wb") as fd_:
+            with pytest.raises(OSError) as ei:
+                FirecrackerSandbox._sparse_copy(fs.fileno(), fd_.fileno())
+            assert ei.value.errno == errno.EIO
+    finally:
+        os.lseek = orig
+
+
+def test_sweep_dead_lists_branches_whose_vmm_exited(tmp_path):
+    sandbox, factory, _ = _make_sandbox(tmp_path)
+    sandbox.spawn("root", None)
+    sandbox.spawn("child", "root")
+
+    assert sandbox.sweep_dead() == []
+    factory.by_dir[os.path.join(str(tmp_path), "child")].proc._poll_value = 137
+
+    assert sandbox.sweep_dead() == ["child"]
+    assert sandbox.alive("root") is True
+
+
 class JailAwareFakeFactory(FakeMicroVMFactory):
     """Fake factory matching the 3-arg signature the adapter uses when a
     jailer is configured."""
 
-    def __call__(self, fc_bin, vm_dir, jailer=None):
+    def __call__(self, fc_bin, vm_dir, jailer=None, netns=None):
         vm = FakeMicroVM(fc_bin, vm_dir)
         vm.jailer = jailer
+        vm.netns = netns
         self.instances.append(vm)
         self.by_dir[vm_dir] = vm
         return vm
@@ -413,6 +513,67 @@ def test_jailed_child_gets_snapshot_pair_and_rootfs_staged(tmp_path):
     child_vm = factory.instances[-1]
     assert child_vm.events[0] == ("restore", str(child_chroot / "pmem"),
                                   str(child_chroot / "pstate"))
+
+
+def test_networking_sets_up_and_tears_down_a_netns_per_branch(tmp_path):
+    from agentfork.sandbox.netns import NetworkConfig
+
+    net_calls = []
+    sandbox, factory, _ = _make_sandbox(
+        tmp_path, network=NetworkConfig(uplink="eth0"))
+    sandbox._netns._run = lambda argv, *, check=True: net_calls.append(argv)
+
+    sandbox.spawn("root", None)
+
+    # the VMM was launched into a namespace and the tap was passed to boot
+    root_vm = factory.instances[-1]
+    assert root_vm.netns == "af-root"
+    assert root_vm.tap == "tap0"
+    assert any(c[:3] == ["ip", "netns", "add"] for c in net_calls)
+
+    net_calls.clear()
+    sandbox.kill("root")
+
+    # kill tears the namespace back down
+    assert any(c[:3] == ["ip", "netns", "del"] for c in net_calls)
+
+
+def test_networking_index_journaled_and_recovered_on_restart(tmp_path):
+    from agentfork.sandbox.netns import NetworkConfig
+
+    # first adapter spawns a branch with networking, then "crashes" (we drop
+    # it without killing) leaving the netns up and its index only on disk
+    first, _, _ = _make_sandbox(tmp_path, network=NetworkConfig(uplink="eth0"))
+    first._netns._run = lambda argv, *, check=True: None
+    first.spawn("root", None)
+    assert (tmp_path / "root" / "netns.idx").exists()
+
+    # restarted adapter: no in-memory _netns_index; kill must still recover
+    # the index from disk and tear the namespace down
+    second, _, _ = _make_sandbox(tmp_path, network=NetworkConfig(uplink="eth0"))
+    torn = []
+    second._netns._run = lambda argv, *, check=True: torn.append(argv)
+    second.kill("root")
+
+    assert any(c[:3] == ["ip", "netns", "del"] for c in torn)
+    assert not (tmp_path / "root" / "netns.idx").exists()
+
+
+def test_networking_teardown_runs_on_spawn_failure(tmp_path):
+    from agentfork.sandbox.netns import NetworkConfig
+
+    net_calls = []
+    sandbox, _, _ = _make_sandbox(
+        tmp_path, factory=FailingBootMicroVMFactory(),
+        network=NetworkConfig(uplink="eth0"))
+    sandbox._netns._run = lambda argv, *, check=True: net_calls.append(argv)
+
+    with pytest.raises(RuntimeError):
+        sandbox.spawn("root", None)
+
+    # the half-built namespace must not leak
+    assert any(c[:3] == ["ip", "netns", "del"] for c in net_calls)
+    assert "root" not in sandbox._netns_index
 
 
 def test_spawn_failure_kills_the_vm_and_leaves_no_bookkeeping(tmp_path):

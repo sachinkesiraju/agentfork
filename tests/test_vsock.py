@@ -130,6 +130,47 @@ def test_missing_uds_fails_after_retry_deadline(short_dir):
         client.exec(["true"])
 
 
+def test_exec_feeds_stdin_to_the_command(channel):
+    result = channel.exec([sys.executable, "-c",
+                           "import sys; sys.stdout.write(sys.stdin.read().upper())"],
+                          stdin=b"fed via vsock")
+    assert result.exit_code == 0
+    assert result.stdout == b"FED VIA VSOCK"
+
+
+def test_exec_detached_starts_a_background_process(channel):
+    import time
+
+    marker = os.path.join(tempfile.gettempdir(), f"afv-{os.getpid()}.marker")
+    try:
+        detached = channel.exec_detached(
+            [sys.executable, "-c",
+             f"import time; time.sleep(0.1); print('bg-done'); "
+             f"open({marker!r}, 'w').write('x')"])
+
+        assert detached.pid > 0
+        assert detached.log_path  # guest-side path for tail-follow
+        # returns before the process finishes...
+        assert not os.path.exists(marker)
+        # ...and the process really runs to completion afterwards
+        deadline = time.monotonic() + 5
+        while not os.path.exists(marker) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert os.path.exists(marker)
+        with open(detached.log_path, "rb") as f:
+            assert f.read() == b"bg-done\n"
+    finally:
+        for path in (marker, locals().get("detached") and detached.log_path):
+            if path and os.path.exists(path):
+                os.unlink(path)
+
+
+def test_detach_with_stdin_is_rejected(channel):
+    with pytest.raises(VsockError, match="mutually exclusive"):
+        channel._roundtrip({"argv": ["true"], "detach": True,
+                            "stdin": "aGk="}, 5.0)
+
+
 def test_concurrent_execs_are_served_concurrently(channel):
     results = [None] * 4
     def run(i):

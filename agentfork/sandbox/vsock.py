@@ -48,6 +48,18 @@ class ExecResult:
     timed_out: bool = False
 
 
+@dataclass
+class DetachedExec:
+    """A background process started in the guest: it outlives the exec
+    connection, its combined stdout/stderr goes to ``log_path`` inside the
+    guest, and it is reaped by the agent when it exits. Follow its output
+    with ``exec(["tail", "-c", f"+{offset}", log_path])``; stop it with
+    ``exec(["kill", str(pid)])``."""
+
+    pid: int
+    log_path: str
+
+
 def _read_line(sock: socket.socket, limit: int = _MAX_LINE) -> bytes:
     """Read until ``\\n`` (exclusive). Raises on EOF or an oversized line."""
     chunks = []
@@ -102,17 +114,14 @@ class VsockExecClient:
                         f"failed: {last}") from last
                 time.sleep(0.1)
 
-    def exec(self, argv: list[str], timeout_s: float | None = None) -> ExecResult:
-        if not argv:
-            raise ValueError("argv must not be empty")
+    def _roundtrip(self, request: dict, timeout_s: float | None) -> dict:
         sock = self._connect()
         try:
             if timeout_s is not None:
                 sock.settimeout(timeout_s + _HOST_GRACE_S)
             else:
                 sock.settimeout(None)
-            request = json.dumps({"argv": argv, "timeout_s": timeout_s})
-            sock.sendall(request.encode() + b"\n")
+            sock.sendall(json.dumps(request).encode() + b"\n")
             try:
                 line = _read_line(sock)
             except socket.timeout:
@@ -125,11 +134,32 @@ class VsockExecClient:
                 raise VsockError(f"malformed agent reply: {line[:80]!r}") from exc
             if "error" in reply:
                 raise VsockError(f"guest agent error: {reply['error']}")
-            return ExecResult(
-                exit_code=reply["exit_code"],
-                stdout=base64.b64decode(reply["stdout"]),
-                stderr=base64.b64decode(reply["stderr"]),
-                timed_out=reply.get("timed_out", False),
-            )
+            return reply
         finally:
             sock.close()
+
+    def exec(self, argv: list[str], timeout_s: float | None = None,
+             stdin: bytes | None = None) -> ExecResult:
+        """Run ``argv`` in the guest, optionally feeding ``stdin`` (sent
+        whole, then EOF), and wait for it to finish."""
+        if not argv:
+            raise ValueError("argv must not be empty")
+        request: dict = {"argv": argv, "timeout_s": timeout_s}
+        if stdin is not None:
+            request["stdin"] = base64.b64encode(stdin).decode()
+        reply = self._roundtrip(request, timeout_s)
+        return ExecResult(
+            exit_code=reply["exit_code"],
+            stdout=base64.b64decode(reply["stdout"]),
+            stderr=base64.b64decode(reply["stderr"]),
+            timed_out=reply.get("timed_out", False),
+        )
+
+    def exec_detached(self, argv: list[str],
+                      timeout_s: float | None = 30.0) -> DetachedExec:
+        """Start ``argv`` in the guest as a background process and return
+        immediately; ``timeout_s`` bounds only the spawn round trip."""
+        if not argv:
+            raise ValueError("argv must not be empty")
+        reply = self._roundtrip({"argv": argv, "detach": True}, timeout_s)
+        return DetachedExec(pid=reply["pid"], log_path=reply["log"])

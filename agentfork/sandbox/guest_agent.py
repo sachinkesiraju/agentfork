@@ -25,13 +25,16 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import socket
 import subprocess
 import sys
 import threading
+import uuid
 
 DEFAULT_PORT = 52
-_MAX_REQUEST = 1024 * 1024  # 1 MiB of argv is already absurd
+_MAX_REQUEST = 64 * 1024 * 1024  # bounded; stdin payloads ride the request
+_DETACH_LOG_DIR = "/tmp"
 
 
 def _read_line(conn: socket.socket, limit: int = _MAX_REQUEST) -> bytes | None:
@@ -62,20 +65,46 @@ def handle_connection(conn: socket.socket) -> None:
             request = json.loads(line)
             argv = request["argv"]
             timeout_s = request.get("timeout_s")
+            detach = bool(request.get("detach", False))
+            stdin_b64 = request.get("stdin")
+            stdin_bytes = base64.b64decode(stdin_b64) if stdin_b64 else None
             if not isinstance(argv, list) or not argv:
                 raise ValueError("argv must be a non-empty list")
+            if detach and stdin_bytes:
+                raise ValueError("stdin and detach are mutually exclusive")
         except (ValueError, KeyError, TypeError) as exc:
             conn.sendall(json.dumps({"error": f"bad request: {exc}"}).encode() + b"\n")
             return
+        if detach:
+            # background process: reply immediately with pid + log path;
+            # follow output later with exec(["tail", "-c", "+N", log])
+            log_path = os.path.join(_DETACH_LOG_DIR,
+                                    f"agentfork-exec-{uuid.uuid4().hex}.log")
+            try:
+                with open(log_path, "wb") as logf:
+                    proc = subprocess.Popen(
+                        argv, stdout=logf, stderr=subprocess.STDOUT,
+                        stdin=subprocess.DEVNULL)
+            except OSError as exc:
+                conn.sendall(json.dumps(
+                    {"error": f"spawn failed: {exc}"}).encode() + b"\n")
+                return
+            threading.Thread(target=proc.wait, daemon=True).start()  # reap
+            conn.sendall(json.dumps(
+                {"detached": True, "pid": proc.pid,
+                 "log": log_path}).encode() + b"\n")
+            return
         try:
             proc = subprocess.Popen(
-                argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                stdin=subprocess.PIPE if stdin_bytes is not None else None)
         except OSError as exc:
             conn.sendall(json.dumps({"error": f"spawn failed: {exc}"}).encode() + b"\n")
             return
         timed_out = False
         try:
-            stdout, stderr = proc.communicate(timeout=timeout_s)
+            stdout, stderr = proc.communicate(input=stdin_bytes,
+                                              timeout=timeout_s)
         except subprocess.TimeoutExpired:
             timed_out = True
             proc.kill()
