@@ -24,10 +24,10 @@ bind their own socket and open their own overlay copy.
 Each spawn records the VMM's pid in ``<work_dir>/<branch>/fc.pid`` so that a
 restarted adapter, which has no in-memory ``MicroVM`` handles, can still kill
 branches recorded by a dead supervisor when the orchestrator replays
-``kill()`` during ``reconcile()``. That fallback is a plain SIGKILL by pid,
-best effort: the pid may have been recycled since the supervisor died. A
-restarted adapter can also still fork from a branch whose snapshot files a
-previous life wrote to disk.
+``kill()`` during ``reconcile()``. The record includes Linux process start
+time and executable identity; recovery verifies both and signals through a
+pidfd, refusing a recycled PID. A restarted adapter can also still fork from
+a branch whose snapshot files a previous life wrote to disk.
 
 With ``jailer=JailerConfig(...)`` every VMM runs under Firecracker's
 ``jailer``: chrooted, cgroup-ready, deprivileged to the configured uid/gid.
@@ -42,7 +42,8 @@ jail then fail with EACCES even as root), and the jailed gid needs access to
 A freshly booted root's userspace takes seconds to come up;
 ``wait_ready()`` blocks until the guest agent answers, and forking only
 after readiness means children inherit a booted, agent-serving guest and
-are ready the moment they resume.
+are ready the moment they resume. ``ForkOrchestrator`` invokes this probe
+automatically for sandboxes that expose it.
 
 This adapter is unit-tested against fakes standing in for ``MicroVM`` and
 the vsock client (tests/test_firecracker_backend.py), and the full data
@@ -50,16 +51,20 @@ plane was validated end to end against real Firecracker v1.16.1 (aarch64,
 Lima nested KVM, 2026-07-17; ``demo/fc_demo.py --exec`` and jailed runs):
 vsock exec in every child, per-child overlay mount+write, fork-after-exec
 freshness (children see state the parent wrote after boot; divergence stays
-isolated), and zero leaked VMMs. Guest networking (tap/netns) and identity
-regeneration remain unimplemented.
+isolated), and zero leaked VMMs. Optional ``NetworkConfig`` gives each
+branch its own network namespace so snapshot clones do not collide on
+tap/MAC/IP; identity reseeding after restore uses the stdin exec path.
 """
 
 from __future__ import annotations
 
 import errno
 import fcntl
+import hashlib
+import json
 import logging
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -83,6 +88,7 @@ _log = logging.getLogger("agentfork.sandbox.firecracker")
 
 _OVERLAY = "overlay.ext4"
 _VSOCK = "v.sock"
+_SAFE_BRANCH_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
 class FirecrackerSandbox:
@@ -104,9 +110,13 @@ class FirecrackerSandbox:
                  overlay_mib: int | None = None, mkfs: str = "mkfs.ext4",
                  jailer: JailerConfig | None = None,
                  network: NetworkConfig | None = None,
-                 exec_client_factory: Callable[..., VsockExecClient] = VsockExecClient):
+                 exec_client_factory: Callable[..., VsockExecClient] = VsockExecClient,
+                 readiness_timeout_s: float = 60.0,
+                 exec_timeout_s: float = 60.0):
         if overlay_mib is not None and overlay_mib <= 0:
             raise ValueError("overlay_mib must be positive")
+        if readiness_timeout_s <= 0 or exec_timeout_s <= 0:
+            raise ValueError("readiness and exec timeouts must be positive")
         self.fc_bin = fc_bin
         self.kernel = kernel
         self.rootfs = rootfs
@@ -118,26 +128,51 @@ class FirecrackerSandbox:
         self.jailer = jailer
         self.network = network
         self._netns = NetnsManager(network) if network is not None else None
+        self.readiness_timeout_s = readiness_timeout_s
+        self.exec_timeout_s = exec_timeout_s
         self._microvm_factory = microvm_factory
         self._exec_client_factory = exec_client_factory
         self._lock = threading.RLock()
+        self._lifecycle_changed = threading.Condition(self._lock)
         self._vms: dict[str, object] = {}
         self._pending: set[str] = set()  # spawns in flight
+        self._parent_forks: dict[str, int] = {}
         self._snapshots: dict[str, tuple[str, str]] = {}
         self._gen: dict[str, int] = {}       # bumped by every exec
         self._snap_gen: dict[str, int] = {}  # generation a snapshot captured
         self._netns_index: dict[str, int] = {}  # branch -> its /30 index
         self._parent_locks: dict[str, threading.Lock] = {}
 
-    def _vm_dir(self, branch_id: str) -> str:
+    @staticmethod
+    def _branch_dir_name(branch_id: str) -> str:
+        if not isinstance(branch_id, str) or not branch_id:
+            raise ValueError("branch_id must be a non-empty string")
+        if len(branch_id.encode()) > 512 or "\x00" in branch_id:
+            raise ValueError("branch_id is too long or contains NUL")
+        segments = branch_id.split("/")
+        if any(segment in ("", ".", "..")
+               or not _SAFE_BRANCH_SEGMENT.fullmatch(segment)
+               for segment in segments):
+            raise ValueError(
+                "branch_id segments must contain only letters, digits, "
+                "dot, underscore, or dash, and may not be '.' or '..'")
+        if len(segments) == 1:
+            return branch_id
+        readable = "_".join(segments)[:80]
+        digest = hashlib.sha256(branch_id.encode()).hexdigest()[:16]
+        return f"{readable}-{digest}"
+
+    def _vm_dir(self, branch_id: str, *, create: bool = True) -> str:
         # 0700: the API socket and vsock UDS inside grant full control of
         # the VMM and guest to anyone who can reach them
-        d = os.path.join(self.work_dir, branch_id.replace("/", "_"))
-        os.makedirs(d, mode=0o700, exist_ok=True)
+        d = os.path.join(self.work_dir, self._branch_dir_name(branch_id))
+        if create:
+            os.makedirs(d, mode=0o700, exist_ok=True)
+            os.chmod(d, 0o700)
         return d
 
     def _pid_path(self, branch_id: str) -> str:
-        return os.path.join(self._vm_dir(branch_id), "fc.pid")
+        return os.path.join(self._vm_dir(branch_id, create=False), "fc.pid")
 
     def _host_dir(self, branch_id: str) -> str:
         """Where this branch's per-VM files (vsock UDS, overlay, snapshots)
@@ -251,6 +286,31 @@ class FirecrackerSandbox:
         with self._lock:
             return self._parent_locks.setdefault(parent_id, threading.Lock())
 
+    @staticmethod
+    def _process_identity(pid: int) -> dict | None:
+        """Return stable Linux process identity fields used to reject PID reuse."""
+        try:
+            with open(f"/proc/{pid}/stat", encoding="utf-8") as f:
+                stat = f.read()
+            # comm is parenthesized and may contain spaces; fields after the
+            # final ')' start at field 3, making starttime field 22 index 19.
+            fields = stat.rsplit(")", 1)[1].split()
+            start_time = int(fields[19])
+            exe = os.path.realpath(f"/proc/{pid}/exe")
+        except (FileNotFoundError, PermissionError, ValueError, IndexError):
+            return None
+        return {"pid": pid, "start_time": start_time, "exe": exe}
+
+    def _write_pid_record(self, branch_id: str, pid: int) -> None:
+        record = self._process_identity(pid) or {"pid": pid}
+        path = self._pid_path(branch_id)
+        tmp = f"{path}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(record, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+
     def _fork_source(self, parent_id: str, child_dir: str) -> tuple[str, str]:
         """Return (mem, state) snapshot paths for restoring a child, taking
         or refreshing the parent's snapshot first if its state has moved on,
@@ -326,6 +386,9 @@ class FirecrackerSandbox:
             if branch_id in self._vms or branch_id in self._pending:
                 raise ValueError(f"branch exists: {branch_id}")
             self._pending.add(branch_id)
+            if parent_id is not None:
+                self._parent_forks[parent_id] = (
+                    self._parent_forks.get(parent_id, 0) + 1)
         vm = None
         try:
             # inside the try so a netns failure still runs the finally that
@@ -356,8 +419,7 @@ class FirecrackerSandbox:
                                     child_host, "rootfs.img")
                 vm = self._new_vm(d, netns)
                 vm.restore(mem, state)
-            with open(self._pid_path(branch_id), "w", encoding="utf-8") as f:
-                f.write(str(vm.proc.pid))
+            self._write_pid_record(branch_id, vm.proc.pid)
             with self._lock:
                 self._vms[branch_id] = vm
             if parent_id is not None:
@@ -376,10 +438,18 @@ class FirecrackerSandbox:
                 except Exception:
                     pass
             self._teardown_netns(branch_id)
+            self._cleanup_artifacts(branch_id)
             raise
         finally:
-            with self._lock:
+            with self._lifecycle_changed:
                 self._pending.discard(branch_id)
+                if parent_id is not None:
+                    remaining = self._parent_forks[parent_id] - 1
+                    if remaining:
+                        self._parent_forks[parent_id] = remaining
+                    else:
+                        self._parent_forks.pop(parent_id, None)
+                self._lifecycle_changed.notify_all()
 
     def _netns_idx_path(self, branch_id: str) -> str:
         return os.path.join(self._vm_dir(branch_id), "netns.idx")
@@ -464,7 +534,12 @@ class FirecrackerSandbox:
         racing an exec surfaces here as ``VsockError``.
         """
         self._mark_dirty(branch_id)
-        return self._exec_live(branch_id, argv, timeout_s, stdin=stdin)
+        return self._exec_live(
+            branch_id,
+            argv,
+            self.exec_timeout_s if timeout_s is None else timeout_s,
+            stdin=stdin,
+        )
 
     def exec_detached(self, branch_id: str,
                       argv: list[str]) -> DetachedExec:
@@ -474,7 +549,7 @@ class FirecrackerSandbox:
         self._mark_dirty(branch_id)
         return self._exec_client(branch_id).exec_detached(argv)
 
-    def wait_ready(self, branch_id: str, timeout_s: float = 60.0) -> None:
+    def wait_ready(self, branch_id: str, timeout_s: float | None = None) -> None:
         """Block until the branch's guest agent answers a no-op exec — i.e.
         the guest has booted far enough to serve the data plane.
 
@@ -483,6 +558,10 @@ class FirecrackerSandbox:
         it is ready — children inherit the booted, agent-running state in
         the snapshot and are ready the moment they resume, which is the
         entire point of forking instead of booting N times."""
+        if not self.vsock:
+            return
+        timeout_s = (
+            self.readiness_timeout_s if timeout_s is None else timeout_s)
         deadline = time.monotonic() + timeout_s
         while True:
             try:
@@ -496,12 +575,13 @@ class FirecrackerSandbox:
                 time.sleep(0.25)
 
     def kill(self, branch_id: str) -> None:
-        with self._lock:
+        with self._lifecycle_changed:
+            while self._parent_forks.get(branch_id, 0):
+                self._lifecycle_changed.wait()
             vm = self._vms.pop(branch_id, None)
             self._snapshots.pop(branch_id, None)
             self._gen.pop(branch_id, None)
             self._snap_gen.pop(branch_id, None)
-            self._parent_locks.pop(branch_id, None)
         pid_path = self._pid_path(branch_id)
         if vm is not None:
             try:
@@ -511,34 +591,97 @@ class FirecrackerSandbox:
                              branch_id, exc_info=True)
             self._teardown_netns(branch_id)  # after the VMM releases the tap
             self._remove(pid_path)
+            self._cleanup_artifacts(branch_id)
+            with self._lock:
+                self._parent_locks.pop(branch_id, None)
             return
-        # crash recovery: a restarted adapter has no handle for this branch,
-        # so fall back to the pid recorded at spawn — but only if /proc says
-        # the pid still looks like one of our VMMs (or cannot say), so a
-        # recycled pid belonging to an innocent process is spared.
-        pid = self._recorded_pid(branch_id)
-        if pid is None:
-            self._teardown_netns(branch_id)  # namespace may still be journaled
+        # Crash recovery: a restarted adapter has no handle for this branch.
+        # Prefer start_time+exe identity from the JSON pid record; fall back
+        # to /proc/comm for legacy plain-pid files. Refuse a recycled pid.
+        try:
+            with open(pid_path, encoding="utf-8") as f:
+                raw = f.read().strip()
+            try:
+                record = json.loads(raw)
+                pid = int(record["pid"])
+            except json.JSONDecodeError:
+                pid = int(raw)
+                record = {"pid": pid}
+        except FileNotFoundError:
+            self._teardown_netns(branch_id)
+            self._cleanup_artifacts(branch_id)
             return
-        if self._pid_is_our_vmm(pid) is False:
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"invalid Firecracker pid record for {branch_id}") from exc
+        expected = {
+            "pid": pid,
+            "start_time": record.get("start_time"),
+            "exe": record.get("exe"),
+        }
+        current = self._process_identity(pid)
+        if current is None:
+            self._remove(pid_path)
+            self._teardown_netns(branch_id)
+            self._cleanup_artifacts(branch_id)
+            return
+        if (expected["start_time"] is not None and expected["exe"] is not None
+                and current != expected):
+            _log.error(
+                "refusing to kill pid %d for %s: process identity changed",
+                pid, branch_id)
+            self._remove(pid_path)
+            self._teardown_netns(branch_id)
+            self._cleanup_artifacts(branch_id)
+            return
+        if ((expected["start_time"] is None or expected["exe"] is None)
+                and self._pid_is_our_vmm(pid) is False):
             _log.warning("recorded pid %d for %s is not a %s process "
                          "(recycled); not killing it", pid, branch_id,
                          self._vmm_comm())
-        else:
-            _log.warning("no live handle for %s; SIGKILL by recorded pid %d",
-                         branch_id, pid)
+            self._remove(pid_path)
+            self._teardown_netns(branch_id)
+            self._cleanup_artifacts(branch_id)
+            return
+        _log.warning("no live handle for %s; SIGKILL by recorded pid %d",
+                     branch_id, pid)
+        try:
+            pidfd = os.pidfd_open(pid)
+            try:
+                if self._process_identity(pid) == current:
+                    signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+            finally:
+                os.close(pidfd)
+        except ProcessLookupError:
+            pass
+        except (AttributeError, PermissionError):
+            # pidfd unavailable or denied: fall back to plain SIGKILL
             try:
                 os.kill(pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError):
                 pass
-        self._teardown_netns(branch_id)  # recovers the /30 index from disk
+        self._teardown_netns(branch_id)
         self._remove(pid_path)
+        self._cleanup_artifacts(branch_id)
+        with self._lock:
+            self._parent_locks.pop(branch_id, None)
 
     def _recorded_pid(self, branch_id: str) -> int | None:
+        record = self._read_pid_record(branch_id)
+        return None if record is None else record["pid"]
+
+    def _read_pid_record(self, branch_id: str) -> dict | None:
         try:
             with open(self._pid_path(branch_id), encoding="utf-8") as f:
-                return int(f.read().strip())
-        except (FileNotFoundError, ValueError):
+                raw = f.read().strip()
+            try:
+                record = json.loads(raw)
+                return {"pid": int(record["pid"]),
+                        "start_time": record.get("start_time"),
+                        "exe": record.get("exe")}
+            except json.JSONDecodeError:
+                return {"pid": int(raw)}
+        except (FileNotFoundError, KeyError, TypeError, ValueError):
             return None
 
     @staticmethod
@@ -548,16 +691,39 @@ class FirecrackerSandbox:
         except FileNotFoundError:
             pass
 
+    def _cleanup_artifacts(self, branch_id: str) -> None:
+        vm_dir = self._vm_dir(branch_id, create=False)
+        paths = [vm_dir]
+        if self.jailer is not None:
+            host_dir = jail_root(
+                self.jailer, self.fc_bin, vm_dir)
+            paths.insert(0, os.path.dirname(host_dir))
+        for path in paths:
+            try:
+                shutil.rmtree(path)
+            except FileNotFoundError:
+                pass
+
     @locked
     def alive(self, branch_id: str) -> bool:
         vm = self._vms.get(branch_id)
         if vm is not None:
             return vm.proc.poll() is None
         # restart recovery: a restarted adapter has no handle, but the pid
-        # recorded at spawn plus a /proc comm check can still answer
-        pid = self._recorded_pid(branch_id)
-        if pid is None:
+        # record plus identity/comm checks can still answer
+        record = self._read_pid_record(branch_id)
+        if record is None:
             return False
+        pid = record["pid"]
+        current = self._process_identity(pid)
+        if (current is not None
+                and record.get("start_time") is not None
+                and record.get("exe") is not None):
+            return current == {
+                "pid": pid,
+                "start_time": record["start_time"],
+                "exe": record["exe"],
+            }
         return self._pid_is_our_vmm(pid) is True
 
     @locked

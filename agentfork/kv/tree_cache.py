@@ -207,6 +207,10 @@ class TreeKVCache:
     def resident_tokens(self) -> int:
         return self.stats.resident_tokens
 
+    @locked
+    def has_tree(self, tree_id: str) -> bool:
+        return tree_id in self.trees
+
     # -- internals -----------------------------------------------------------
 
     def _walk(self, tokens: list[int], namespace: str) -> tuple[_Node, int]:

@@ -1,5 +1,6 @@
 import json
 import sys
+from dataclasses import FrozenInstanceError
 
 import pytest
 
@@ -326,3 +327,71 @@ def test_closed_orchestrator_refuses_mutation(tmp_path):
             call()
     assert first.branches() == []  # reads stay allowed
     second.close()
+
+
+def test_auto_child_ids_continue_after_registry_reload(tmp_path):
+    registry = tmp_path / "registry.json"
+    kv = TreeKVCache()
+    sandbox = RecordingSandbox()
+    first = ForkOrchestrator(
+        kv=kv, sandbox=sandbox, registry_path=registry)
+    first.create_parent("parent")
+    first.fork("parent", n=2)
+    first._release_registry_lock()  # simulate kernel release after crash
+
+    second = ForkOrchestrator(
+        kv=kv, sandbox=sandbox, registry_path=registry)
+    child = second.fork("parent")[0]
+
+    assert child.branch_id == "parent/3"
+    second.close()
+
+
+def test_reconcile_collects_all_rows_loaded_from_previous_owner(tmp_path):
+    registry = tmp_path / "registry.json"
+    sandbox_root = tmp_path / "sandboxes"
+    first = ForkOrchestrator(
+        sandbox=ExternalSandbox(sandbox_root), registry_path=registry)
+    first.create_parent("parent")
+    first.fork("parent", n=2)
+    first._release_registry_lock()
+
+    second = ForkOrchestrator(
+        sandbox=ExternalSandbox(sandbox_root), registry_path=registry)
+    receipts = second.reconcile()
+
+    assert {receipt.branch_id for receipt in receipts} == {
+        "parent", "parent/1", "parent/2"}
+    assert second.branches() == []
+    assert list(sandbox_root.iterdir()) == []
+
+
+def test_branch_snapshots_are_immutable():
+    orch = ForkOrchestrator(sandbox=RecordingSandbox())
+    branch = orch.create_parent("parent")
+
+    with pytest.raises(FrozenInstanceError):
+        branch.state = "killing"
+
+    orch.close()
+
+
+def test_persist_failure_after_spawn_rolls_back_both_backends(monkeypatch):
+    kv = TreeKVCache()
+    sandbox = RecordingSandbox()
+    orch = ForkOrchestrator(kv=kv, sandbox=sandbox)
+    original_persist = orch._persist
+
+    def fail_live_transition():
+        if any(branch.state == "live" for branch in orch._branches.values()):
+            raise OSError("disk full")
+        original_persist()
+
+    monkeypatch.setattr(orch, "_persist", fail_live_transition)
+
+    with pytest.raises(OSError, match="disk full"):
+        orch.create_parent("parent")
+
+    assert orch.branches() == []
+    assert kv.trees == {}
+    assert sandbox.live == set()

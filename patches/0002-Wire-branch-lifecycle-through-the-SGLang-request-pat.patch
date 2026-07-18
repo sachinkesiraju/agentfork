@@ -130,7 +130,7 @@ index d7bae9633..dd089d827 100644
  
  
 +@app.post("/tree_cache")
-+@auth_level(AuthLevel.ADMIN_OPTIONAL)
++@auth_level(AuthLevel.ADMIN_FORCE)
 +async def tree_cache(request: TreeCacheOpReqInput):
 +    result = await _global_state.tokenizer_manager.tree_cache_op(request)
 +    if not result.success:
