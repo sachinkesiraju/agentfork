@@ -20,7 +20,7 @@ from agentfork.sandbox.fc_bench import JailerConfig
 from agentfork.sandbox.netns import NetworkConfig
 from agentfork.sandbox.vsock import DetachedExec, ExecResult, VsockError
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = [
     "Branch",

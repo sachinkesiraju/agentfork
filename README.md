@@ -149,15 +149,19 @@ Two production backends have adapters behind those same protocols:
    `fc_bench`'s `MicroVM` to `SandboxBackend`. Snapshots are taken lazily at
    fork time, so children inherit the parent's current state and unforked
    branches never pay the snapshot write. Each guest gets a vsock exec
-   channel (`orch.exec(branch_id, argv)`, served by
-   `agentfork/sandbox/guest_agent.py` baked into the rootfs), a
-   `wait_ready()` readiness probe, and, with `overlay_mib` set, a writable
-   scratch drive that children inherit as their own copy; `JailerConfig`
-   runs every VMM chrooted and deprivileged under Firecracker's jailer.
-   All of it is validated on real Firecracker v1.16.1: children answer
-   exec over vsock, mount and write their own overlays, and inherit state
-   the parent wrote after boot (jailed and unjailed). Networking and
-   identity regeneration are not handled.
+   channel (`orch.exec(branch_id, argv)` with stdin, plus
+   `orch.exec_detached()` for background processes, served by
+   `agentfork/sandbox/guest_agent.py` baked into the rootfs by
+   `tools/build_rootfs.sh`), a `wait_ready()` readiness probe, and, with
+   `overlay_mib` set, a writable scratch drive that children inherit as
+   their own reflink/sparse copy. `JailerConfig` runs every VMM chrooted
+   and deprivileged under the jailer; `NetworkConfig` gives each branch its
+   own network namespace (so N snapshot clones don't collide on tap/MAC/IP)
+   with NAT egress, and reseeds each clone's entropy after restore. All of
+   it is validated on real Firecracker v1.16.1: children answer exec over
+   vsock, mount and write their own overlays, inherit state the parent
+   wrote after boot, and reach the internet (`HTTP 200` from a forked
+   child), jailed and unjailed.
 
 ```
 ForkOrchestrator  (registry / leases / rollback / reconcile)
@@ -197,7 +201,8 @@ the checks that fail or remain untested.
 | Firecracker snapshot load | 2.1 ms p50 API time per child; 25 children loaded in 150 ms; full VMM teardown was 31 ms p50 |
 | Firecracker host-page sharing | 117.7 MiB total RSS vs 23.8 MiB total PSS across 25 idle VMMs |
 | End-to-end orchestrator + real Firecracker (`demo/fc_demo.py`, aarch64 v1.16.1, idle 256 MiB guests) | Root boot 111–165 ms; 10-way fork at 235–317 ms per child, dominated by the ~125 ms per-branch snapshot write; 9 losers killed in 132–231 ms; zero surviving VMMs across 3 runs |
-| Data plane + parallel lifecycle on real Firecracker (v0.3.0, same host) | 5-way fork 28–145 ms per child amortized (lazy fork-time snapshot, parallel restores); exec over vsock answered in every child (0.3–0.7 s steady-state, first exec after restore up to ~10 s); per-child overlay mount+write; fork-after-exec freshness and divergence isolation verified; 4 losers killed in 8–12 ms; identical results under the jailer; zero surviving VMMs |
+| Data plane + parallel lifecycle on real Firecracker (v0.3.0, same host) | 5-way fork 28–145 ms per child amortized (lazy fork-time snapshot, parallel restores); exec over vsock answered in every child; per-child overlay mount+write; fork-after-exec freshness and divergence isolation verified; 4 losers killed in 8–12 ms; identical results under the jailer; zero surviving VMMs |
+| Guest networking on real Firecracker (v0.4.0, same host) | Two children forked from one snapshot each brought up eth0 172.16.0.2/30 (isolated per netns) and both GET https://example.com → HTTP 200 (DNS + HTTPS egress via veth+NAT); netns and NAT rules torn down with zero leaks; vsock exec channel itself 44–73 ms per call |
 | SGLang patch size | 547 additive lines: 299 implementation and 248 tests |
 | 10,000-branch cache test | 0.95 s to create branches and 0.17 s to bulk-kill them; allocator back to 0; this tests cache metadata, not concurrent inference |
 | Tree-native cache controls | Direct API tests cover budgets, reservations, demotion, invalidation, and telemetry; request reservations are enforced before scheduler admission |
