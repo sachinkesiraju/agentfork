@@ -198,11 +198,13 @@ In the [10-child GPU test](patches/real_pool_validation.py), sharing reduced KV
 usage from 357k slots to 37k. Stock SGLang already shares cached prefixes, so
 agentfork adds branch tracking and cleanup, not lower memory use.
 
-Grounding: the 28–145 ms per-child restore (on nested KVM here) is the same
-class as managed microVM branching ([Morph's Infinibranch](https://cloud.morph.so/docs/developers)
-forks a full VM in under 250 ms; open-source Firecracker forkers ~27 ms p50).
-Those fork the sandbox only; agentfork also forks the KV cache, so an LLM
-fanout skips re-prefilling the shared prompt per child.
+Grounding: the 28–145 ms per-child restore is the Firecracker sandbox fork (on
+nested KVM here), the same class as managed microVM branching
+([Morph's Infinibranch](https://cloud.morph.so/docs/developers) forks a full VM
+in under 250 ms; open-source Firecracker forkers ~27 ms p50). Those fork the
+sandbox only; agentfork also forks the KV cache, a separate op on the engine
+that lets an LLM fanout skip re-prefilling the shared prompt. The two halves
+were measured on separate hosts and have not yet been benchmarked co-located.
 
 ## Running benchmarks
 
