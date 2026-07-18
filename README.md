@@ -93,21 +93,19 @@ cd agentfork
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
-python demo/demo.py
+python demo/demo.py                 # CPU demo: no model, GPU, or microVM
+
+# for the SGLang example below (needs a GPU to launch):
+tools/setup_sglang.sh               # patches SGLang and prints launch commands
 ```
 
-The CPU-only demo forks a 32k-token parent into ten branches, kills the losing
-branches, and verifies that no processes or cache entries leak. It uses token
-IDs and sleeping processes, so it does not need a model, GPU, or microVM. A
-successful run ends with `CLEAN`.
+The demo forks a 32k-token parent into ten branches, kills the losers, and
+checks that nothing leaks; token IDs and sleeping processes stand in for a
+model, and it ends with `CLEAN`.
 
-Python API against a live SGLang engine. This talks to a SGLang server that
-has agentfork's patches applied, which you run yourself: `tools/setup_sglang.sh`
-clones SGLang at the pinned commit and applies the patches, then you launch it
-on a GPU (the script prints the commands). With the server up, lifecycle and
-inference stay on the same branch identity: fork from a shared prompt, then
-generate on each child. The data path is inference requests (`generate`), not
-`extend()`.
+Against a live SGLang engine (set up above), lifecycle and inference stay on
+one branch identity: fork from a shared prompt, then generate on each child.
+The data path is inference (`generate`), not `extend()`.
 
 ```python
 from agentfork import ForkOrchestrator, SGLangHTTPBackend
