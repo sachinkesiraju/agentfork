@@ -262,9 +262,46 @@ def test_orchestrator_waits_for_guest_readiness_before_forking(tmp_path):
     with ForkOrchestrator(sandbox=sandbox) as orch:
         orch.create_parent("root")
         orch.fork("root", child_ids=["root/child"])
+        sandbox.await_reseed("root/child")  # reseed runs off the fork path now
 
-    assert [call[2] for call in exec_factory.calls] == [
-        ("true",), ("tee", "/dev/urandom"), ("true",)]
+    argvs = [call[2] for call in exec_factory.calls]
+    assert argvs.count(("true",)) == 2  # readiness probes bracket the fork
+    assert ("tee", "/dev/urandom") in argvs  # child RNG pool reseeded
+
+
+def test_reseed_runs_off_the_fork_path(tmp_path):
+    import threading
+    import time
+
+    started, release = threading.Event(), threading.Event()
+
+    class SlowReseedClient(FakeExecClient):
+        def exec(self, argv, timeout_s=None, stdin=None):
+            if argv and argv[0] == "tee":
+                started.set()
+                release.wait(5)  # hold the reseed open
+            return super().exec(argv, timeout_s, stdin=stdin)
+
+    class SlowFactory(FakeExecClientFactory):
+        def __call__(self, uds_path, port):
+            return SlowReseedClient(uds_path, port, self.calls)
+
+    sandbox = FirecrackerSandbox(
+        fc_bin="fc-bin", kernel="kernel", rootfs="rootfs.ext4",
+        work_dir=str(tmp_path), microvm_factory=FakeMicroVMFactory(),
+        exec_client_factory=SlowFactory())
+    sandbox.spawn("root", None)
+
+    t0 = time.perf_counter()
+    sandbox.spawn("child", "root")  # must not block on the (held) reseed
+    spawn_ms = (time.perf_counter() - t0) * 1000
+
+    try:
+        assert started.wait(2)      # the reseed did start, in the background
+        assert spawn_ms < 500       # ...but spawn returned without waiting
+    finally:
+        release.set()
+        sandbox.await_reseed("child")
 
 
 def test_exec_unknown_branch_raises_key_error(tmp_path):
@@ -293,6 +330,7 @@ def test_overlay_created_for_root_and_copied_per_child(tmp_path):
         ("boot", "kernel", "rootfs.ext4", "overlay.ext4", "v.sock")
 
     sandbox.spawn("child", "root")
+    sandbox.await_reseed("child")  # reseed runs off the fork path now
 
     assert (tmp_path / "child" / "overlay.ext4").exists()
     # the copy is taken while the parent is paused after a best-effort sync,
