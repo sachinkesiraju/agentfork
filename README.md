@@ -184,19 +184,14 @@ either.
 See [report/RESULTS.md](report/RESULTS.md) for full results, assumptions, and
 the checks that fail or remain untested.
 
-| Claim | Measured |
+| What we measured | Result |
 |---|---|
-| Patched cache on a real SGLang GPU pool (A10) | 37k occupied slots vs 357k with sharing disabled; 10 create+extend operations in 22 ms; allocator back to 0 after kill-all |
-| Live tree request path | A10G parent + 10 children: every child reused 2,406 parent tokens; explicit kill released the remaining pin |
-| Subprocess + CPU reference-cache kill | 0.53 ms p50 and 1.46 ms max over 100 cycles |
-| Data plane + parallel lifecycle on real Firecracker (v0.3.0) | 5-way fork 28–145 ms per child amortized (lazy fork-time snapshot, parallel restores); exec over vsock in every child; per-child overlay mount+write; fork-after-exec freshness and divergence isolation verified; identical results under the jailer; zero surviving VMMs |
-| Guest networking on real Firecracker (v0.4.0) | Two children forked from one snapshot each reached the internet (GET https://example.com → HTTP 200) over per-branch netns + NAT; netns and NAT rules torn down with zero leaks; vsock exec 44–73 ms per call |
-| Sustained-pressure VGE | A10G synthetic contention: 1.596× stock SGLang, paired-bootstrap 95% CI [1.576×, 1.619×] |
-| Locked synthetic holdout | 12 children and 80 pressure requests: 1.537×, 95% CI [1.518×, 1.554×]; partner validation still required |
-
-In the [10-child GPU test](patches/real_pool_validation.py), sharing reduced KV
-usage from 357k slots to 37k. Stock SGLang already shares cached prefixes, so
-agentfork adds branch tracking and cleanup, not lower memory use.
+| KV sharing on a real SGLang GPU allocator (A10) | 10 branches over one shared 32k-token prefix held 37k slots instead of the 357k a full per-branch copy would need; 10 create+extend ops in 22 ms; allocator back to exactly 0 after kill-all. Stock SGLang already shares identical prefixes, so this buys correctness and clean reclaim, not less memory than stock. ([code](patches/real_pool_validation.py)) |
+| Live request path on a real GPU (A10G) | One parent, 10 children: every child reused all 2,406 cached parent tokens with zero re-prefill; explicit kill released the pin. |
+| Sandbox fork on real Firecracker (v0.3.0) | 5-way fork at 28–145 ms per child (lazy fork-time snapshot, parallel restores); exec over vsock in every child; per-child writable overlay; identical results under the jailer; zero leaked VMMs. |
+| Loser kill, reference path (subprocess + CPU cache) | 0.53 ms p50, 1.46 ms max over 100 cycles. |
+| Guest networking on real Firecracker (v0.4.0) | Two children each reached the internet (GET example.com → HTTP 200) over per-branch netns + NAT; rules torn down with zero leaks; vsock exec 44–73 ms per call. |
+| Sibling speedup under cache pressure, vs stock SGLang | When unrelated traffic evicts the shared prefix in stock SGLang but not in agentfork, the children generate 1.60× faster (sustained pressure, 95% CI [1.576×, 1.619×]) and 1.54× on a locked holdout (95% CI [1.518×, 1.554×]). Both synthetic; partner validation still pending. |
 
 Grounding: forking both halves of a branch (sandbox microVM + KV cache) runs
 28–145 ms per child, of which the KV fork is under 1.3%. That is the same
