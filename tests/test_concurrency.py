@@ -134,7 +134,7 @@ class SlowSandbox:
 def test_fork_fans_out_when_sandbox_is_parallel_safe():
     import time
 
-    sandbox = SlowSandbox(delay=0.15)
+    sandbox = SlowSandbox(delay=0.25)
     with ForkOrchestrator(sandbox=sandbox) as orch:
         orch.create_parent("root", tokens=PREFIX)
         t0 = time.perf_counter()
@@ -142,14 +142,14 @@ def test_fork_fans_out_when_sandbox_is_parallel_safe():
         fork_s = time.perf_counter() - t0
         assert len(children) == 6
         assert all(orch.alive(c.branch_id) for c in children)
-        # six 0.15s spawns serialized would take >=0.9s
-        assert fork_s < 0.7
+        # six 0.25s spawns serialized take >=1.5s; generous margin for CI
+        assert fork_s < 1.0
 
         t0 = time.perf_counter()
         receipts = orch.kill_losers(children[0].branch_id)
         kill_s = time.perf_counter() - t0
         assert len(receipts) == 5
-        assert kill_s < 0.7
+        assert kill_s < 1.0
 
 
 def test_parallel_fork_failure_rolls_back_only_failed_children():
@@ -168,6 +168,32 @@ def test_parallel_fork_failure_rolls_back_only_failed_children():
     survivors = {b.branch_id for b in orch.branches()}
     assert survivors == {"root", "root/c0", "root/c2", "root/c4"}
     assert all(orch.alive(b) for b in survivors)
+
+
+def test_kill_losers_waits_out_an_in_flight_fork():
+    import threading
+    import time
+
+    sandbox = SlowSandbox(delay=0.3)
+    orch = ForkOrchestrator(sandbox=sandbox)
+    orch.create_parent("root", tokens=PREFIX)
+    winner = orch.fork("root", child_ids=["root/winner"])[0]
+
+    racing_fork = threading.Thread(
+        target=lambda: orch.fork("root", child_ids=["root/racer"]))
+    racing_fork.start()
+    try:
+        time.sleep(0.05)  # the racer is journaled and mid-spawn
+
+        receipts = orch.kill_losers(winner.branch_id)
+
+        # the racer's fork was in flight when the sweep started; the sweep
+        # must wait it out and kill it rather than silently sparing it
+        assert "root/racer" in {r.branch_id for r in receipts}
+        survivors = {b.branch_id for b in orch.branches()}
+        assert survivors == {"root", "root/winner"}
+    finally:
+        racing_fork.join()
 
 
 def test_kill_is_noop_while_same_branch_kill_is_in_flight():

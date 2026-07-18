@@ -18,6 +18,7 @@ Requires /dev/kvm access. Results print as JSON.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import http.client
 import json
 import os
@@ -46,8 +47,19 @@ class JailerConfig:
 
 
 def jail_id_for(vm_dir: str) -> str:
-    """Jailer IDs allow only alphanumerics and hyphens, max 64 chars."""
-    return re.sub(r"[^A-Za-z0-9-]", "-", os.path.basename(vm_dir))[:64]
+    """Jailer IDs allow only alphanumerics and hyphens, max 64 chars.
+
+    Sanitizing can merge distinct names (``a_b`` and ``a-b``) and truncation
+    can merge long ones — and two branches sharing one jail chroot silently
+    clobber each other's snapshot and overlay files. Whenever the name had
+    to be altered, a short digest of the original is appended so distinct
+    inputs keep distinct jail IDs."""
+    name = os.path.basename(vm_dir)
+    sanitized = re.sub(r"[^A-Za-z0-9-]", "-", name)
+    if sanitized == name and len(sanitized) <= 64:
+        return sanitized
+    digest = hashlib.sha256(name.encode()).hexdigest()[:8]
+    return f"{sanitized[:55]}-{digest}"
 
 
 def jail_root(jailer: JailerConfig, fc_bin: str, vm_dir: str) -> str:

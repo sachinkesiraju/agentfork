@@ -368,6 +368,53 @@ def test_kill_reclaims_orphan_from_pid_file_after_restart(tmp_path):
             orphan.wait()
 
 
+class JailAwareFakeFactory(FakeMicroVMFactory):
+    """Fake factory matching the 3-arg signature the adapter uses when a
+    jailer is configured."""
+
+    def __call__(self, fc_bin, vm_dir, jailer=None):
+        vm = FakeMicroVM(fc_bin, vm_dir)
+        vm.jailer = jailer
+        self.instances.append(vm)
+        self.by_dir[vm_dir] = vm
+        return vm
+
+
+def test_jailed_child_gets_snapshot_pair_and_rootfs_staged(tmp_path):
+    from agentfork.sandbox.fc_bench import JailerConfig
+
+    rootfs = tmp_path / "rootfs.squashfs"
+    rootfs.write_bytes(b"rootfs-bytes")
+    # uid/gid = our own so the _chown_into_jail call is permitted in tests
+    jailer = JailerConfig(jailer_bin="/usr/bin/jailer", uid=os.getuid(),
+                          gid=os.getgid(), chroot_base=str(tmp_path / "jail"))
+    factory = JailAwareFakeFactory()
+    sandbox = FirecrackerSandbox(
+        fc_bin="fc-bin", kernel="kernel", rootfs=str(rootfs),
+        work_dir=str(tmp_path / "work"), microvm_factory=factory,
+        overlay_mib=1, mkfs="true",
+        exec_client_factory=FakeExecClientFactory(), jailer=jailer)
+
+    sandbox.spawn("root", None)
+    root_chroot = tmp_path / "jail" / "fc-bin" / "root" / "root"
+    assert (root_chroot / "overlay.ext4").exists()  # created in the jail
+    assert factory.instances[0].jailer is jailer    # factory got the config
+
+    sandbox.spawn("child", "root")
+
+    child_chroot = tmp_path / "jail" / "fc-bin" / "child" / "root"
+    # a jailed child cannot see its parent's chroot: the snapshot pair and
+    # the shared rootfs must be staged into the child's own jail, and the
+    # restore must reference the staged copies
+    assert (child_chroot / "pmem").read_bytes() == b"snap"
+    assert (child_chroot / "pstate").read_bytes() == b"snap"
+    assert (child_chroot / "rootfs.img").read_bytes() == b"rootfs-bytes"
+    assert (child_chroot / "overlay.ext4").exists()
+    child_vm = factory.instances[-1]
+    assert child_vm.events[0] == ("restore", str(child_chroot / "pmem"),
+                                  str(child_chroot / "pstate"))
+
+
 def test_spawn_failure_kills_the_vm_and_leaves_no_bookkeeping(tmp_path):
     sandbox, factory, _ = _make_sandbox(
         tmp_path, factory=FailingBootMicroVMFactory())

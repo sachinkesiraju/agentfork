@@ -134,7 +134,7 @@ def test_concurrent_execs_are_served_concurrently(channel):
     results = [None] * 4
     def run(i):
         results[i] = channel.exec(
-            [sys.executable, "-c", f"import time; time.sleep(0.2); print({i})"])
+            [sys.executable, "-c", f"import time; time.sleep(0.3); print({i})"])
     threads = [threading.Thread(target=run, args=(i,)) for i in range(4)]
     import time
     t0 = time.perf_counter()
@@ -144,5 +144,5 @@ def test_concurrent_execs_are_served_concurrently(channel):
         t.join()
     elapsed = time.perf_counter() - t0
     assert [r.stdout for r in results] == [b"0\n", b"1\n", b"2\n", b"3\n"]
-    # four 0.2s sleeps served serially would take >=0.8s
-    assert elapsed < 0.7
+    # four 0.3s sleeps served serially take >=1.2s; generous margin for CI
+    assert elapsed < 1.0

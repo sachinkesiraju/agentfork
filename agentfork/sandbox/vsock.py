@@ -11,10 +11,12 @@ that handshake and the exec protocol ``guest_agent.py`` serves over it:
   "stderr": <b64>, "timed_out": <bool>}``, or ``{"error": <str>}`` if the
   agent could not run the command at all.
 
-The guest command's timeout is enforced by the agent inside the guest; the
-host socket timeout is set slightly above it so a wedged guest still cannot
-hang the caller forever. A handshake retry loop absorbs the window right
-after boot when the VMM is up but the agent has not bound its port yet.
+The guest command's timeout is enforced by the agent inside the guest; when
+``timeout_s`` is given, the host socket timeout is set slightly above it so
+a wedged guest cannot hang the caller. With ``timeout_s=None`` the host
+blocks indefinitely by design — pass a timeout if the guest is untrusted. A
+handshake retry loop absorbs the window right after boot when the VMM is up
+but the agent has not bound its port yet.
 
 Tested against a fake muxer+agent over a real Unix socket
 (tests/test_vsock.py); the handshake grammar follows Firecracker's vsock

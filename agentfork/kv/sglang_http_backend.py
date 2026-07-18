@@ -1,4 +1,12 @@
-"""Remote SGLang tree-cache lifecycle over its administrative HTTP endpoint."""
+"""Remote SGLang tree-cache lifecycle over its administrative HTTP endpoint.
+
+Covers lifecycle only: create/fork/kill/reserve/telemetry map to
+``/tree_cache`` operations on the patched server. ``extend()`` is a local
+stub that always returns 0 charged tokens — token accounting has no remote
+contract yet, so ``ForkOrchestrator.extend`` (and ``create_parent`` with
+``tokens=``) will report zero charges through this backend rather than real
+accounting. Engine-side prefill happens via ordinary generate requests
+carrying ``tree_id``/``branch_id``, not through this adapter."""
 
 from __future__ import annotations
 

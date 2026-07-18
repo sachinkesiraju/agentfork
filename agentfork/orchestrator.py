@@ -42,9 +42,10 @@ reference ``TreeKVCache`` and the sandbox half to a generic subprocess (via
 ``SandboxBackend``. Kill remains sequential across the two halves, not atomic.
 Adapters for a patched-SGLang engine (``agentfork.kv.sglang_backend``) and for
 Firecracker (``agentfork.sandbox.firecracker_backend``) satisfy those
-protocols. The Firecracker adapter has been driven end to end against real
-microVMs (``demo/fc_demo.py``, idle guests); the SGLang adapter is unit-tested
-against mocks only and has not touched a live engine.
+protocols. The Firecracker adapter (including its exec/overlay/jailer data
+plane) has been driven end to end against real microVMs (``demo/fc_demo.py``),
+and the SGLang request path has run against a live engine on a Modal A10G via
+``SGLangHTTPBackend``; see report/RESULTS.md for the recorded runs.
 """
 
 from __future__ import annotations
@@ -468,7 +469,14 @@ class ForkOrchestrator:
         return KillReceipt(branch_id, freed)
 
     def kill_losers(self, winner_id: str) -> list[KillReceipt]:
-        """Kill every live branch except the winner and its ancestor chain."""
+        """Kill every live branch except the winner and its ancestor chain.
+
+        A loser whose fork is still in flight on another thread is skipped
+        by ``kill()`` (the fork wins the race), so after the first sweep any
+        loser that survived is waited for and killed again — the sweep does
+        not return until every branch recorded at entry is gone. Branches
+        forked *after* entry are not this call's problem.
+        """
         with self._lock:
             self._ensure_open()
             if winner_id not in self._branches:
@@ -480,7 +488,19 @@ class ForkOrchestrator:
                 branch = self._branches.get(cursor)
                 cursor = branch.parent_id if branch else None
             losers = [bid for bid in self._branches if bid not in keep]
-        return self._fan_out(losers, self.kill)
+        receipts = self._fan_out(losers, self.kill)
+        for branch_id in losers:
+            while True:
+                with self._lock:
+                    if branch_id not in self._branches:
+                        break  # killed (by us or a concurrent killer)
+                    settling = (branch_id in self._spawning
+                                or branch_id in self._killing)
+                if settling:
+                    time.sleep(0.01)  # spawn/kill in flight; it will settle
+                    continue
+                receipts.append(self.kill(branch_id))
+        return receipts
 
     # -- collection ----------------------------------------------------------
 

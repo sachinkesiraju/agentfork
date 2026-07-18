@@ -35,18 +35,31 @@ JAILER = JailerConfig(jailer_bin="/usr/bin/jailer", uid=1234, gid=1234,
                       chroot_base="/srv/jailer")
 
 
-def test_jail_id_sanitizes_to_jailer_charset():
-    assert jail_id_for("/work/root_1") == "root-1"
-    assert jail_id_for("/work/" + "x" * 100) == "x" * 64
+def test_jail_id_passes_clean_names_through():
+    assert jail_id_for("/work/branch-a") == "branch-a"
+    assert jail_id_for("/work/" + "x" * 64) == "x" * 64
+
+
+def test_jail_id_sanitization_and_truncation_stay_collision_free():
+    # sanitizing or truncating appends a digest of the original name, so
+    # names that would otherwise merge keep distinct jail IDs (two branches
+    # sharing a chroot would clobber each other's snapshot/overlay files)
+    sanitized = jail_id_for("/work/root_1")
+    assert sanitized.startswith("root-1-") and len(sanitized) <= 64
+    assert jail_id_for("/work/root_1") != jail_id_for("/work/root-1")
+    long_a, long_b = "x" * 70 + "a", "x" * 70 + "b"
+    assert jail_id_for(long_a) != jail_id_for(long_b)
+    assert len(jail_id_for(long_a)) <= 64
+    assert jail_id_for(long_a) == jail_id_for(long_a)  # deterministic
 
 
 def test_jail_root_is_under_chroot_base_and_exec_file_name():
-    root = jail_root(JAILER, "/opt/fc/firecracker", "/work/branch_a")
+    root = jail_root(JAILER, "/opt/fc/firecracker", "/work/branch-a")
     assert root == "/srv/jailer/firecracker/branch-a/root"
 
 
 def test_jailer_argv_shape():
-    argv = jailer_argv(JAILER, "/opt/fc/firecracker", "/work/branch_a")
+    argv = jailer_argv(JAILER, "/opt/fc/firecracker", "/work/branch-a")
     assert argv[0] == "/usr/bin/jailer"
     assert argv[argv.index("--id") + 1] == "branch-a"
     assert argv[argv.index("--exec-file") + 1] == "/opt/fc/firecracker"

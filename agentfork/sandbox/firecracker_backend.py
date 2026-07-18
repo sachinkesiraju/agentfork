@@ -116,8 +116,10 @@ class FirecrackerSandbox:
         self._parent_locks: dict[str, threading.Lock] = {}
 
     def _vm_dir(self, branch_id: str) -> str:
+        # 0700: the API socket and vsock UDS inside grant full control of
+        # the VMM and guest to anyone who can reach them
         d = os.path.join(self.work_dir, branch_id.replace("/", "_"))
-        os.makedirs(d, exist_ok=True)
+        os.makedirs(d, mode=0o700, exist_ok=True)
         return d
 
     def _pid_path(self, branch_id: str) -> str:
@@ -130,7 +132,7 @@ class FirecrackerSandbox:
         if self.jailer is None:
             return self._vm_dir(branch_id)
         d = jail_root(self.jailer, self.fc_bin, self._vm_dir(branch_id))
-        os.makedirs(d, exist_ok=True)
+        os.makedirs(d, mode=0o700, exist_ok=True)
         return d
 
     def _new_vm(self, vm_dir: str):
@@ -206,6 +208,7 @@ class FirecrackerSandbox:
                                "will be crash-consistent", parent_id)
             if stale or self.overlay_mib is not None:
                 parent_vm.pause()
+                snapshot_error = None
                 try:
                     if stale:
                         t0 = time.perf_counter()
@@ -224,8 +227,19 @@ class FirecrackerSandbox:
                         shutil.copyfile(os.path.join(pdir, _OVERLAY),
                                         child_overlay)
                         self._chown_into_jail(child_overlay)
+                except BaseException as exc:
+                    snapshot_error = exc
+                    raise
                 finally:
-                    parent_vm.resume()
+                    try:
+                        parent_vm.resume()
+                    except Exception:
+                        if snapshot_error is None:
+                            raise  # parent left paused: that IS the failure
+                        # snapshot already failed (parent killed mid-fork?);
+                        # don't let the resume failure mask the primary error
+                        _log.warning("resume of %s failed after snapshot "
+                                     "error", parent_id, exc_info=True)
         return mem, state
 
     def spawn(self, branch_id: str, parent_id: str | None) -> None:
