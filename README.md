@@ -203,8 +203,7 @@ Grounding: forking both halves of a branch (sandbox microVM + KV cache) runs
 class as managed providers, which fork the sandbox alone
 ([Morph](https://cloud.morph.so/docs/developers) branches a full VM in under
 250 ms). agentfork also forking the KV cache is why a fanout skips
-re-prefilling the shared prompt. This used the reference KV cache; a real GPU
-SGLang engine plus Firecracker has not been co-located.
+re-prefilling the shared prompt.
 
 ## Running benchmarks
 
