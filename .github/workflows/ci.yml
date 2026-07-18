@@ -1,7 +1,14 @@
 name: ci
 on:
+  # push only on main (post-merge); PR branches are covered by pull_request,
+  # so a branch with an open PR runs CI once, not once per event
   push:
+    branches: [main]
   pull_request:
+# a newer push to the same ref cancels an in-flight run
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   test:
     runs-on: ubuntu-latest

@@ -7,6 +7,10 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+# a newer push to the same ref cancels an in-flight (and costly) KVM run
+concurrency:
+  group: kvm-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   firecracker:
