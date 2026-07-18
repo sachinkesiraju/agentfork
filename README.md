@@ -101,10 +101,13 @@ branches, and verifies that no processes or cache entries leak. It uses token
 IDs and sleeping processes, so it does not need a model, GPU, or microVM. A
 successful run ends with `CLEAN`.
 
-Python API against a live SGLang engine. Keep lifecycle and inference on the
-same branch identity: fork from a shared prompt, then generate on each child.
-The data path is inference requests (`generate`), not `extend()`. Start the
-patched server with `--admin-api-key` first.
+Python API against a live SGLang engine. This talks to a SGLang server that
+has agentfork's patches applied, which you run yourself: `tools/setup_sglang.sh`
+clones SGLang at the pinned commit and applies the patches, then you launch it
+on a GPU (the script prints the commands). With the server up, lifecycle and
+inference stay on the same branch identity: fork from a shared prompt, then
+generate on each child. The data path is inference requests (`generate`), not
+`extend()`.
 
 ```python
 from agentfork import ForkOrchestrator, SGLangHTTPBackend
