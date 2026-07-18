@@ -101,6 +101,46 @@ def test_start_reaper_is_idempotent():
         orch.close()
 
 
+def test_reaper_survives_a_transient_runtime_error_and_keeps_running():
+    # a non-"closed" RuntimeError from a pass must not silently kill the
+    # reaper on a healthy orchestrator
+    class FlakySweepSandbox(DyingSandbox):
+        def __init__(self):
+            super().__init__()
+            self.sweeps = 0
+
+        def sweep_dead(self):
+            self.sweeps += 1
+            if self.sweeps == 1:
+                raise RuntimeError("transient transport blip")
+            return []
+
+    sandbox = FlakySweepSandbox()
+    orch = ForkOrchestrator(sandbox=sandbox)
+    try:
+        orch.create_parent("root")
+        orch.start_reaper(interval_s=0.03)
+        # the reaper must run several passes despite the first one raising
+        assert _wait_until(lambda: sandbox.sweeps >= 3)
+        assert orch._reaper_thread.is_alive()
+    finally:
+        orch.close()
+
+
+def test_start_then_stop_reaper_does_not_hang_with_interleaving():
+    # exercise repeated start/stop cycles: the loop captures its own stop
+    # event, so a restart can't strand the previous thread
+    orch = ForkOrchestrator()
+    try:
+        for _ in range(5):
+            orch.start_reaper(interval_s=0.02)
+            t = orch._reaper_thread
+            orch.stop_reaper()
+            assert not t.is_alive()
+    finally:
+        orch.close()
+
+
 def test_metrics_count_lifecycle_operations():
     class ExecSandbox(DyingSandbox):
         def exec(self, branch_id, argv, timeout_s=None, stdin=None):

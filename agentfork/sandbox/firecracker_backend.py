@@ -56,6 +56,7 @@ regeneration remain unimplemented.
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import logging
 import os
@@ -213,8 +214,10 @@ class FirecrackerSandbox:
         while pos < end:
             try:
                 data_start = os.lseek(src_fd, pos, os.SEEK_DATA)
-            except OSError:
-                break  # ENXIO: nothing but holes to the end
+            except OSError as exc:
+                if exc.errno == errno.ENXIO:
+                    break  # only holes remain to the end
+                raise  # a real I/O error must not masquerade as end-of-data
             hole = os.lseek(src_fd, data_start, os.SEEK_HOLE)
             os.lseek(src_fd, data_start, os.SEEK_SET)
             os.lseek(dst_fd, data_start, os.SEEK_SET)
@@ -324,8 +327,10 @@ class FirecrackerSandbox:
                 raise ValueError(f"branch exists: {branch_id}")
             self._pending.add(branch_id)
         vm = None
-        netns = self._setup_netns(branch_id)
         try:
+            # inside the try so a netns failure still runs the finally that
+            # clears _pending (and the except that tears the netns down)
+            netns = self._setup_netns(branch_id)
             d = self._vm_dir(branch_id)
             tap = _TAP if self._netns is not None else None
             if parent_id is None:
@@ -376,13 +381,20 @@ class FirecrackerSandbox:
             with self._lock:
                 self._pending.discard(branch_id)
 
+    def _netns_idx_path(self, branch_id: str) -> str:
+        return os.path.join(self._vm_dir(branch_id), "netns.idx")
+
     def _setup_netns(self, branch_id: str) -> str | None:
         """Build this branch's network namespace, if networking is enabled.
         Every guest boots believing it is the same tap/MAC/IP; the namespace
-        keeps N snapshot clones from colliding on one host network."""
+        keeps N snapshot clones from colliding on one host network. The /30
+        index is journaled next to fc.pid so a restarted adapter (which has
+        no in-memory _netns_index) can still tear the namespace down."""
         if self._netns is None:
             return None
         name, index = self._netns.setup(branch_id)
+        with open(self._netns_idx_path(branch_id), "w", encoding="utf-8") as f:
+            f.write(str(index))
         with self._lock:
             self._netns_index[branch_id] = index
         return name
@@ -392,8 +404,14 @@ class FirecrackerSandbox:
             return
         with self._lock:
             index = self._netns_index.pop(branch_id, None)
-        if index is not None:
-            self._netns.teardown(branch_id, index)
+        if index is None:  # restarted adapter: recover the index from disk
+            try:
+                with open(self._netns_idx_path(branch_id), encoding="utf-8") as f:
+                    index = int(f.read().strip())
+            except (FileNotFoundError, ValueError):
+                return
+        self._netns.teardown(branch_id, index)
+        self._remove(self._netns_idx_path(branch_id))
 
     def _reseed_identity(self, branch_id: str) -> None:
         """Best-effort de-correlation of a restored clone from its siblings.
@@ -403,15 +421,19 @@ class FirecrackerSandbox:
         nonces, session tokens, UUIDs). Feeding host-fresh entropy into the
         guest's pool via the exec channel stirs each clone uniquely. Machine
         identity (hostname, SSH host keys, DHCP client-id) is the rootfs's
-        job — see tools/build_rootfs.sh, which regenerates them on boot."""
+        job — see tools/build_rootfs.sh, which regenerates them on boot.
+
+        Purely best-effort: a concurrent kill of this branch, or any
+        transport hiccup, just skips the reseed (OSError covers a raw
+        ConnectionReset that never became a VsockError)."""
         if not self.vsock:
             return
         try:
             self._exec_live(branch_id, ["tee", "/dev/urandom"],
                             timeout_s=5.0, stdin=os.urandom(32))
-        except VsockError:
-            _log.debug("entropy reseed of %s skipped (agent not ready)",
-                       branch_id)
+        except (VsockError, OSError):
+            _log.debug("entropy reseed of %s skipped (agent gone or racing "
+                       "a kill)", branch_id)
 
     def _exec_client(self, branch_id: str) -> VsockExecClient:
         if not self.vsock:
@@ -484,8 +506,9 @@ class FirecrackerSandbox:
         if vm is not None:
             try:
                 vm.kill()
-            except RuntimeError:
-                pass
+            except Exception:  # best effort: teardown must run regardless
+                _log.warning("vm.kill of %s raised; continuing teardown",
+                             branch_id, exc_info=True)
             self._teardown_netns(branch_id)  # after the VMM releases the tap
             self._remove(pid_path)
             return
@@ -495,6 +518,7 @@ class FirecrackerSandbox:
         # recycled pid belonging to an innocent process is spared.
         pid = self._recorded_pid(branch_id)
         if pid is None:
+            self._teardown_netns(branch_id)  # namespace may still be journaled
             return
         if self._pid_is_our_vmm(pid) is False:
             _log.warning("recorded pid %d for %s is not a %s process "
@@ -507,6 +531,7 @@ class FirecrackerSandbox:
                 os.kill(pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError):
                 pass
+        self._teardown_netns(branch_id)  # recovers the /30 index from disk
         self._remove(pid_path)
 
     def _recorded_pid(self, branch_id: str) -> int | None:

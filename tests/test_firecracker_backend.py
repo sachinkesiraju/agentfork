@@ -427,6 +427,34 @@ def test_copy_overlay_preserves_content_and_sparseness(tmp_path):
         assert dst.stat().st_blocks * 512 < logical // 2
 
 
+def test_sparse_copy_reraises_real_io_errors_instead_of_truncating(tmp_path):
+    import errno
+
+    src, dst = tmp_path / "s.img", tmp_path / "d.img"
+    with open(src, "wb") as f:
+        f.truncate(1 << 20)
+        f.write(b"data")
+
+    real_lseek = os.lseek
+
+    def exploding_lseek(fd, pos, how):
+        if how == os.SEEK_DATA:
+            raise OSError(errno.EIO, "injected I/O error")
+        return real_lseek(fd, pos, how)
+
+    # a genuine I/O error mid-copy must propagate (so _copy_overlay's outer
+    # fallback fires), not be mistaken for ENXIO end-of-data and truncate
+    orig = os.lseek
+    os.lseek = exploding_lseek
+    try:
+        with open(src, "rb") as fs, open(dst, "wb") as fd_:
+            with pytest.raises(OSError) as ei:
+                FirecrackerSandbox._sparse_copy(fs.fileno(), fd_.fileno())
+            assert ei.value.errno == errno.EIO
+    finally:
+        os.lseek = orig
+
+
 def test_sweep_dead_lists_branches_whose_vmm_exited(tmp_path):
     sandbox, factory, _ = _make_sandbox(tmp_path)
     sandbox.spawn("root", None)
@@ -508,6 +536,27 @@ def test_networking_sets_up_and_tears_down_a_netns_per_branch(tmp_path):
 
     # kill tears the namespace back down
     assert any(c[:3] == ["ip", "netns", "del"] for c in net_calls)
+
+
+def test_networking_index_journaled_and_recovered_on_restart(tmp_path):
+    from agentfork.sandbox.netns import NetworkConfig
+
+    # first adapter spawns a branch with networking, then "crashes" (we drop
+    # it without killing) leaving the netns up and its index only on disk
+    first, _, _ = _make_sandbox(tmp_path, network=NetworkConfig(uplink="eth0"))
+    first._netns._run = lambda argv, *, check=True: None
+    first.spawn("root", None)
+    assert (tmp_path / "root" / "netns.idx").exists()
+
+    # restarted adapter: no in-memory _netns_index; kill must still recover
+    # the index from disk and tear the namespace down
+    second, _, _ = _make_sandbox(tmp_path, network=NetworkConfig(uplink="eth0"))
+    torn = []
+    second._netns._run = lambda argv, *, check=True: torn.append(argv)
+    second.kill("root")
+
+    assert any(c[:3] == ["ip", "netns", "del"] for c in torn)
+    assert not (tmp_path / "root" / "netns.idx").exists()
 
 
 def test_networking_teardown_runs_on_spawn_failure(tmp_path):

@@ -172,6 +172,8 @@ class Branch:
 class KillReceipt:
     branch_id: str
     kv_freed_tokens: int
+    reaped: bool = True   # False for a no-op (unknown branch, or a kill/fork
+    #                       of it already in flight on another thread)
 
 
 @dataclass
@@ -491,7 +493,7 @@ class ForkOrchestrator:
             if (branch_id not in self._branches
                     or branch_id in self._killing
                     or branch_id in self._spawning):
-                return KillReceipt(branch_id, 0)
+                return KillReceipt(branch_id, 0, reaped=False)
             self._killing.add(branch_id)
             self._branches[branch_id].state = _STATE_KILLING
             self._persist()
@@ -532,19 +534,22 @@ class ForkOrchestrator:
                 branch = self._branches.get(cursor)
                 cursor = branch.parent_id if branch else None
             losers = [bid for bid in self._branches if bid not in keep]
-        receipts = self._fan_out(losers, self.kill)
+        # keyed by branch so a retry's real receipt replaces the sweep's
+        # no-op, never both — exactly one receipt per loser
+        receipts = {r.branch_id: r for r in self._fan_out(losers, self.kill)}
         for branch_id in losers:
-            while True:
+            while not receipts.get(branch_id,
+                                   KillReceipt(branch_id, 0, False)).reaped:
                 with self._lock:
                     if branch_id not in self._branches:
-                        break  # killed (by us or a concurrent killer)
+                        break  # gone (killed by us or a concurrent killer)
                     settling = (branch_id in self._spawning
                                 or branch_id in self._killing)
                 if settling:
                     time.sleep(0.01)  # spawn/kill in flight; it will settle
                     continue
-                receipts.append(self.kill(branch_id))
-        return receipts
+                receipts[branch_id] = self.kill(branch_id)
+        return list(receipts.values())
 
     # -- collection ----------------------------------------------------------
 
@@ -578,7 +583,7 @@ class ForkOrchestrator:
                       len(expired), expired)
         receipts = self._fan_out(expired, self.kill)
         with self._lock:
-            self.metrics.reaped_expired += len(receipts)
+            self.metrics.reaped_expired += sum(1 for r in receipts if r.reaped)
         return receipts
 
     def reconcile(self) -> list[KillReceipt]:
@@ -617,9 +622,12 @@ class ForkOrchestrator:
             self._ensure_open()
             if self._reaper_thread is not None and self._reaper_thread.is_alive():
                 return
-            self._reaper_stop = threading.Event()
+            # the loop captures its own stop event, so a later start_reaper
+            # reassigning self._reaper_stop can't strand this thread waiting
+            # on an event nobody will set
+            stop = self._reaper_stop = threading.Event()
             self._reaper_thread = threading.Thread(
-                target=self._reaper_loop, args=(interval_s,),
+                target=self._reaper_loop, args=(interval_s, stop),
                 name="agentfork-reaper", daemon=True)
             self._reaper_thread.start()
 
@@ -630,8 +638,8 @@ class ForkOrchestrator:
         if thread is not None and thread is not threading.current_thread():
             thread.join()
 
-    def _reaper_loop(self, interval_s: float) -> None:
-        while not self._reaper_stop.wait(interval_s):
+    def _reaper_loop(self, interval_s: float, stop: threading.Event) -> None:
+        while not stop.wait(interval_s):
             try:
                 self.reconcile()
                 sweep = getattr(self.sandbox, "sweep_dead", None)
@@ -639,11 +647,16 @@ class ForkOrchestrator:
                     for branch_id in sweep():
                         _log.warning("branch %s: sandbox died; collecting",
                                      branch_id)
-                        self.kill(branch_id)
-                        with self._lock:
-                            self.metrics.swept_dead += 1
+                        if self.kill(branch_id).reaped:
+                            with self._lock:
+                                self.metrics.swept_dead += 1
             except RuntimeError:
-                return  # closed under us
+                # only a "closed" RuntimeError should stop the loop; a
+                # transient backend/thread-pool RuntimeError must not kill
+                # the reaper silently on a healthy orchestrator
+                if self._closed:
+                    return
+                _log.exception("background reaper pass failed")
             except Exception:
                 _log.exception("background reaper pass failed")
 

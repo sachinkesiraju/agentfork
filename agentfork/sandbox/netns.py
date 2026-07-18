@@ -24,9 +24,11 @@ demo on a KVM host.
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import logging
 import subprocess
+import threading
 from dataclasses import dataclass
 
 _log = logging.getLogger("agentfork.sandbox.netns")
@@ -63,14 +65,40 @@ class NetnsManager:
     def __init__(self, config: NetworkConfig, runner=_run):
         self.config = config
         self._run = runner
-        self._hosts = ipaddress.ip_network(config.host_subnet).subnets(
-            new_prefix=30)
-        self._index = 0
+        # one /30 per branch; the index space is finite, so freed indices are
+        # recycled (a long-running fork/kill churn would otherwise exhaust it)
+        self._capacity = ipaddress.ip_network(config.host_subnet).num_addresses // 4
+        self._alloc_lock = threading.Lock()
+        self._free: list[int] = []
+        self._next = 0
+
+    def _allocate(self) -> int:
+        with self._alloc_lock:
+            if self._free:
+                return self._free.pop()
+            if self._next >= self._capacity:
+                raise RuntimeError(
+                    f"network subnet {self.config.host_subnet} exhausted "
+                    f"({self._capacity} concurrent branches); free some or "
+                    "widen host_subnet")
+            index = self._next
+            self._next += 1
+            return index
+
+    def release(self, index: int) -> None:
+        with self._alloc_lock:
+            if index not in self._free:
+                self._free.append(index)
 
     def netns_name(self, branch_id: str) -> str:
-        # ip netns names: keep them short and filesystem-safe
-        safe = "".join(c if c.isalnum() else "-" for c in branch_id)[:40]
-        return f"af-{safe}"
+        # ip netns names: keep them short and filesystem-safe. Sanitizing or
+        # truncating can merge distinct branch IDs, so append a digest of the
+        # original whenever the name is altered (mirrors jail_id_for).
+        safe = "".join(c if c.isalnum() else "-" for c in branch_id)
+        if safe == branch_id and len(safe) <= 40:
+            return f"af-{safe}"
+        digest = hashlib.sha256(branch_id.encode()).hexdigest()[:8]
+        return f"af-{safe[:31]}-{digest}"
 
     def _veth_pair(self, index: int) -> tuple[str, str, str, str]:
         """(host_veth, netns_veth, host_ip, netns_ip) for the /30 at index."""
@@ -149,11 +177,16 @@ class NetnsManager:
 
     def setup(self, branch_id: str) -> tuple[str, int]:
         """Build the netns for a branch; return (netns_name, index). The
-        index picks the branch's /30 and is needed to tear it down."""
-        index = self._index
-        self._index += 1
-        for cmd in self.setup_cmds(branch_id, index):
-            self._run(cmd)
+        index picks the branch's /30 and is needed to tear it down. On any
+        partial failure the half-built namespace is rolled back and the index
+        freed, so a failed setup leaks nothing and never wedges the caller."""
+        index = self._allocate()
+        try:
+            for cmd in self.setup_cmds(branch_id, index):
+                self._run(cmd)
+        except BaseException:
+            self.teardown(branch_id, index)  # frees the index too
+            raise
         _log.info("netns %s up for branch %s", self.netns_name(branch_id),
                   branch_id)
         return self.netns_name(branch_id), index
@@ -165,6 +198,7 @@ class NetnsManager:
                 self._run(cmd, check=False)
             except Exception:
                 _log.debug("net teardown step failed (continuing): %s", cmd)
+        self.release(index)
 
 
 def netns_exec_prefix(netns: str) -> list[str]:

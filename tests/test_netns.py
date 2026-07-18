@@ -1,6 +1,8 @@
 """Command construction for per-branch network namespaces. The ip/iptables
 calls are captured through an injected runner — no root, no real netns."""
 
+import pytest
+
 from agentfork.sandbox.netns import (
     GUEST_GW,
     TAP_DEV,
@@ -23,8 +25,13 @@ class RecordingRunner:
 
 def test_netns_name_is_namespaced_and_sanitized():
     mgr = NetnsManager(CFG, runner=RecordingRunner())
+    # clean names pass through unchanged
     assert mgr.netns_name("root") == "af-root"
-    assert mgr.netns_name("root/1") == "af-root-1"
+    # sanitized names get a digest suffix so distinct IDs can't collide into
+    # one namespace (mirrors jail_id_for)
+    assert mgr.netns_name("root/1").startswith("af-root-1-")
+    assert mgr.netns_name("root/1") != mgr.netns_name("root-1")
+    assert mgr.netns_name("root/1") == mgr.netns_name("root/1")  # deterministic
 
 
 def test_setup_creates_netns_tap_veth_and_nat_in_order():
@@ -33,10 +40,10 @@ def test_setup_creates_netns_tap_veth_and_nat_in_order():
 
     name, index = mgr.setup("root/1")
 
-    assert name == "af-root-1" and index == 0
+    assert name == mgr.netns_name("root/1") and index == 0
     joined = [" ".join(c) for c in runner.calls]
     # namespace, then the guest tap, then veth into it, then default route + NAT
-    assert joined[0] == "ip netns add af-root-1"
+    assert joined[0] == f"ip netns add {name}"
     assert any(f"ip tuntap add {TAP_DEV} mode tap" in j for j in joined)
     assert any("veth" in j and "peer name" in j for j in joined)
     assert any("route add default" in j for j in joined)
@@ -91,6 +98,50 @@ def test_teardown_is_best_effort_and_continues_past_failures():
     mgr = NetnsManager(CFG, runner=runner)
     mgr.teardown("root", 0)  # must not raise despite the failing rule
     assert any("netns" in " ".join(c) and "del" in c for c in runner.calls)
+
+
+def test_freed_indices_are_recycled_not_exhausted():
+    # a /29 host_subnet has exactly two /30s; churning fork/kill must reuse
+    # freed indices rather than march off the end
+    cfg = NetworkConfig(uplink="eth0", host_subnet="10.0.0.0/29")
+    mgr = NetnsManager(cfg, runner=RecordingRunner())
+    _, i0 = mgr.setup("a")
+    _, i1 = mgr.setup("b")
+    assert {i0, i1} == {0, 1}
+    mgr.teardown("a", i0)  # frees index 0
+    _, i2 = mgr.setup("c")  # must reuse it, not exhaust
+    assert i2 == 0
+
+
+def test_subnet_exhaustion_raises_a_clear_error_and_rolls_back():
+    cfg = NetworkConfig(uplink="eth0", host_subnet="10.0.0.0/30")  # one /30
+    mgr = NetnsManager(cfg, runner=RecordingRunner())
+    mgr.setup("a")
+    with pytest.raises(RuntimeError, match="exhausted"):
+        mgr.setup("b")
+
+
+def test_setup_rolls_back_and_frees_index_on_partial_failure():
+    class FailOnceAtNat(RecordingRunner):
+        def __init__(self):
+            super().__init__()
+            self.failed = False
+
+        def __call__(self, argv, *, check=True):
+            super().__call__(argv, check=check)
+            if check and "MASQUERADE" in argv and not self.failed:
+                self.failed = True
+                raise RuntimeError("iptables failed")
+
+    runner = FailOnceAtNat()
+    mgr = NetnsManager(NetworkConfig(uplink="eth0"), runner=runner)
+    with pytest.raises(RuntimeError, match="iptables failed"):
+        mgr.setup("a")
+    # the half-built namespace got a teardown pass (netns del issued)...
+    assert any(c[:3] == ["ip", "netns", "del"] for c in runner.calls)
+    # ...and the index was freed, so the next setup reuses index 0
+    _, index = mgr.setup("b")
+    assert index == 0
 
 
 def test_netns_exec_prefix():

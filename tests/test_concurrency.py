@@ -192,6 +192,11 @@ def test_kill_losers_waits_out_an_in_flight_fork():
         assert "root/racer" in {r.branch_id for r in receipts}
         survivors = {b.branch_id for b in orch.branches()}
         assert survivors == {"root", "root/winner"}
+        # exactly one receipt per loser — the retry's real receipt replaced
+        # the sweep's no-op rather than both landing in the list
+        ids = [r.branch_id for r in receipts]
+        assert len(ids) == len(set(ids))
+        assert next(r for r in receipts if r.branch_id == "root/racer").reaped
     finally:
         racing_fork.join()
 
