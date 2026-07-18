@@ -198,13 +198,12 @@ In the [10-child GPU test](patches/real_pool_validation.py), sharing reduced KV
 usage from 357k slots to 37k. Stock SGLang already shares cached prefixes, so
 agentfork adds branch tracking and cleanup, not lower memory use.
 
-For grounding against current alternatives: managed microVM platforms (Modal,
-E2B, Morph) already ship VM snapshot/branch for the sandbox half, and SGLang's
-own RadixAttention already shares identical prefixes for the KV half.
-agentfork's distinction is not beating either in isolation but coupling both
-under one branch identity with coordinated fork and cleanup, which the
-end-to-end rows measure together; the VGE numbers are its edge over stock
-prefix sharing under eviction pressure, not on the happy path.
+Grounding: the alternative to forking is a cold start per branch. A forked
+microVM inherits the parent's booted, agent-ready state, so it restores in
+28–145 ms per child and runs commands right away, against 17–18 s to boot and
+initialize a fresh guest; on the KV side each child reuses the
+parent's cached prefix with zero re-prefill. An N-way fanout pays that setup
+cost once, not N times.
 
 ## Running benchmarks
 
