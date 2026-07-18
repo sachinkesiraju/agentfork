@@ -595,6 +595,24 @@ class ForkOrchestrator:
             self.metrics.execs += 1
         return start(branch_id, argv)
 
+    def export_artifact(self, branch_id: str, guest_path: str,
+                        dest_path: str):
+        """Hand off a winning branch's work: extract ``guest_path`` from the
+        branch's sandbox to ``dest_path`` on the host, for backends that
+        expose ``export_artifact`` (``FirecrackerSandbox`` does). Pair with
+        ``kill_losers`` to keep the winner, then hand its output off durably."""
+        with self._lock:
+            self._ensure_open()
+            branch = self._branches.get(branch_id)
+            if branch is None or branch.state != _STATE_LIVE:
+                raise KeyError(f"no live branch: {branch_id}")
+            export = getattr(self.sandbox, "export_artifact", None)
+            if export is None:
+                raise RuntimeError(
+                    f"sandbox backend {type(self.sandbox).__name__} does not "
+                    "support export_artifact")
+        return export(branch_id, guest_path, dest_path)
+
     def kill(self, branch_id: str) -> KillReceipt:
         return self._kill(branch_id, allow_closing=False)
 

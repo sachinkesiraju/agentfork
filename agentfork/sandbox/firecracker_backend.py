@@ -755,6 +755,37 @@ class FirecrackerSandbox:
             self._snap_gen[branch_id] = self._gen.get(branch_id, 0)
         _log.info("imported %s from bundle %s", branch_id, src_dir)
 
+    def export_artifact(self, branch_id: str, guest_path: str,
+                        dest_path: str) -> int:
+        """Copy a tree of files out of a live branch's guest to ``dest_path``
+        on the host — the durable handoff for a winning branch's work
+        (``kill_losers`` keeps the winner; this extracts what it produced).
+
+        Streams ``tar`` of ``guest_path`` over the exec channel into a host
+        tarball and returns its byte size. The whole archive rides one exec
+        response, so this suits build outputs and diffs, not multi-GB trees;
+        for those, snapshot/``export_bundle`` the overlay instead."""
+        if not self.vsock:
+            raise RuntimeError("export_artifact requires vsock=True")
+        with self._lock:
+            if branch_id not in self._vms:
+                raise KeyError(f"no such branch: {branch_id}")
+        result = self._exec_live(
+            branch_id,
+            ["tar", "-C", os.path.dirname(guest_path) or "/",
+             "-cf", "-", os.path.basename(guest_path)],
+            timeout_s=120.0)
+        if result.exit_code != 0:
+            raise RuntimeError(
+                f"artifact tar of {guest_path!r} in {branch_id} failed "
+                f"(exit {result.exit_code}): {result.stderr.decode(errors='replace')[:200]}")
+        os.makedirs(os.path.dirname(os.path.abspath(dest_path)), exist_ok=True)
+        with open(dest_path, "wb") as f:
+            f.write(result.stdout)
+        _log.info("exported artifact %s from %s to %s (%d bytes)",
+                  guest_path, branch_id, dest_path, len(result.stdout))
+        return len(result.stdout)
+
     def kill(self, branch_id: str) -> None:
         with self._lifecycle_changed:
             while self._parent_forks.get(branch_id, 0):

@@ -310,6 +310,27 @@ def test_exec_detached_delegates_to_backends_that_support_it():
         orch.exec_detached("ghost", ["srv"])
 
 
+def test_export_artifact_delegates_and_guards_liveness():
+    class ArtifactSandbox(ExecSandbox):
+        def export_artifact(self, branch_id, guest_path, dest_path):
+            self.events.append(("artifact", branch_id, guest_path, dest_path))
+            return 42
+
+    sandbox = ArtifactSandbox()
+    orch = ForkOrchestrator(sandbox=sandbox)
+    orch.create_parent("winner")
+
+    assert orch.export_artifact("winner", "/out", "/host/w.tar") == 42
+    assert sandbox.events[-1] == ("artifact", "winner", "/out", "/host/w.tar")
+    with pytest.raises(KeyError, match="no live branch"):
+        orch.export_artifact("ghost", "/out", "/host/x.tar")
+    # a backend without the method is rejected
+    plain = ForkOrchestrator(sandbox=RecordingSandbox())
+    plain.create_parent("p")
+    with pytest.raises(RuntimeError, match="does not support export_artifact"):
+        plain.export_artifact("p", "/out", "/host/y.tar")
+
+
 def test_closed_orchestrator_refuses_mutation(tmp_path):
     registry = tmp_path / "registry.json"
     first = ForkOrchestrator(sandbox=RecordingSandbox(), registry_path=registry)

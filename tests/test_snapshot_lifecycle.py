@@ -109,3 +109,49 @@ def test_import_rejects_incomplete_bundle(tmp_path):
     empty.mkdir()
     with pytest.raises(FileNotFoundError):
         sandbox.import_bundle("root", str(empty))
+
+
+class ArtifactExecClient:
+    """Fake exec client returning a canned tar for the artifact export."""
+
+    payload = b"TAR-BYTES"
+
+    def __init__(self, uds_path, port, calls):
+        self.calls = calls
+
+    def exec(self, argv, timeout_s=None, stdin=None):
+        from agentfork.sandbox.vsock import ExecResult
+        self.calls.append(tuple(argv))
+        return ExecResult(exit_code=0, stdout=self.payload, stderr=b"")
+
+
+class ArtifactExecFactory:
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, uds_path, port):
+        return ArtifactExecClient(uds_path, port, self.calls)
+
+
+def test_export_artifact_writes_guest_tar_to_host(tmp_path):
+    exec_factory = ArtifactExecFactory()
+    sandbox = FirecrackerSandbox(
+        fc_bin="fc-bin", kernel="kernel", rootfs="rootfs.ext4",
+        work_dir=str(tmp_path), microvm_factory=FakeMicroVMFactory(),
+        exec_client_factory=exec_factory)
+    sandbox.spawn("winner", None)
+
+    dest = tmp_path / "out" / "winner.tar"
+    n = sandbox.export_artifact("winner", "/workspace/build", str(dest))
+
+    assert n == len(ArtifactExecClient.payload)
+    assert dest.read_bytes() == ArtifactExecClient.payload
+    # tars the requested path from its parent dir
+    argv = exec_factory.calls[-1]
+    assert argv[0] == "tar" and "build" in argv and "/workspace" in argv
+
+
+def test_export_artifact_requires_a_live_branch(tmp_path):
+    sandbox = _sandbox(tmp_path)
+    with pytest.raises(KeyError):
+        sandbox.export_artifact("ghost", "/x", str(tmp_path / "a.tar"))
