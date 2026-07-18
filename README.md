@@ -186,19 +186,19 @@ the checks that fail or remain untested.
 
 | What we measured | Result |
 |---|---|
-| KV sharing on a real SGLang GPU allocator (A10) | 10 branches over one shared 32k-token prefix held 37k slots instead of the 357k a full per-branch copy would need; 10 create+extend ops in 22 ms; allocator back to exactly 0 after kill-all. Stock SGLang already shares identical prefixes, so this buys correctness and clean reclaim, not less memory than stock. ([code](patches/real_pool_validation.py)) |
+| KV sharing on a real SGLang GPU allocator (A10) | On a real A10 allocator, 10 branches sharing one 32k-token prefix used 37k slots rather than the 357k a full per-branch copy would take; the 10 create+extend calls ran in 22 ms, and kill-all returned the allocator to exactly 0. Stock SGLang already shares identical prefixes, so the win here is correct branch tracking and clean reclaim, not lower memory. ([code](patches/real_pool_validation.py)) |
 | Live request path on a real GPU (A10G) | One parent, 10 children: every child reused all 2,406 cached parent tokens with zero re-prefill; explicit kill released the pin. |
 | Sandbox fork on real Firecracker (v0.3.0) | 5-way fork at 28–145 ms per child (lazy fork-time snapshot, parallel restores); exec over vsock in every child; per-child writable overlay; identical results under the jailer; zero leaked VMMs. |
 | Loser kill, reference path (subprocess + CPU cache) | 0.53 ms p50, 1.46 ms max over 100 cycles. |
 | Guest networking on real Firecracker (v0.4.0) | Two children each reached the internet (GET example.com → HTTP 200) over per-branch netns + NAT; rules torn down with zero leaks; vsock exec 44–73 ms per call. |
 | Sibling speedup under cache pressure, vs stock SGLang | When unrelated traffic evicts the shared prefix in stock SGLang but not in agentfork, the children generate 1.60× faster (sustained pressure, 95% CI [1.576×, 1.619×]) and 1.54× on a locked holdout (95% CI [1.518×, 1.554×]). Both synthetic; partner validation still pending. |
 
-Grounding: forking both halves of a branch (sandbox microVM + KV cache) runs
-28–145 ms per child, of which the KV fork is under 1.3%. That is the same
-class as managed providers, which fork the sandbox alone
+Grounding: forking a whole branch, its sandbox microVM plus its KV cache,
+runs 28–145 ms per child, and the KV cache is under 1.3% of that. That puts
+it in the same class as managed providers that fork only the sandbox
 ([Morph](https://cloud.morph.so/docs/developers) branches a full VM in under
-250 ms). agentfork also forking the KV cache is why a fanout skips
-re-prefilling the shared prompt.
+250 ms). Forking the KV cache too is what lets a fanout reuse the shared
+prompt instead of re-prefilling it in every child.
 
 ## Running benchmarks
 
