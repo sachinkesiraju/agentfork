@@ -264,7 +264,7 @@ def test_orchestrator_waits_for_guest_readiness_before_forking(tmp_path):
         orch.fork("root", child_ids=["root/child"])
 
     assert [call[2] for call in exec_factory.calls] == [
-        ("true",), ("true",)]
+        ("true",), ("tee", "/dev/urandom"), ("true",)]
 
 
 def test_exec_unknown_branch_raises_key_error(tmp_path):
@@ -561,10 +561,10 @@ def test_fork_waits_for_in_flight_exec_before_snapshot(tmp_path):
     release_exec = threading.Event()
 
     class BlockingClient(FakeExecClient):
-        def exec(self, argv, timeout_s=None):
+        def exec(self, argv, timeout_s=None, stdin=None):
             exec_started.set()
             release_exec.wait(2)
-            return super().exec(argv, timeout_s)
+            return super().exec(argv, timeout_s, stdin=stdin)
 
     class ExecFactory(FakeExecClientFactory):
         def __call__(self, uds_path, port):

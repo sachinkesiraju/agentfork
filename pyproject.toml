@@ -2,19 +2,8 @@
 name = "agentfork"
 version = "0.4.0"
 description = "Reference components and benchmarks for coordinated sandbox and LLM KV-cache branching"
-readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "Apache-2.0"}
-classifiers = [
-  "Development Status :: 3 - Alpha",
-  "License :: OSI Approved :: Apache Software License",
-  "Operating System :: POSIX :: Linux",
-  "Programming Language :: Python :: 3",
-]
-
-[project.urls]
-Homepage = "https://github.com/sachinkesiraju/agentfork"
-Repository = "https://github.com/sachinkesiraju/agentfork"
 
 [project.optional-dependencies]
 dev = ["pytest==8.3.5", "ruff==0.11.0"]

@@ -39,7 +39,7 @@ v1.16.1 and are labeled separately.
 
 ## Tree-native requirements matrix (10k-branch router shape)
 
-What the two SGLang patches cover of the tree-native requirement list. Status
+What the three SGLang patches cover of the tree-native requirement list. Status
 refers to the direct cache API unless the notes say otherwise:
 
 | Requirement | Status | Notes |

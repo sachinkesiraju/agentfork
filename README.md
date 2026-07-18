@@ -271,8 +271,8 @@ SGLANG_DIR="$SGLANG_DIR" modal run modal_gpu_validation.py
 
 - The SGLang in-process branch request path is live and quota reservations
   are enforced before queue admission, but it has only been measured on one
-  A10G with a 0.6B model. The HTTP lifecycle/generate client is covered by a
-  protocol integration test, not yet by a live SGLang HTTP server.
+  A10G with a 0.6B model. The HTTP lifecycle/`tree_generate` client is covered
+  by a protocol integration test, not yet by a live SGLang HTTP server.
   Cross-worker routing, tensor parallelism, and mixed-tenant pressure remain
   unmeasured.
 - Firecracker guests have run vsock exec, readiness probes, overlays, the

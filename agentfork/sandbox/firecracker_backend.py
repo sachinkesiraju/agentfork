@@ -647,13 +647,8 @@ class FirecrackerSandbox:
         # to /proc/comm for legacy plain-pid files. Refuse a recycled pid.
         try:
             with open(pid_path, encoding="utf-8") as f:
-                raw = f.read().strip()
-            try:
-                record = json.loads(raw)
-                pid = int(record["pid"])
-            except json.JSONDecodeError:
-                pid = int(raw)
-                record = {"pid": pid}
+                record = self._parse_pid_record(f.read().strip())
+            pid = int(record["pid"])
         except FileNotFoundError:
             self._teardown_netns(branch_id)
             self._cleanup_artifacts(branch_id)
@@ -713,6 +708,23 @@ class FirecrackerSandbox:
         with self._lock:
             self._parent_locks.pop(branch_id, None)
 
+    @staticmethod
+    def _parse_pid_record(raw: str) -> dict:
+        """Parse a pid file body: JSON object, bare JSON int, or plain digits."""
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return {"pid": int(raw)}
+        if isinstance(parsed, int) and not isinstance(parsed, bool):
+            return {"pid": parsed}
+        if not isinstance(parsed, dict):
+            raise ValueError("pid record must be an object or integer")
+        return {
+            "pid": int(parsed["pid"]),
+            "start_time": parsed.get("start_time"),
+            "exe": parsed.get("exe"),
+        }
+
     def _recorded_pid(self, branch_id: str) -> int | None:
         record = self._read_pid_record(branch_id)
         return None if record is None else record["pid"]
@@ -720,14 +732,7 @@ class FirecrackerSandbox:
     def _read_pid_record(self, branch_id: str) -> dict | None:
         try:
             with open(self._pid_path(branch_id), encoding="utf-8") as f:
-                raw = f.read().strip()
-            try:
-                record = json.loads(raw)
-                return {"pid": int(record["pid"]),
-                        "start_time": record.get("start_time"),
-                        "exe": record.get("exe")}
-            except json.JSONDecodeError:
-                return {"pid": int(raw)}
+                return self._parse_pid_record(f.read().strip())
         except (FileNotFoundError, KeyError, TypeError, ValueError):
             return None
 
