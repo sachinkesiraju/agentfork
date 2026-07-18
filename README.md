@@ -24,16 +24,19 @@ agentfork implements two runtime operations, both given the same branch ID by
 It is not an agent framework or a scheduler: it does not decide what an agent
 does, only how a branch of it is created and torn down.
 
-By default, `ForkOrchestrator` drives the reference backends: `TreeKVCache`
-for KV state and `ReaperSandbox` for the process. Adapters for the SGLang
-cache patch and a Firecracker sandbox (`SGLangKVBackend`/`SGLangHTTPBackend`,
-`FirecrackerSandbox`) satisfy the same `KVBackend`/`SandboxBackend` protocols.
-The Firecracker adapter is validated end to end against real microVMs
-(`demo/fc_demo.py`): guest exec, writable overlays, per-branch networking,
-and the jailer. On the KV side, the patched engine's request path was
-measured live on an A10G; `SGLangKVBackend` (in-process) and
-`SGLangHTTPBackend` (HTTP) adapt it — the HTTP client protocol-tested so far,
-not yet run against a live server (see [report/RESULTS.md](report/RESULTS.md)).
+Out of the box, `ForkOrchestrator` uses the CPU reference cache
+(`TreeKVCache`) and a no-op sandbox (`NullSandbox`), so you can run the KV
+lifecycle with no GPU or VM; `ReaperSandbox` adds a real subprocess per
+branch. Two heavier adapters plug into the same `KVBackend`/`SandboxBackend`
+protocols:
+
+- **`FirecrackerSandbox`** runs each branch in its own microVM, validated end
+  to end on real hardware (`demo/fc_demo.py`): guest exec, writable overlays,
+  per-branch networking, and the jailer.
+- **`SGLangKVBackend`** (in-process) and **`SGLangHTTPBackend`** (over HTTP)
+  fork the KV cache inside a patched SGLang engine. That request path was
+  measured live on an A10G; the HTTP client is protocol-tested but has not yet
+  run against a live server (see [report/RESULTS.md](report/RESULTS.md)).
 
 Use it for:
 
@@ -148,30 +151,34 @@ with ForkOrchestrator(kv=kv, registry_path="branches.json") as orch:
 single-owner, fsynced registry: it rolls back partial forks, retries
 interrupted cleanup, and bounds every branch with a lease.
 
-**The reference path runs today.** `TreeKVCache.fork_branch` bumps a refcount
-along the parent's cached path (no tokens copied); `ReaperSandbox` spawns a
-subprocess; kill reaps it through Linux `pidfd` and drops the cache
-entry — 0.53 ms p50 combined.
+**The reference path works today, on CPU.** Forking a KV branch just adds a
+reference count along the shared prefix — no tokens are copied. Each branch
+runs as an ordinary subprocess. Killing a branch stops that subprocess with a
+Linux `pidfd` and releases its cache entry; together that takes 0.53 ms
+(median).
 
-Two production backends sit behind the same protocols:
+Two heavier backends implement the same interfaces:
 
-1. **KV cache fork** (`patches/0001`–`0002`): adds `TreeRadixCache` and carries
-   branch identity through OpenAI/native requests, with scheduler-side
-   lifecycle, quota admission, and `/tree_cache` control operations.
-   `SGLangKVBackend` (in-process) and `SGLangHTTPBackend` (remote,
-   admin-authenticated `/tree_generate`) drive it. Validated in-process on a
-   Modal A10G — ten children each reused 2,406 parent tokens and kill released
-   the pin; the HTTP client is protocol-tested, with a live-server run pending.
-2. **Sandbox fork** (`FirecrackerSandbox` over `fc_bench`'s `MicroVM`):
-   snapshots are lazy, at fork time, so children inherit the parent's current
-   state and unforked branches skip the write (parent pause 76–83 ms; restore
-   2.1 ms p50 per child). Each guest gets a vsock exec channel (`exec` with
-   stdin, `exec_detached`) via `guest_agent.py` (baked in by
-   `tools/build_rootfs.sh`), a `wait_ready()` probe, reflink/sparse writable
-   overlays, the jailer, and a per-branch network namespace with NAT egress
-   and post-restore entropy reseed. Validated on real Firecracker v1.16.1:
-   children exec over vsock, write their own overlays, inherit post-boot
-   state, and reach the internet (`HTTP 200`), jailed and unjailed.
+1. **KV cache fork** (SGLang patches `0001`–`0002`). The patch adds a
+   tree-aware KV cache and threads a branch ID through the engine's normal
+   request path, so forking, killing, and per-branch quotas all happen inside
+   SGLang. `SGLangKVBackend` talks to it in-process; `SGLangHTTPBackend` talks
+   to it over HTTP. On a Modal A10G, ten forked children each reused all 2,406
+   tokens of the parent's cached prompt, and killing a child freed its share.
+   The HTTP client is tested against a stub; running it against a live server
+   is still to do.
+2. **Sandbox fork** (`FirecrackerSandbox`, over a small microVM wrapper). A
+   branch is snapshotted only when it is first forked, so children start from
+   the parent's current state and branches that are never forked pay nothing
+   (snapshotting pauses the parent 76–83 ms; each child restores in about
+   2 ms).
+   Inside a guest you can run commands over a vsock channel (`exec`, with
+   stdin, plus `exec_detached` for background jobs), wait for it to be ready
+   (`wait_ready`), give it a private writable disk (copied cheaply per child),
+   lock it down with the jailer, and put it on its own network with outbound
+   internet. All of this is checked on real Firecracker v1.16.1: children run
+   commands, write to their own disks, keep state the parent set after boot,
+   and reach the internet (`HTTP 200`), both jailed and not.
 
 ```
 ForkOrchestrator  (registry / leases / rollback / reconcile)
