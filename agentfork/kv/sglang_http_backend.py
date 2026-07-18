@@ -25,6 +25,7 @@ class SGLangHTTPBackend:
         base_url: str,
         *,
         api_key: str | None = None,
+        admin_api_key: str | None = None,
         timeout: float = 30.0,
         max_retries: int = 2,
         retry_delay: float = 0.1,
@@ -37,12 +38,13 @@ class SGLangHTTPBackend:
         if parsed.scheme not in ("http", "https") or not parsed.hostname:
             raise ValueError("base_url must be an http(s) URL")
         local = parsed.hostname in ("localhost", "127.0.0.1", "::1")
+        self.admin_api_key = admin_api_key or api_key
         if not local and not allow_insecure:
             if parsed.scheme != "https":
                 raise ValueError(
                     "remote SGLang control requires HTTPS; pass "
                     "allow_insecure=True only on a trusted private network")
-            if not api_key:
+            if not self.admin_api_key:
                 raise ValueError(
                     "remote SGLang control requires an admin API key")
         if max_retries < 0:
@@ -53,6 +55,7 @@ class SGLangHTTPBackend:
         self.retry_delay = retry_delay
         self._condition = threading.Condition(threading.RLock())
         self._active: dict[str, int] = {}
+        self._closing_branches: set[str] = set()
         self._namespaces: dict[str, str] = {}
         self._parents: dict[str, str | None] = {}
 
@@ -80,17 +83,31 @@ class SGLangHTTPBackend:
     def kill(self, tree_id: str) -> int:
         deadline = time.monotonic() + self.timeout
         with self._condition:
-            while self._active.get(tree_id, 0):
+            while tree_id in self._closing_branches:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise TimeoutError(
+                        f"timed out waiting for concurrent kill of {tree_id}")
+                self._condition.wait(remaining)
+            self._closing_branches.add(tree_id)
+            while self._active.get(tree_id, 0):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self._closing_branches.discard(tree_id)
+                    self._condition.notify_all()
+                    raise TimeoutError(
                         f"timed out waiting for inference on {tree_id}")
                 self._condition.wait(remaining)
-        value = self._operation("kill", tree_id).get("value")
-        with self._condition:
-            self._namespaces.pop(tree_id, None)
-            self._parents.pop(tree_id, None)
-        return int(value or 0)
+        try:
+            value = self._operation("kill", tree_id).get("value")
+            with self._condition:
+                self._namespaces.pop(tree_id, None)
+                self._parents.pop(tree_id, None)
+            return int(value or 0)
+        finally:
+            with self._condition:
+                self._closing_branches.discard(tree_id)
+                self._condition.notify_all()
 
     def extend(self, tree_id: str, tokens: list[int]) -> int:
         raise RuntimeError(
@@ -122,6 +139,8 @@ class SGLangHTTPBackend:
         reserve_tokens: int | None = None,
     ) -> dict:
         with self._condition:
+            if branch_id in self._closing_branches:
+                raise RuntimeError(f"branch is being killed: {branch_id}")
             try:
                 namespace = self._namespaces[branch_id]
             except KeyError:
@@ -143,7 +162,7 @@ class SGLangHTTPBackend:
         else:
             body["input_ids"] = list(prompt)
         try:
-            return self._request_json("/generate", body, retry=False)
+            return self._request_json("/tree_generate", body, retry=False)
         finally:
             with self._condition:
                 remaining = self._active[branch_id] - 1
@@ -169,8 +188,13 @@ class SGLangHTTPBackend:
 
     def _request_json(self, path: str, body: dict, *, retry: bool) -> dict:
         headers = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
+        key = (
+            self.admin_api_key
+            if path in ("/tree_cache", "/tree_generate")
+            else self.api_key
+        )
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
         request = urllib.request.Request(
             self.base_url + path,
             data=json.dumps(body).encode(),

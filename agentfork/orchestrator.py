@@ -593,6 +593,11 @@ class ForkOrchestrator:
         return start(branch_id, argv)
 
     def kill(self, branch_id: str) -> KillReceipt:
+        return self._kill(branch_id, allow_closing=False)
+
+    def _kill(
+        self, branch_id: str, *, allow_closing: bool
+    ) -> KillReceipt:
         """Journal kill intent, reap sandbox then KV, then drop the record.
 
         The two halves are sequential, not atomic. Intent is journaled as
@@ -606,7 +611,7 @@ class ForkOrchestrator:
         names a dead branch, and their own leases bound their lifetime.
         """
         with self._lock:
-            self._ensure_open(allow_closing=True)
+            self._ensure_open(allow_closing=allow_closing)
             if (branch_id not in self._branches
                     or branch_id in self._killing
                     or branch_id in self._spawning):
@@ -632,8 +637,10 @@ class ForkOrchestrator:
         with self._lifecycle_changed:
             self._killing.discard(branch_id)
             self.metrics.kills += 1
-            self._forget(branch_id)
-            self._lifecycle_changed.notify_all()
+            try:
+                self._forget(branch_id)
+            finally:
+                self._lifecycle_changed.notify_all()
         _log.debug("killed %s (freed %d KV tokens)", branch_id, freed)
         return KillReceipt(branch_id, freed)
 
@@ -732,13 +739,32 @@ class ForkOrchestrator:
                 and branch_id not in self._spawning
                 and branch_id not in self._killing
             )
+            now = self._clock()
+            expired = [
+                branch.branch_id for branch in self._branches.values()
+                if branch.lease_expires_at is not None
+                and branch.lease_expires_at <= now
+                and branch.branch_id not in self._spawning
+                and branch.branch_id not in self._killing
+                and branch.branch_id not in stuck
+            ]
         if stuck:
             _log.info("reconcile: collecting %d branch(es) left mid-fork or "
                       "mid-kill: %s", len(stuck), stuck)
-        receipts = self._fan_out(stuck, self.kill)
-        receipts.extend(self.reap_expired())
+        if expired:
+            _log.info("reaping %d branch(es) with lapsed leases: %s",
+                      len(expired), expired)
+        candidates = stuck + expired
+        try:
+            receipts = self._fan_out(candidates, self.kill)
+        finally:
+            with self._lock:
+                self.metrics.reconciles += 1
         with self._lock:
-            self.metrics.reconciles += 1
+            expired_ids = set(expired)
+            self.metrics.reaped_expired += sum(
+                1 for r in receipts
+                if r.reaped and r.branch_id in expired_ids)
         return receipts
 
     # -- background collection -------------------------------------------------
@@ -837,7 +863,11 @@ class ForkOrchestrator:
         error = None
         try:
             try:
-                self._fan_out(branch_ids, self.kill)
+                self._fan_out(
+                    branch_ids,
+                    lambda branch_id: self._kill(
+                        branch_id, allow_closing=True),
+                )
             except Exception as exc:
                 error = exc
         finally:

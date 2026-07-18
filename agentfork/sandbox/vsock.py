@@ -88,6 +88,7 @@ class VsockExecClient:
         self.uds_path = uds_path
         self.port = port
         self.handshake_timeout_s = handshake_timeout_s
+        self.host_grace_s = _HOST_GRACE_S
 
     def _connect(self) -> socket.socket:
         """Connect and complete the muxer handshake, retrying while the VMM
@@ -118,7 +119,7 @@ class VsockExecClient:
         sock = self._connect()
         try:
             if timeout_s is not None:
-                sock.settimeout(timeout_s + _HOST_GRACE_S)
+                sock.settimeout(timeout_s + self.host_grace_s)
             else:
                 sock.settimeout(None)
             sock.sendall(json.dumps(request).encode() + b"\n")

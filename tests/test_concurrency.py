@@ -151,6 +151,18 @@ class BlockingForkSandbox:
         return branch_id in self.live
 
 
+class BlockingKillSandbox(BlockingForkSandbox):
+    def __init__(self):
+        super().__init__()
+        self.kill_started = threading.Event()
+        self.release_kill = threading.Event()
+
+    def kill(self, branch_id):
+        self.kill_started.set()
+        self.release_kill.wait(5)
+        super().kill(branch_id)
+
+
 def test_fork_fans_out_when_sandbox_is_parallel_safe():
     sandbox = SlowSandbox(delay=0.25)
     with ForkOrchestrator(sandbox=sandbox) as orch:
@@ -280,6 +292,58 @@ def test_parent_killed_during_fork_rolls_child_back():
     assert errors
     assert orch.branches() == []
     assert sandbox.live == set()
+
+
+def test_new_kill_is_rejected_once_close_begins():
+    sandbox = BlockingKillSandbox()
+    orch = ForkOrchestrator(sandbox=sandbox)
+    orch.create_parent("root")
+    close = threading.Thread(target=orch.close)
+    close.start()
+    assert sandbox.kill_started.wait(1)
+
+    with pytest.raises(RuntimeError, match="closing"):
+        orch.kill("root")
+
+    sandbox.release_kill.set()
+    close.join(2)
+    assert not close.is_alive()
+
+
+def test_persist_failure_during_kill_does_not_deadlock_close(monkeypatch):
+    sandbox = BlockingKillSandbox()
+    orch = ForkOrchestrator(sandbox=sandbox)
+    orch.create_parent("root")
+    original_persist = orch._persist
+    fail_once = [True]
+
+    def transient_failure():
+        if not orch._branches and fail_once[0]:
+            fail_once[0] = False
+            raise OSError("disk full")
+        original_persist()
+
+    monkeypatch.setattr(orch, "_persist", transient_failure)
+    errors = []
+
+    def kill_root():
+        try:
+            orch.kill("root")
+        except OSError as exc:
+            errors.append(exc)
+
+    kill = threading.Thread(target=kill_root)
+    kill.start()
+    assert sandbox.kill_started.wait(1)
+    close = threading.Thread(target=orch.close)
+    close.start()
+    sandbox.release_kill.set()
+    kill.join(2)
+    close.join(2)
+
+    assert errors
+    assert not close.is_alive()
+    assert orch.branches() == []
 
 
 def test_reaper_pdeathsig_flag():

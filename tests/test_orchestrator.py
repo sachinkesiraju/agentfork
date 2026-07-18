@@ -395,3 +395,19 @@ def test_persist_failure_after_spawn_rolls_back_both_backends(monkeypatch):
     assert orch.branches() == []
     assert kv.trees == {}
     assert sandbox.live == set()
+
+
+def test_reconcile_attempts_expired_branches_after_stuck_failure():
+    clock = FakeClock()
+    sandbox = FlakyKillSandbox()
+    orch = ForkOrchestrator(sandbox=sandbox, clock=clock)
+    orch.create_parent("stuck")
+    orch.create_parent("expired", lease_s=1)
+    with pytest.raises(RuntimeError):
+        orch.kill("stuck")
+    clock.now += 2
+
+    with pytest.raises(RuntimeError):
+        orch.reconcile()
+
+    assert sandbox.failed_once == {"stuck", "expired"}

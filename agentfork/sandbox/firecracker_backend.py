@@ -88,6 +88,7 @@ _log = logging.getLogger("agentfork.sandbox.firecracker")
 
 _OVERLAY = "overlay.ext4"
 _VSOCK = "v.sock"
+_ENCODED_BRANCH_PREFIX = "__agentfork__"
 _SAFE_BRANCH_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
@@ -121,6 +122,8 @@ class FirecrackerSandbox:
         self.kernel = kernel
         self.rootfs = rootfs
         self.work_dir = work_dir
+        os.makedirs(self.work_dir, mode=0o700, exist_ok=True)
+        os.chmod(self.work_dir, 0o700)
         self.vsock = vsock
         self.vsock_port = vsock_port
         self.overlay_mib = overlay_mib
@@ -157,10 +160,13 @@ class FirecrackerSandbox:
                 "branch_id segments must contain only letters, digits, "
                 "dot, underscore, or dash, and may not be '.' or '..'")
         if len(segments) == 1:
+            if branch_id.startswith(_ENCODED_BRANCH_PREFIX):
+                raise ValueError(
+                    f"branch_id prefix {_ENCODED_BRANCH_PREFIX!r} is reserved")
             return branch_id
         readable = "_".join(segments)[:80]
         digest = hashlib.sha256(branch_id.encode()).hexdigest()[:16]
-        return f"{readable}-{digest}"
+        return f"{_ENCODED_BRANCH_PREFIX}{digest}-{readable}"
 
     def _vm_dir(self, branch_id: str, *, create: bool = True) -> str:
         # 0700: the API socket and vsock UDS inside grant full control of
@@ -513,28 +519,50 @@ class FirecrackerSandbox:
 
     def _exec_live(self, branch_id: str, argv: list[str],
                    timeout_s: float | None,
-                   stdin: bytes | None = None) -> ExecResult:
-        return self._exec_client(branch_id).exec(argv, timeout_s, stdin=stdin)
+                   stdin: bytes | None = None,
+                   handshake_timeout_s: float | None = None) -> ExecResult:
+        client = self._exec_client(branch_id)
+        if handshake_timeout_s is not None and hasattr(
+                client, "handshake_timeout_s"):
+            client.handshake_timeout_s = min(
+                client.handshake_timeout_s, handshake_timeout_s)
+            if hasattr(client, "host_grace_s") and timeout_s is not None:
+                client.host_grace_s = min(
+                    client.host_grace_s,
+                    max(handshake_timeout_s - timeout_s, 0.001),
+                )
+        return client.exec(argv, timeout_s, stdin=stdin)
 
-    def _mark_dirty(self, branch_id: str) -> None:
-        with self._lock:
-            if branch_id not in self._vms:
-                raise KeyError(f"no such branch: {branch_id}")
-            # conservatively stale from here on: even a failing command may
-            # have changed guest state before failing
-            self._gen[branch_id] = self._gen.get(branch_id, 0) + 1
+    def _exec_branch(
+        self,
+        branch_id: str,
+        argv: list[str],
+        timeout_s: float,
+        stdin: bytes | None = None,
+        handshake_timeout_s: float | None = None,
+    ) -> ExecResult:
+        # The same per-branch lock guards snapshots: a fork cannot capture a
+        # command halfway through and then incorrectly mark that snapshot
+        # current after the command mutates more state.
+        with self._parent_lock(branch_id):
+            with self._lock:
+                if branch_id not in self._vms:
+                    raise KeyError(f"no such branch: {branch_id}")
+            try:
+                return self._exec_live(
+                    branch_id, argv, timeout_s, stdin=stdin,
+                    handshake_timeout_s=handshake_timeout_s)
+            finally:
+                with self._lock:
+                    if branch_id in self._vms:
+                        self._gen[branch_id] = (
+                            self._gen.get(branch_id, 0) + 1)
 
     def exec(self, branch_id: str, argv: list[str],
              timeout_s: float | None = None,
              stdin: bytes | None = None) -> ExecResult:
-        """Run a command inside the branch's guest via the vsock agent.
-
-        Only branch lookup holds the lock; the guest I/O runs outside it so
-        a long command never blocks spawn/kill of other branches. A kill
-        racing an exec surfaces here as ``VsockError``.
-        """
-        self._mark_dirty(branch_id)
-        return self._exec_live(
+        """Run a command inside the branch's guest via the vsock agent."""
+        return self._exec_branch(
             branch_id,
             argv,
             self.exec_timeout_s if timeout_s is None else timeout_s,
@@ -546,8 +574,17 @@ class FirecrackerSandbox:
         """Start a background process in the branch's guest (dev servers,
         watchers). Returns immediately with the guest pid and the guest-side
         log path; follow output via ``exec(["tail", ...])`` on that path."""
-        self._mark_dirty(branch_id)
-        return self._exec_client(branch_id).exec_detached(argv)
+        with self._parent_lock(branch_id):
+            with self._lock:
+                if branch_id not in self._vms:
+                    raise KeyError(f"no such branch: {branch_id}")
+            try:
+                return self._exec_client(branch_id).exec_detached(argv)
+            finally:
+                with self._lock:
+                    if branch_id in self._vms:
+                        self._gen[branch_id] = (
+                            self._gen.get(branch_id, 0) + 1)
 
     def wait_ready(self, branch_id: str, timeout_s: float | None = None) -> None:
         """Block until the branch's guest agent answers a no-op exec — i.e.
@@ -564,8 +601,18 @@ class FirecrackerSandbox:
             self.readiness_timeout_s if timeout_s is None else timeout_s)
         deadline = time.monotonic() + timeout_s
         while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise VsockError(
+                    f"branch {branch_id} guest agent not ready after "
+                    f"{timeout_s}s")
             try:
-                self.exec(branch_id, ["true"], timeout_s=5.0)
+                self._exec_branch(
+                    branch_id,
+                    ["true"],
+                    timeout_s=min(1.0, remaining),
+                    handshake_timeout_s=remaining,
+                )
                 return
             except VsockError as exc:
                 if time.monotonic() >= deadline:

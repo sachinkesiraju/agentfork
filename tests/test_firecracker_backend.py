@@ -478,6 +478,9 @@ def test_branch_paths_cannot_escape_or_collide(tmp_path):
     with pytest.raises(ValueError, match="branch_id"):
         sandbox._vm_dir("")
     assert sandbox._vm_dir("a/b") != sandbox._vm_dir("a_b")
+    encoded_name = os.path.basename(sandbox._vm_dir("a/b"))
+    with pytest.raises(ValueError, match="branch_id"):
+        sandbox._vm_dir(encoded_name)
 
 
 def test_pid_reuse_identity_mismatch_never_kills_process(tmp_path):
@@ -551,6 +554,44 @@ def test_parent_kill_waits_until_child_restore_finishes(tmp_path):
 
     assert killed.is_set()
     assert sandbox.alive("child")
+
+
+def test_fork_waits_for_in_flight_exec_before_snapshot(tmp_path):
+    exec_started = threading.Event()
+    release_exec = threading.Event()
+
+    class BlockingClient(FakeExecClient):
+        def exec(self, argv, timeout_s=None):
+            exec_started.set()
+            release_exec.wait(2)
+            return super().exec(argv, timeout_s)
+
+    class ExecFactory(FakeExecClientFactory):
+        def __call__(self, uds_path, port):
+            return BlockingClient(uds_path, port, self.calls)
+
+    factory = FakeMicroVMFactory()
+    sandbox = FirecrackerSandbox(
+        fc_bin="fc-bin", kernel="kernel", rootfs="rootfs.ext4",
+        work_dir=str(tmp_path), microvm_factory=factory,
+        exec_client_factory=ExecFactory())
+    sandbox.spawn("root", None)
+    root = factory.instances[0]
+    execute = threading.Thread(
+        target=sandbox.exec, args=("root", ["touch", "/tmp/x"]))
+    execute.start()
+    assert exec_started.wait(1)
+    fork = threading.Thread(
+        target=sandbox.spawn, args=("child", "root"))
+    fork.start()
+
+    time.sleep(0.05)
+    assert "snapshot" not in _events(root)
+    release_exec.set()
+    execute.join(2)
+    fork.join(2)
+
+    assert "snapshot" in _events(root)
 
 
 class JailAwareFakeFactory(FakeMicroVMFactory):

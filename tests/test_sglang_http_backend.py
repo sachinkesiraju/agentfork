@@ -23,7 +23,7 @@ class Stub:
                 body = json.loads(self.rfile.read(size))
                 stub.paths.append(self.path)
                 stub.operations.append(body)
-                if self.path == "/generate":
+                if self.path == "/tree_generate":
                     payload = {"text": "ok", "meta_info": {"cached_tokens": 3}}
                 else:
                     payload = {
@@ -105,6 +105,19 @@ def test_api_key_is_sent_as_bearer_token():
         stub.close()
 
 
+def test_tree_lifecycle_and_generation_use_admin_key():
+    stub = ErrorStub(200, {"success": True})
+    try:
+        backend = SGLangHTTPBackend(
+            stub.url, api_key="user-key", admin_api_key="admin-key")
+        backend.create_tree("root")
+        assert stub.auth == "Bearer admin-key"
+        backend.generate("root", "prompt", {"max_new_tokens": 1})
+        assert stub.auth == "Bearer admin-key"
+    finally:
+        stub.close()
+
+
 def test_unsuccessful_payload_raises_with_server_message():
     stub = ErrorStub(200, {"success": False, "message": "no such tree"})
     try:
@@ -155,7 +168,7 @@ def test_orchestrator_coordinates_remote_lifecycle_and_generate():
 
         assert result["text"] == "ok"
         generate = stub.operations[2]
-        assert stub.paths[2] == "/generate"
+        assert stub.paths[2] == "/tree_generate"
         assert generate["tree_id"] == "root"
         assert generate["branch_id"] == "root/child"
         assert generate["parent_id"] == "root"
@@ -224,7 +237,7 @@ def test_kill_waits_for_in_flight_generate():
         def do_POST(self):
             size = int(self.headers.get("Content-Length", 0))
             json.loads(self.rfile.read(size))
-            if self.path == "/generate":
+            if self.path == "/tree_generate":
                 started.set()
                 release.wait(2)
                 payload = {"text": "ok"}
@@ -249,6 +262,8 @@ def test_kill_waits_for_in_flight_generate():
         kill.start()
         time.sleep(0.05)
         assert not kill_received.is_set()
+        with pytest.raises(RuntimeError, match="being killed"):
+            backend.generate("child", "late", {"max_new_tokens": 1})
         release.set()
         generate.join(2)
         kill.join(2)
