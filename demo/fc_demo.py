@@ -58,6 +58,9 @@ def main() -> int:
                              "to --jailer-uid/gid (demo must run as root)")
     parser.add_argument("--jailer-uid", type=int, default=None)
     parser.add_argument("--jailer-gid", type=int, default=None)
+    parser.add_argument("--network-uplink", default=None,
+                        help="host interface to NAT guests out of (enables "
+                             "per-branch netns networking; needs root)")
     args = parser.parse_args()
 
     if not os.path.exists("/dev/kvm"):
@@ -78,11 +81,17 @@ def main() -> int:
             jailer_bin=args.jailer, uid=args.jailer_uid, gid=args.jailer_gid,
             chroot_base=os.path.join(args.work_dir, "jail"))
 
+    network = None
+    if args.network_uplink:
+        from agentfork.sandbox.netns import NetworkConfig
+        network = NetworkConfig(uplink=args.network_uplink)
+
     shutil.rmtree(args.work_dir, ignore_errors=True)
     os.makedirs(args.work_dir)
     sandbox = FirecrackerSandbox(args.fc, args.kernel, args.rootfs,
                                  args.work_dir, vsock=not args.no_vsock,
-                                 overlay_mib=args.overlay_mib, jailer=jailer)
+                                 overlay_mib=args.overlay_mib, jailer=jailer,
+                                 network=network)
     registry = os.path.join(args.work_dir, "registry.json")
 
     with ForkOrchestrator(sandbox=sandbox, registry_path=registry) as orch:

@@ -1,0 +1,85 @@
+name: kvm
+# Real-Firecracker validation. The fake-based unit tests in `ci` cannot catch
+# regressions in boot/restore/exec/overlay/jailer/networking against a live
+# VMM; this job runs the actual demos on a runner with /dev/kvm.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  firecracker:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+          test -e /dev/kvm && echo "kvm present"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: pip install -e ".[dev]"
+
+      - name: Fetch Firecracker + guest artifacts
+        run: |
+          set -eux
+          ARCH=$(uname -m)
+          mkdir -p fc && cd fc
+          curl -fsSL -o fc.tgz \
+            "https://github.com/firecracker-microvm/firecracker/releases/download/v1.16.1/firecracker-v1.16.1-${ARCH}.tgz"
+          tar xzf fc.tgz
+          cp "release-v1.16.1-${ARCH}/firecracker-v1.16.1-${ARCH}" firecracker
+          cp "release-v1.16.1-${ARCH}/jailer-v1.16.1-${ARCH}" jailer
+          chmod +x firecracker jailer
+          kernel_key=$(curl -fsS "http://spec.ccfc.min.s3.amazonaws.com/?prefix=firecracker-ci/v1.13/${ARCH}/vmlinux-6.1&list-type=2" \
+            | grep -oP "(?<=<Key>)(firecracker-ci/v1.13/${ARCH}/vmlinux-6\.1\.\d+)(?=</Key>)" | sort -V | tail -1)
+          curl -fsSL -o vmlinux "https://s3.amazonaws.com/spec.ccfc.min/${kernel_key}"
+          ubuntu_key=$(curl -fsS "http://spec.ccfc.min.s3.amazonaws.com/?prefix=firecracker-ci/v1.13/${ARCH}/ubuntu-&list-type=2" \
+            | grep -oP "(?<=<Key>)(firecracker-ci/v1.13/${ARCH}/ubuntu-\d+\.\d+\.squashfs)(?=</Key>)" | sort -V | tail -1)
+          curl -fsSL -o ubuntu.squashfs "https://s3.amazonaws.com/spec.ccfc.min/${ubuntu_key}"
+
+      - name: Build agentfork rootfs
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq squashfs-tools
+          tools/build_rootfs.sh --base fc/ubuntu.squashfs --out fc/rootfs.squashfs
+
+      - name: Idle lifecycle (no vsock)
+        run: |
+          sudo env PYTHONPATH="$PWD" python3 demo/fc_demo.py \
+            --fc fc/firecracker --kernel fc/vmlinux --rootfs fc/rootfs.squashfs \
+            --children 5 --no-vsock --work-dir /var/tmp/idle
+        timeout-minutes: 4
+
+      - name: Exec + overlay data plane
+        run: |
+          sudo env PYTHONPATH="$PWD" python3 demo/fc_demo.py \
+            --fc fc/firecracker --kernel fc/vmlinux --rootfs fc/rootfs.squashfs \
+            --children 5 --overlay-mib 32 --work-dir /var/tmp/exec \
+            --exec 'mkdir -p /tmp/s && mount /dev/vdb /tmp/s && echo ok > /tmp/s/p && cat /tmp/s/p'
+        timeout-minutes: 6
+
+      - name: Jailer + exec + overlay
+        run: |
+          KVM_GID=$(getent group kvm | cut -d: -f3)
+          sudo env PYTHONPATH="$PWD" python3 demo/fc_demo.py \
+            --fc fc/firecracker --kernel fc/vmlinux --rootfs fc/rootfs.squashfs \
+            --children 3 --overlay-mib 32 --work-dir /var/tmp/jail \
+            --jailer fc/jailer --jailer-uid "$(id -u)" --jailer-gid "$KVM_GID" \
+            --exec 'mkdir -p /tmp/s && mount /dev/vdb /tmp/s && echo ok > /tmp/s/p && cat /tmp/s/p'
+        timeout-minutes: 6
+
+      - name: Guest networking (outbound from a forked child)
+        run: |
+          sudo sysctl -w net.ipv4.ip_forward=1
+          UPLINK=$(ip route show default | awk '{print $5; exit}')
+          sudo env PYTHONPATH="$PWD" python3 demo/fc_demo.py \
+            --fc fc/firecracker --kernel fc/vmlinux --rootfs fc/rootfs.squashfs \
+            --children 2 --work-dir /var/tmp/net --network-uplink "$UPLINK" \
+            --exec 'ip addr show eth0 && curl -sS --max-time 20 -o /dev/null -w "%{http_code}" https://example.com'
+        timeout-minutes: 8
