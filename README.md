@@ -140,7 +140,7 @@ a branch:
    happen inside the engine with no tokens copied. Use it in-process
    (`SGLangKVBackend`) or over HTTP (`SGLangHTTPBackend`). On a Modal A10G, ten
    children each reused all 2,406 of the parent's cached tokens, and killing
-   one freed its share. The HTTP client is only tested against a stub so far.
+   one freed its share.
 2. **Sandbox fork** (`FirecrackerSandbox`). A branch is snapshotted only when
    first forked, so children start from the parent's live state and unforked
    branches cost nothing (snapshot pauses the parent 76–83 ms; each child
