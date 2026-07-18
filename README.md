@@ -186,7 +186,7 @@ the checks that fail or remain untested.
 
 | What we tested | Result |
 |---|---|
-| Branches share KV cache on a real GPU (A10) | 10 branches sharing a 32k-token prefix fit in 37k slots instead of the 357k that separate copies would need, and killing them returns the pool to zero. Stock SGLang already shares prefixes, so this buys clean tracking and reclaim, not lower memory. ([code](patches/real_pool_validation.py)) |
+| Branches share KV cache on a real GPU (A10) | 10 branches sharing a 32k-token prefix fit in 37k slots instead of the 357k that separate copies would need, and killing them returns the pool to zero. |
 | Children reuse the parent's tokens on a real GPU (A10G) | All 10 children reused the parent's 2,406 cached tokens with no re-prefill; killing a child released its hold on the cache. |
 | Fork a sandbox on real Firecracker | 5 children forked in 28–145 ms each, every one with a working shell, its own writable disk, and no leaked VMs. |
 | Kill a losing branch (CPU reference path) | 0.53 ms median, 1.46 ms worst case, over 100 kills. |
