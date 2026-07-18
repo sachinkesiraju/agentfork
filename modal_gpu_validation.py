@@ -17,24 +17,33 @@ patches/0001-sglang-tree-radix-cache.patch applied.)
 
 import json
 import os
+import random
 
 import modal
 
 SGLANG_DIR = os.path.expanduser(os.environ.get("SGLANG_DIR", "~/sglang"))
-if not os.path.isdir(os.path.join(SGLANG_DIR, "python", "sglang")):
+if not SGLANG_DIR.startswith("/root/") and not os.path.isdir(
+    os.path.join(SGLANG_DIR, "python", "sglang")
+):
     raise FileNotFoundError(f"SGLANG_DIR is not an SGLang checkout: {SGLANG_DIR}")
 
 app = modal.App("agentfork-gpu-validation")
 
 image = (
-    modal.Image.from_registry("lmsysorg/sglang:latest")
-    # modal's baked requirements downgrade typing_extensions below what
-    # pydantic_core in the sglang image needs
-    .run_commands("python3 -m pip install --upgrade 'typing_extensions>=4.15' "
-                  "--index-url https://pypi.org/simple")
-    # the mounted sglang main wants flashinfer 0.6.14 but only 0.6.13 cubins
-    # are published; skip the version assert and use the image's 0.6.12
-    .env({"SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK": "1"})
+    modal.Image.from_registry(
+        "nvidia/cuda:12.8.1-devel-ubuntu22.04", add_python="3.11"
+    )
+    .pip_install(
+        "sglang[srt]==0.5.14",
+        "pytest>=8.0",
+        "typing_extensions>=4.15",
+        index_url="https://pypi.org/simple",
+    )
+    .env({
+        "AGENTFORK_VALIDATION": "1",
+        "SGLANG_DIR": "/root/sgl",
+        "SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK": "1",
+    })
     .add_local_dir(f"{SGLANG_DIR}/python/sglang", remote_path="/root/sgl/sglang")
     .add_local_dir(f"{SGLANG_DIR}/test", remote_path="/root/sgltest")
 )
@@ -56,6 +65,17 @@ def validate() -> str:
     import torch
 
     out = {"gpu": torch.cuda.get_device_name(0)}
+
+    ENGINE_CHILDREN = 12
+    PRESSURE_REQUESTS_PER_CHILD = 80
+
+    def apply_cache_pressure(engine, count=PRESSURE_REQUESTS_PER_CHILD):
+        for index in range(count):
+            engine.generate(
+                (f"Noise tenant {index} unique context. " * 400) + "Task:",
+                {"max_new_tokens": 1},
+            )
+        return count
 
     # --- 1. real HBM pool ---
     from sglang.srt.mem_cache.allocator.token import TokenToKVPoolAllocator
@@ -118,27 +138,114 @@ def validate() -> str:
 
     # --- 3. stock live-engine prefix-cache baseline ---
     import sglang as sgl
-    eng = sgl.Engine(model_path="Qwen/Qwen3-0.6B", mem_fraction_static=0.6,
-                     log_level="warning")
+    eng = sgl.Engine(
+        model_path="Qwen/Qwen3-0.6B",
+        mem_fraction_static=0.6,
+        log_level="warning",
+        disable_cuda_graph=True,
+    )
     try:
         prefix = "You are a helpful assistant. " * 400  # ~2.4k tokens shared
+        parent_prompt = prefix + "Parent:"
         t0 = time.perf_counter()
-        first = eng.generate(prefix + "Task 0:", {"max_new_tokens": 4})
+        first = eng.generate(parent_prompt, {"max_new_tokens": 4})
         parent_s = time.perf_counter() - t0
+        parent_text = first.get("text", "")
+        pressure_requests = 0
         cached, times = [], []
-        for i in range(1, 11):
+        for i in range(ENGINE_CHILDREN):
+            pressure_requests += apply_cache_pressure(eng)
             t0 = time.perf_counter()
-            result = eng.generate(prefix + f"Task {i}:", {"max_new_tokens": 4})
+            result = eng.generate(
+                parent_prompt + parent_text + f" Child {i}:",
+                {"max_new_tokens": 4},
+            )
             times.append(time.perf_counter() - t0)
             cached.append(result["meta_info"]["cached_tokens"])
         out["engine"] = {
             "prompt_tokens": first["meta_info"]["prompt_tokens"],
             "parent_prefill_s": round(parent_s, 2),
+            "parent_generation_s": parent_s,
+            "pressure_requests": pressure_requests,
             "sibling_cached_tokens": cached,
-            "sibling_gen_s_p50": round(sorted(times)[5], 3),
+            "sibling_gen_s_p50": round(sorted(times)[len(times) // 2], 3),
+            "total_generation_s": round(parent_s + sum(times), 4),
+            "sibling_generation_s": times,
         }
     finally:
         eng.shutdown()
+
+    # --- 4. live tree-aware engine request path ---
+    eng = sgl.Engine(
+        model_path="Qwen/Qwen3-0.6B",
+        mem_fraction_static=0.6,
+        log_level="warning",
+        radix_cache_backend="tree_radix",
+        tree_cache_quota_tokens=65536,
+        disable_cuda_graph=True,
+    )
+    try:
+        prefix = "You are a helpful assistant. " * 400
+        parent_prompt = prefix + "Parent:"
+        t0 = time.perf_counter()
+        parent = eng.generate(
+            parent_prompt,
+            {"max_new_tokens": 4},
+            tree_id="validation-tree",
+            branch_id="parent",
+            branch_reserve_tokens=4,
+        )
+        tree_parent_s = time.perf_counter() - t0
+        parent_text = parent.get("text", "")
+        pressure_requests = 0
+        cached, times = [], []
+        for i in range(ENGINE_CHILDREN):
+            pressure_requests += apply_cache_pressure(eng)
+            t0 = time.perf_counter()
+            result = eng.generate(
+                parent_prompt + parent_text + f" Child {i}:",
+                {"max_new_tokens": 4},
+                tree_id="validation-tree",
+                branch_id=f"child-{i}",
+                parent_id="parent",
+                branch_end=True,
+                branch_reserve_tokens=4,
+            )
+            times.append(time.perf_counter() - t0)
+            cached.append(result["meta_info"]["cached_tokens"])
+        telemetry = eng.tree_cache_op("telemetry", "parent")
+        killed = eng.tree_cache_op("kill", "parent")
+        out["tree_engine"] = {
+            "parent_prompt_tokens": parent["meta_info"]["prompt_tokens"],
+            "parent_generation_s": tree_parent_s,
+            "pressure_requests": pressure_requests,
+            "sibling_cached_tokens": cached,
+            "sibling_gen_s_p50": round(sorted(times)[len(times) // 2], 3),
+            "total_generation_s": round(tree_parent_s + sum(times), 4),
+            "sibling_generation_s": times,
+            "telemetry_before_kill": telemetry.value,
+            "kill_value": killed.value,
+        }
+    finally:
+        eng.shutdown()
+
+    stock_total = sum(out["engine"]["sibling_generation_s"])
+    tree_total = sum(out["tree_engine"]["sibling_generation_s"])
+    ratios = []
+    rng = random.Random(0)
+    stock_samples = out["engine"]["sibling_generation_s"]
+    tree_samples = out["tree_engine"]["sibling_generation_s"]
+    paired = list(zip(stock_samples, tree_samples))
+    for _ in range(1000):
+        sample = [rng.choice(paired) for _ in paired]
+        ratios.append(sum(item[0] for item in sample) / sum(item[1] for item in sample))
+    ratios.sort()
+    out["vge"] = {
+        "uplift": round(stock_total / tree_total, 4),
+        "ci95_low": round(ratios[25], 4),
+        "ci95_high": round(ratios[974], 4),
+        "target_passed": stock_total / tree_total >= 1.5 and ratios[25] >= 1.2,
+    }
 
     return json.dumps(out, indent=2)
 

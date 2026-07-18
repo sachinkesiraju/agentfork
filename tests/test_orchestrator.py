@@ -78,8 +78,11 @@ def test_fork_and_kill_lifecycle_zero_ledger():
     # CoW: 10 forks add no resident tokens until suffixes diverge
     assert kv.resident_tokens() == len(PREFIX)
 
-    for c in children:
-        orch.extend(c.branch_id, SUFFIX + [hash(c.branch_id) % 1000])
+    # the trailing token must differ per child or siblings share the whole
+    # suffix and the first kill frees nothing (hash() is salted per process,
+    # so hash-derived tokens collide in ~4% of runs)
+    for i, c in enumerate(children):
+        orch.extend(c.branch_id, SUFFIX + [i])
     receipts = [orch.kill(c.branch_id) for c in children]
     assert all(r.kv_freed_tokens > 0 for r in receipts)
     orch.kill("parent")
@@ -253,6 +256,40 @@ def test_failed_kill_is_journaled_and_retried_by_reconcile(tmp_path):
     assert [r.branch_id for r in receipts] == ["parent"]
     assert orch.branches() == []
     assert sandbox.live == set()
+
+
+class ExecSandbox(RecordingSandbox):
+    """RecordingSandbox that also supports the optional exec channel."""
+
+    def exec(self, branch_id, argv, timeout_s=None):
+        self.events.append(("exec", branch_id, tuple(argv), timeout_s))
+        return f"ran:{argv[0]}"
+
+
+def test_exec_delegates_to_backends_that_support_it():
+    sandbox = ExecSandbox()
+    orch = ForkOrchestrator(sandbox=sandbox)
+    orch.create_parent("parent", tokens=PREFIX)
+
+    assert orch.exec("parent", ["echo", "hi"], timeout_s=5.0) == "ran:echo"
+    assert sandbox.events[-1] == ("exec", "parent", ("echo", "hi"), 5.0)
+
+
+def test_exec_requires_a_live_branch():
+    orch = ForkOrchestrator(sandbox=ExecSandbox())
+    orch.create_parent("parent")
+    orch.kill("parent")
+    with pytest.raises(KeyError, match="no live branch"):
+        orch.exec("parent", ["true"])
+    with pytest.raises(KeyError, match="no live branch"):
+        orch.exec("never-existed", ["true"])
+
+
+def test_exec_on_backend_without_exec_raises():
+    orch = ForkOrchestrator(sandbox=RecordingSandbox())
+    orch.create_parent("parent")
+    with pytest.raises(RuntimeError, match="does not support exec"):
+        orch.exec("parent", ["true"])
 
 
 def test_closed_orchestrator_refuses_mutation(tmp_path):

@@ -134,22 +134,30 @@ drops the matching cache entry; the combined path measured 0.53 ms p50.
 Two production backends have adapters behind those same protocols:
 
 1. **KV cache fork**: `patches/0001-sglang-tree-radix-cache.patch` adds
-   `TreeRadixCache` to SGLang. Children inherit the parent's KV prefix
-   copy-on-write and stay pinned through SGLang's existing `lock_ref`
-   machinery; `kill_tree()` releases a branch's pins. The patch also adds
-   token budgets, reservations, demotion, invalidation, and per-tree
-   telemetry. No scheduler, model-runner, server, or router changes are
-   included. `agentfork/kv/sglang_backend.py`'s `SGLangKVBackend` adapts an
-   already-constructed `TreeRadixCache` instance to `KVBackend`; it assumes
-   in-process access to that instance, not a call over SGLang's server API.
+   `TreeRadixCache`; `patches/0002-Wire-branch-lifecycle-through-the-SGLang-request-pat.patch`
+   carries branch identity through OpenAI/native requests, adds scheduler-side
+   lifecycle and quota admission, and exposes `/tree_cache` control operations.
+   `SGLangKVBackend` supports in-process use and `SGLangHTTPBackend` drives a
+   remote engine. The live request path was validated on a Modal A10G: ten
+   children each reused 2,406 parent tokens and explicit kill released the
+   remaining parent pin.
 2. **Sandbox fork**: `agentfork/sandbox/fc_bench.py` measures Firecracker
    snapshot and restore, with each child sharing the parent's memory pages
    copy-on-write. The recorded parent pause was 76–83 ms including snapshot
    creation, and snapshot-load API time was 2.1 ms p50 per child.
    `agentfork/sandbox/firecracker_backend.py`'s `FirecrackerSandbox` adapts
-   `fc_bench`'s `MicroVM` to `SandboxBackend`, snapshotting every branch so it
-   can itself be forked again; guest networking, identity, and readiness are
-   not handled.
+   `fc_bench`'s `MicroVM` to `SandboxBackend`. Snapshots are taken lazily at
+   fork time, so children inherit the parent's current state and unforked
+   branches never pay the snapshot write. Each guest gets a vsock exec
+   channel (`orch.exec(branch_id, argv)`, served by
+   `agentfork/sandbox/guest_agent.py` baked into the rootfs), a
+   `wait_ready()` readiness probe, and, with `overlay_mib` set, a writable
+   scratch drive that children inherit as their own copy; `JailerConfig`
+   runs every VMM chrooted and deprivileged under Firecracker's jailer.
+   All of it is validated on real Firecracker v1.16.1: children answer
+   exec over vsock, mount and write their own overlays, and inherit state
+   the parent wrote after boot (jailed and unjailed). Networking and
+   identity regeneration are not handled.
 
 ```
 ForkOrchestrator  (registry / leases / rollback / reconcile)
@@ -163,7 +171,8 @@ ForkOrchestrator  (registry / leases / rollback / reconcile)
    │
    └── sandbox branch
         ├── ReaperSandbox          pidfd subprocess (live)
-        └── Firecracker microVMs   via FirecrackerSandbox (live, idle guests)
+        └── Firecracker microVMs   via FirecrackerSandbox (live: exec,
+                                   overlays, jailer)
 ```
 
 "Fork" here is not Linux `fork(2)`: CUDA state cannot be duplicated by forking
@@ -188,9 +197,13 @@ the checks that fail or remain untested.
 | Firecracker snapshot load | 2.1 ms p50 API time per child; 25 children loaded in 150 ms; full VMM teardown was 31 ms p50 |
 | Firecracker host-page sharing | 117.7 MiB total RSS vs 23.8 MiB total PSS across 25 idle VMMs |
 | End-to-end orchestrator + real Firecracker (`demo/fc_demo.py`, aarch64 v1.16.1, idle 256 MiB guests) | Root boot 111–165 ms; 10-way fork at 235–317 ms per child, dominated by the ~125 ms per-branch snapshot write; 9 losers killed in 132–231 ms; zero surviving VMMs across 3 runs |
+| Data plane + parallel lifecycle on real Firecracker (v0.3.0, same host) | 5-way fork 28–145 ms per child amortized (lazy fork-time snapshot, parallel restores); exec over vsock answered in every child (0.3–0.7 s steady-state, first exec after restore up to ~10 s); per-child overlay mount+write; fork-after-exec freshness and divergence isolation verified; 4 losers killed in 8–12 ms; identical results under the jailer; zero surviving VMMs |
 | SGLang patch size | 547 additive lines: 299 implementation and 248 tests |
 | 10,000-branch cache test | 0.95 s to create branches and 0.17 s to bulk-kill them; allocator back to 0; this tests cache metadata, not concurrent inference |
-| Tree-native cache controls | Direct API tests cover budgets, reservations, demotion, invalidation, and telemetry; the scheduler does not enforce them |
+| Tree-native cache controls | Direct API tests cover budgets, reservations, demotion, invalidation, and telemetry; request reservations are enforced before scheduler admission |
+| Live tree request path | A10G parent + 10 children: every child reused 2,406 parent tokens; explicit kill released the remaining pin |
+| Sustained-pressure VGE | A10G synthetic contention: 1.596× stock SGLang, paired-bootstrap 95% CI [1.576×, 1.619×] |
+| Locked synthetic holdout | Changed to 12 children and 80 pressure requests: 1.537×, 95% CI [1.518×, 1.554×]; partner validation still required |
 
 In the [10-child GPU test](patches/real_pool_validation.py), sharing reduced KV
 usage from 357k slots to 37k. Stock SGLang already shares cached prefixes, so
@@ -227,13 +240,12 @@ SGLANG_DIR="$SGLANG_DIR" modal run modal_gpu_validation.py
 
 ## Limitations
 
-- The SGLang adapter (`SGLangKVBackend`) has not been run against a live
-  engine, only mocks. The Firecracker adapter has only driven idle guests:
-  no guest networking, identity, or readiness probes. Cleanup is retried,
-  not atomic.
-- The SGLang patch is not wired into request scheduling, model execution, or
-  serving, and its budgets and reservations are accounting only: the
-  scheduler does not enforce them.
+- The SGLang branch request path is live and quota reservations are enforced
+  before queue admission, but it has only been measured on one A10G with a
+  0.6B model. Cross-worker routing, tensor parallelism, allocator contention,
+  and mixed-tenant pressure remain unmeasured.
+- The Firecracker adapter has only driven idle guests: no guest networking,
+  identity, or readiness probes. Cleanup is retried, not atomic.
 - GPU validation used one A10 with a Qwen3-0.6B baseline, and Firecracker
   validation used idle, CPU-only 256 MiB guests. Neither covers production
   scale or GPU-plus-microVM colocation.
