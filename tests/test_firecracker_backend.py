@@ -368,6 +368,8 @@ def test_spawn_records_pid_and_kill_removes_it(tmp_path):
     assert not pid_path.exists()
 
 
+@pytest.mark.skipif(not os.path.exists("/proc"),
+                    reason="needs /proc for process identity")
 def test_kill_reclaims_orphan_from_pid_file_after_restart(tmp_path):
     orphan = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     try:
@@ -483,6 +485,8 @@ def test_branch_paths_cannot_escape_or_collide(tmp_path):
         sandbox._vm_dir(encoded_name)
 
 
+@pytest.mark.skipif(not os.path.exists("/proc"),
+                    reason="needs /proc for process identity")
 def test_pid_reuse_identity_mismatch_never_kills_process(tmp_path):
     process = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(60)"])
