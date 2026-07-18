@@ -145,6 +145,7 @@ class FirecrackerSandbox:
         self._snap_gen: dict[str, int] = {}  # generation a snapshot captured
         self._netns_index: dict[str, int] = {}  # branch -> its /30 index
         self._parent_locks: dict[str, threading.Lock] = {}
+        self._reseed_threads: dict[str, threading.Thread] = {}
 
     @staticmethod
     def _branch_dir_name(branch_id: str) -> str:
@@ -429,7 +430,7 @@ class FirecrackerSandbox:
             with self._lock:
                 self._vms[branch_id] = vm
             if parent_id is not None:
-                self._reseed_identity(branch_id)
+                self._start_reseed(branch_id)
             _log.info("spawned %s (%s%s)", branch_id,
                       "boot" if parent_id is None else f"fork of {parent_id}",
                       f", netns {netns}" if netns else "")
@@ -489,6 +490,31 @@ class FirecrackerSandbox:
         self._netns.teardown(branch_id, index)
         self._remove(self._netns_idx_path(branch_id))
 
+    def _start_reseed(self, branch_id: str) -> None:
+        """Kick off the entropy reseed in the background. The child's vsock
+        can take ~1 s to become reachable after a restore, and doing this
+        synchronously dominated fork latency (measured 53 ms/child without
+        it vs ~1.4 s with it). Off the fork path, the reseed just needs to
+        land before the guest first draws randomness, which the short window
+        covers in practice. Best-effort: failures are swallowed."""
+        if not self.vsock:
+            return
+        thread = threading.Thread(
+            target=self._reseed_identity, args=(branch_id,),
+            name=f"agentfork-reseed-{branch_id}", daemon=True)
+        with self._lock:
+            self._reseed_threads[branch_id] = thread
+        thread.start()
+
+    def await_reseed(self, branch_id: str, timeout: float | None = None) -> None:
+        """Block until the branch's background reseed has finished (or the
+        timeout elapses). Mainly for callers that must not draw guest
+        randomness until the pool is stirred, and for deterministic tests."""
+        with self._lock:
+            thread = self._reseed_threads.get(branch_id)
+        if thread is not None:
+            thread.join(timeout)
+
     def _reseed_identity(self, branch_id: str) -> None:
         """Best-effort de-correlation of a restored clone from its siblings.
 
@@ -499,9 +525,10 @@ class FirecrackerSandbox:
         identity (hostname, SSH host keys, DHCP client-id) is the rootfs's
         job — see tools/build_rootfs.sh, which regenerates them on boot.
 
-        Purely best-effort: a concurrent kill of this branch, or any
-        transport hiccup, just skips the reseed (OSError covers a raw
-        ConnectionReset that never became a VsockError)."""
+        Runs in a background thread (see ``_start_reseed``). Purely
+        best-effort: a concurrent kill of this branch, or any transport
+        hiccup, just skips the reseed (OSError covers a raw ConnectionReset
+        that never became a VsockError)."""
         if not self.vsock:
             return
         try:
@@ -510,6 +537,9 @@ class FirecrackerSandbox:
         except (VsockError, OSError):
             _log.debug("entropy reseed of %s skipped (agent gone or racing "
                        "a kill)", branch_id)
+        finally:
+            with self._lock:
+                self._reseed_threads.pop(branch_id, None)
 
     def _exec_client(self, branch_id: str) -> VsockExecClient:
         if not self.vsock:
