@@ -101,34 +101,10 @@ branches, and verifies that no processes or cache entries leak. It uses token
 IDs and sleeping processes, so it does not need a model, GPU, or microVM. A
 successful run ends with `CLEAN`.
 
-Minimal Python API:
-
-```python
-import sys
-
-from agentfork import ForkOrchestrator, ReaperSandbox
-
-sandbox = ReaperSandbox([sys.executable, "-c", "import time; time.sleep(60)"])
-
-with ForkOrchestrator(sandbox=sandbox, registry_path="branches.json",
-                      default_lease_s=600) as orch:
-    orch.reconcile()  # collect anything a previous crashed run left behind
-    orch.create_parent("parent", tokens=list(range(32_000)))
-    children = orch.fork("parent", n=3)
-
-    for i, child in enumerate(children):
-        start = 1_000_000 + i * 500
-        orch.extend(child.branch_id, list(range(start, start + 500)))
-
-    orch.kill_losers(children[0].branch_id)
-```
-
-`kill_losers()` keeps the selected branch and its ancestors and cleans up every
-other branch. Run `pytest -q` to execute the test suite.
-
-Remote SGLang uses inference requests, not `extend()`, as its data path. Start
-the patched server with `--admin-api-key`, then keep lifecycle and inference
-under the same orchestrator:
+Python API against a live SGLang engine. Keep lifecycle and inference on the
+same branch identity: fork from a shared prompt, then generate on each child.
+The data path is inference requests (`generate`), not `extend()`. Start the
+patched server with `--admin-api-key` first.
 
 ```python
 from agentfork import ForkOrchestrator, SGLangHTTPBackend
@@ -136,14 +112,18 @@ from agentfork import ForkOrchestrator, SGLangHTTPBackend
 kv = SGLangHTTPBackend(
     "https://sglang.example.internal", admin_api_key="admin-secret")
 with ForkOrchestrator(kv=kv, registry_path="branches.json") as orch:
-    orch.reconcile()
     orch.create_parent("parent")
     orch.generate("parent", "Shared context", {"max_new_tokens": 4})
-    child = orch.fork("parent", child_ids=["child"])[0]
-    result = orch.generate(
-        child.branch_id, "Shared context\nCandidate:",
-        {"max_new_tokens": 64}, reserve_tokens=64)
+
+    children = orch.fork("parent", n=3)  # three candidates from one prompt
+    for child in children:
+        orch.generate(child.branch_id, "Shared context\nCandidate:",
+                      {"max_new_tokens": 64}, reserve_tokens=64)
+
+    orch.kill_losers(children[0].branch_id)  # keep the winner, drop the rest
 ```
+
+Run `pytest -q` to execute the test suite.
 
 ## How it works
 
