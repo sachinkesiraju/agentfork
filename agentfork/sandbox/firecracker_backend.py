@@ -56,6 +56,7 @@ regeneration remain unimplemented.
 
 from __future__ import annotations
 
+import fcntl
 import logging
 import os
 import shutil
@@ -67,7 +68,15 @@ from typing import Callable
 
 from agentfork._locking import locked
 from agentfork.sandbox.fc_bench import JailerConfig, MicroVM, jail_root
-from agentfork.sandbox.vsock import DEFAULT_PORT, ExecResult, VsockError, VsockExecClient
+from agentfork.sandbox.netns import TAP_DEV as _TAP
+from agentfork.sandbox.netns import NetnsManager, NetworkConfig
+from agentfork.sandbox.vsock import (
+    DEFAULT_PORT,
+    DetachedExec,
+    ExecResult,
+    VsockError,
+    VsockExecClient,
+)
 
 _log = logging.getLogger("agentfork.sandbox.firecracker")
 
@@ -93,6 +102,7 @@ class FirecrackerSandbox:
                  vsock: bool = True, vsock_port: int = DEFAULT_PORT,
                  overlay_mib: int | None = None, mkfs: str = "mkfs.ext4",
                  jailer: JailerConfig | None = None,
+                 network: NetworkConfig | None = None,
                  exec_client_factory: Callable[..., VsockExecClient] = VsockExecClient):
         if overlay_mib is not None and overlay_mib <= 0:
             raise ValueError("overlay_mib must be positive")
@@ -105,6 +115,8 @@ class FirecrackerSandbox:
         self.overlay_mib = overlay_mib
         self.mkfs = mkfs
         self.jailer = jailer
+        self.network = network
+        self._netns = NetnsManager(network) if network is not None else None
         self._microvm_factory = microvm_factory
         self._exec_client_factory = exec_client_factory
         self._lock = threading.RLock()
@@ -113,6 +125,7 @@ class FirecrackerSandbox:
         self._snapshots: dict[str, tuple[str, str]] = {}
         self._gen: dict[str, int] = {}       # bumped by every exec
         self._snap_gen: dict[str, int] = {}  # generation a snapshot captured
+        self._netns_index: dict[str, int] = {}  # branch -> its /30 index
         self._parent_locks: dict[str, threading.Lock] = {}
 
     def _vm_dir(self, branch_id: str) -> str:
@@ -135,10 +148,27 @@ class FirecrackerSandbox:
         os.makedirs(d, mode=0o700, exist_ok=True)
         return d
 
-    def _new_vm(self, vm_dir: str):
-        if self.jailer is None:
+    def _vmm_comm(self) -> str:
+        """The /proc comm a live VMM for this sandbox should have: the
+        fc binary's basename, kernel-truncated to 15 bytes (the jailer
+        execve()s the fc binary, so jailed VMMs match too)."""
+        return os.path.basename(os.path.abspath(self.fc_bin))[:15]
+
+    def _pid_is_our_vmm(self, pid: int) -> bool | None:
+        """True/False when /proc can answer whether ``pid`` is one of our
+        VMMs; None when it cannot (no /proc, or the pid is gone)."""
+        try:
+            with open(f"/proc/{pid}/comm", encoding="ascii") as f:
+                return f.read().strip() == self._vmm_comm()
+        except OSError:
+            return None
+
+    def _new_vm(self, vm_dir: str, netns: str | None = None):
+        # keep the call minimal so simple 2-arg fakes still work; only pass
+        # jailer/netns when actually in use
+        if self.jailer is None and netns is None:
             return self._microvm_factory(self.fc_bin, vm_dir)
-        return self._microvm_factory(self.fc_bin, vm_dir, self.jailer)
+        return self._microvm_factory(self.fc_bin, vm_dir, self.jailer, netns)
 
     def _create_overlay(self, path: str) -> None:
         with open(path, "wb") as f:
@@ -152,6 +182,51 @@ class FirecrackerSandbox:
         deprivileged uid the jailer drops the VMM to."""
         if self.jailer is not None:
             os.chown(path, self.jailer.uid, self.jailer.gid)
+
+    @staticmethod
+    def _copy_overlay(src: str, dst: str) -> None:
+        """Copy an overlay image without paying for its full logical size:
+        FICLONE reflink where the filesystem supports it (btrfs/XFS —
+        instant, shares extents copy-on-write), else a sparse-aware copy
+        that only reads and writes data extents (SEEK_DATA/SEEK_HOLE — a
+        mostly-empty scratch disk copies in milliseconds), else a plain
+        byte copy."""
+        with open(src, "rb") as fsrc, open(dst, "wb") as fdst:
+            if hasattr(fcntl, "FICLONE"):
+                try:
+                    fcntl.ioctl(fdst.fileno(), fcntl.FICLONE, fsrc.fileno())
+                    return
+                except OSError:
+                    pass  # not a reflink-capable filesystem
+            try:
+                FirecrackerSandbox._sparse_copy(fsrc.fileno(), fdst.fileno())
+                return
+            except OSError:
+                pass  # filesystem cannot enumerate holes
+        shutil.copyfile(src, dst)
+
+    @staticmethod
+    def _sparse_copy(src_fd: int, dst_fd: int) -> None:
+        end = os.lseek(src_fd, 0, os.SEEK_END)
+        os.ftruncate(dst_fd, end)
+        pos = 0
+        while pos < end:
+            try:
+                data_start = os.lseek(src_fd, pos, os.SEEK_DATA)
+            except OSError:
+                break  # ENXIO: nothing but holes to the end
+            hole = os.lseek(src_fd, data_start, os.SEEK_HOLE)
+            os.lseek(src_fd, data_start, os.SEEK_SET)
+            os.lseek(dst_fd, data_start, os.SEEK_SET)
+            remaining = hole - data_start
+            while remaining:
+                chunk = os.read(src_fd, min(remaining, 1 << 20))
+                view = memoryview(chunk)
+                while view:
+                    written = os.write(dst_fd, view)
+                    view = view[written:]
+                remaining -= len(chunk)
+            pos = hole
 
     @staticmethod
     def _link_into(src: str, dst_dir: str, name: str) -> str:
@@ -197,7 +272,8 @@ class FirecrackerSandbox:
                     raise KeyError(f"no snapshot for parent: {parent_id}")
                 if self.overlay_mib is not None:
                     child_overlay = os.path.join(child_dir, _OVERLAY)
-                    shutil.copyfile(os.path.join(pdir, _OVERLAY), child_overlay)
+                    self._copy_overlay(os.path.join(pdir, _OVERLAY),
+                                       child_overlay)
                     self._chown_into_jail(child_overlay)
                 return mem, state
             if stale and self.overlay_mib is not None and self.vsock:
@@ -224,8 +300,8 @@ class FirecrackerSandbox:
                             self._snap_gen[parent_id] = gen
                     if self.overlay_mib is not None:
                         child_overlay = os.path.join(child_dir, _OVERLAY)
-                        shutil.copyfile(os.path.join(pdir, _OVERLAY),
-                                        child_overlay)
+                        self._copy_overlay(os.path.join(pdir, _OVERLAY),
+                                           child_overlay)
                         self._chown_into_jail(child_overlay)
                 except BaseException as exc:
                     snapshot_error = exc
@@ -248,17 +324,19 @@ class FirecrackerSandbox:
                 raise ValueError(f"branch exists: {branch_id}")
             self._pending.add(branch_id)
         vm = None
+        netns = self._setup_netns(branch_id)
         try:
             d = self._vm_dir(branch_id)
+            tap = _TAP if self._netns is not None else None
             if parent_id is None:
                 overlay = None
                 if self.overlay_mib is not None:
                     self._create_overlay(
                         os.path.join(self._host_dir(branch_id), _OVERLAY))
                     overlay = _OVERLAY
-                vm = self._new_vm(d)
+                vm = self._new_vm(d, netns)
                 vm.boot(self.kernel, self.rootfs, overlay=overlay,
-                        vsock_uds=_VSOCK if self.vsock else None)
+                        vsock_uds=_VSOCK if self.vsock else None, tap=tap)
             else:
                 child_host = self._host_dir(branch_id)
                 mem, state = self._fork_source(parent_id, child_host)
@@ -271,14 +349,17 @@ class FirecrackerSandbox:
                     state = self._link_into(state, child_host, "pstate")
                     self._link_into(os.path.abspath(self.rootfs),
                                     child_host, "rootfs.img")
-                vm = self._new_vm(d)
+                vm = self._new_vm(d, netns)
                 vm.restore(mem, state)
             with open(self._pid_path(branch_id), "w", encoding="utf-8") as f:
                 f.write(str(vm.proc.pid))
             with self._lock:
                 self._vms[branch_id] = vm
-            _log.info("spawned %s (%s)", branch_id,
-                      "boot" if parent_id is None else f"fork of {parent_id}")
+            if parent_id is not None:
+                self._reseed_identity(branch_id)
+            _log.info("spawned %s (%s%s)", branch_id,
+                      "boot" if parent_id is None else f"fork of {parent_id}",
+                      f", netns {netns}" if netns else "")
         except BaseException:
             _log.warning("spawn of %s failed; killing its VMM", branch_id,
                          exc_info=True)
@@ -289,34 +370,87 @@ class FirecrackerSandbox:
                     vm.kill()
                 except Exception:
                     pass
+            self._teardown_netns(branch_id)
             raise
         finally:
             with self._lock:
                 self._pending.discard(branch_id)
 
-    def _exec_live(self, branch_id: str, argv: list[str],
-                   timeout_s: float | None) -> ExecResult:
+    def _setup_netns(self, branch_id: str) -> str | None:
+        """Build this branch's network namespace, if networking is enabled.
+        Every guest boots believing it is the same tap/MAC/IP; the namespace
+        keeps N snapshot clones from colliding on one host network."""
+        if self._netns is None:
+            return None
+        name, index = self._netns.setup(branch_id)
+        with self._lock:
+            self._netns_index[branch_id] = index
+        return name
+
+    def _teardown_netns(self, branch_id: str) -> None:
+        if self._netns is None:
+            return
+        with self._lock:
+            index = self._netns_index.pop(branch_id, None)
+        if index is not None:
+            self._netns.teardown(branch_id, index)
+
+    def _reseed_identity(self, branch_id: str) -> None:
+        """Best-effort de-correlation of a restored clone from its siblings.
+
+        Every child restored from one snapshot resumes with the parent's RNG
+        state, so without this they'd draw identical 'random' values (TLS
+        nonces, session tokens, UUIDs). Feeding host-fresh entropy into the
+        guest's pool via the exec channel stirs each clone uniquely. Machine
+        identity (hostname, SSH host keys, DHCP client-id) is the rootfs's
+        job — see tools/build_rootfs.sh, which regenerates them on boot."""
+        if not self.vsock:
+            return
+        try:
+            self._exec_live(branch_id, ["tee", "/dev/urandom"],
+                            timeout_s=5.0, stdin=os.urandom(32))
+        except VsockError:
+            _log.debug("entropy reseed of %s skipped (agent not ready)",
+                       branch_id)
+
+    def _exec_client(self, branch_id: str) -> VsockExecClient:
         if not self.vsock:
             raise RuntimeError("exec requires vsock=True")
         uds = os.path.join(self._host_dir(branch_id), _VSOCK)
-        client = self._exec_client_factory(uds, self.vsock_port)
-        return client.exec(argv, timeout_s)
+        return self._exec_client_factory(uds, self.vsock_port)
 
-    def exec(self, branch_id: str, argv: list[str],
-             timeout_s: float | None = None) -> ExecResult:
-        """Run a command inside the branch's guest via the vsock agent.
+    def _exec_live(self, branch_id: str, argv: list[str],
+                   timeout_s: float | None,
+                   stdin: bytes | None = None) -> ExecResult:
+        return self._exec_client(branch_id).exec(argv, timeout_s, stdin=stdin)
 
-        Only branch lookup holds the lock; the guest I/O runs outside it so
-        a long command never blocks spawn/kill of other branches. A kill
-        racing an exec surfaces here as ``VsockError``.
-        """
+    def _mark_dirty(self, branch_id: str) -> None:
         with self._lock:
             if branch_id not in self._vms:
                 raise KeyError(f"no such branch: {branch_id}")
             # conservatively stale from here on: even a failing command may
             # have changed guest state before failing
             self._gen[branch_id] = self._gen.get(branch_id, 0) + 1
-        return self._exec_live(branch_id, argv, timeout_s)
+
+    def exec(self, branch_id: str, argv: list[str],
+             timeout_s: float | None = None,
+             stdin: bytes | None = None) -> ExecResult:
+        """Run a command inside the branch's guest via the vsock agent.
+
+        Only branch lookup holds the lock; the guest I/O runs outside it so
+        a long command never blocks spawn/kill of other branches. A kill
+        racing an exec surfaces here as ``VsockError``.
+        """
+        self._mark_dirty(branch_id)
+        return self._exec_live(branch_id, argv, timeout_s, stdin=stdin)
+
+    def exec_detached(self, branch_id: str,
+                      argv: list[str]) -> DetachedExec:
+        """Start a background process in the branch's guest (dev servers,
+        watchers). Returns immediately with the guest pid and the guest-side
+        log path; follow output via ``exec(["tail", ...])`` on that path."""
+        self._mark_dirty(branch_id)
+        return self._exec_client(branch_id).exec_detached(argv)
 
     def wait_ready(self, branch_id: str, timeout_s: float = 60.0) -> None:
         """Block until the branch's guest agent answers a no-op exec — i.e.
@@ -352,24 +486,35 @@ class FirecrackerSandbox:
                 vm.kill()
             except RuntimeError:
                 pass
+            self._teardown_netns(branch_id)  # after the VMM releases the tap
             self._remove(pid_path)
             return
         # crash recovery: a restarted adapter has no handle for this branch,
-        # so fall back to the pid recorded at spawn. Best effort; the pid may
-        # have been recycled since the supervisor died.
-        try:
-            with open(pid_path, encoding="utf-8") as f:
-                pid = int(f.read().strip())
-        except (FileNotFoundError, ValueError):
+        # so fall back to the pid recorded at spawn — but only if /proc says
+        # the pid still looks like one of our VMMs (or cannot say), so a
+        # recycled pid belonging to an innocent process is spared.
+        pid = self._recorded_pid(branch_id)
+        if pid is None:
             return
-        _log.warning("no live handle for %s; SIGKILL by recorded pid %d "
-                     "(best effort: the pid may have been recycled)",
-                     branch_id, pid)
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
+        if self._pid_is_our_vmm(pid) is False:
+            _log.warning("recorded pid %d for %s is not a %s process "
+                         "(recycled); not killing it", pid, branch_id,
+                         self._vmm_comm())
+        else:
+            _log.warning("no live handle for %s; SIGKILL by recorded pid %d",
+                         branch_id, pid)
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
         self._remove(pid_path)
+
+    def _recorded_pid(self, branch_id: str) -> int | None:
+        try:
+            with open(self._pid_path(branch_id), encoding="utf-8") as f:
+                return int(f.read().strip())
+        except (FileNotFoundError, ValueError):
+            return None
 
     @staticmethod
     def _remove(path: str) -> None:
@@ -381,6 +526,18 @@ class FirecrackerSandbox:
     @locked
     def alive(self, branch_id: str) -> bool:
         vm = self._vms.get(branch_id)
-        if vm is None:
+        if vm is not None:
+            return vm.proc.poll() is None
+        # restart recovery: a restarted adapter has no handle, but the pid
+        # recorded at spawn plus a /proc comm check can still answer
+        pid = self._recorded_pid(branch_id)
+        if pid is None:
             return False
-        return vm.proc.poll() is None
+        return self._pid_is_our_vmm(pid) is True
+
+    @locked
+    def sweep_dead(self) -> list[str]:
+        """Branch IDs whose VMM process has exited without a kill — the
+        supervision hook the orchestrator's background reaper collects."""
+        return [branch_id for branch_id, vm in self._vms.items()
+                if vm.proc.poll() is not None]

@@ -174,6 +174,20 @@ class KillReceipt:
     kv_freed_tokens: int
 
 
+@dataclass
+class OrchestratorMetrics:
+    """Monotonic counters, mutated under the orchestrator lock. Read a
+    consistent view via ``ForkOrchestrator.metrics_snapshot()``."""
+
+    forks: int = 0            # children successfully forked
+    kills: int = 0            # branches fully reaped (both halves)
+    kill_failures: int = 0    # kills that raised (journaled for reconcile)
+    execs: int = 0            # guest exec calls dispatched
+    reconciles: int = 0       # reconcile() passes
+    reaped_expired: int = 0   # branches collected for lapsed leases
+    swept_dead: int = 0       # branches collected because their VMM died
+
+
 class ForkOrchestrator:
     """Owns (KV branch, sandbox) pairs; one ID spans both lifecycles."""
 
@@ -181,9 +195,12 @@ class ForkOrchestrator:
                  sandbox: SandboxBackend | None = None,
                  registry_path: str | os.PathLike | None = None,
                  default_lease_s: float | None = None,
+                 reap_interval_s: float | None = None,
                  clock: Callable[[], float] = time.time):
         if default_lease_s is not None and default_lease_s <= 0:
             raise ValueError("default_lease_s must be positive")
+        if reap_interval_s is not None and reap_interval_s <= 0:
+            raise ValueError("reap_interval_s must be positive")
         self.kv = kv if kv is not None else TreeKVCache()
         self.sandbox: SandboxBackend = sandbox if sandbox is not None else NullSandbox()
         self.registry_path = os.fspath(registry_path) if registry_path else None
@@ -195,6 +212,9 @@ class ForkOrchestrator:
         self._branches: dict[str, Branch] = {}
         self._spawning: set[str] = set()   # forks in flight in this process
         self._killing: set[str] = set()    # kills in flight in this process
+        self.metrics = OrchestratorMetrics()
+        self._reaper_thread: threading.Thread | None = None
+        self._reaper_stop = threading.Event()
         self._registry_lock_fd: int | None = None
         if self.registry_path:
             self._acquire_registry_lock()
@@ -211,6 +231,8 @@ class ForkOrchestrator:
         except BaseException:
             self._release_registry_lock()
             raise
+        if reap_interval_s is not None:
+            self.start_reaper(reap_interval_s)
 
     # -- registry ------------------------------------------------------------
 
@@ -398,6 +420,8 @@ class ForkOrchestrator:
             return branch
 
         forked = self._fan_out(children, spawn_one)
+        with self._lock:
+            self.metrics.forks += len(forked)
         _log.info("forked %d child(ren) of %s", len(forked), parent_id)
         return forked
 
@@ -409,7 +433,7 @@ class ForkOrchestrator:
         return self.kv.extend(branch_id, tokens)
 
     def exec(self, branch_id: str, argv: list[str],
-             timeout_s: float | None = None):
+             timeout_s: float | None = None, stdin: bytes | None = None):
         """Run a command in the branch's sandbox, for backends that expose
         an ``exec(branch_id, argv, timeout_s)`` channel (``FirecrackerSandbox``
         does; ``NullSandbox``/``ReaperSandbox`` do not).
@@ -429,7 +453,25 @@ class ForkOrchestrator:
                 raise RuntimeError(
                     f"sandbox backend {type(self.sandbox).__name__} does not "
                     "support exec")
-        return sandbox_exec(branch_id, argv, timeout_s)
+            self.metrics.execs += 1
+        return sandbox_exec(branch_id, argv, timeout_s, stdin=stdin)
+
+    def exec_detached(self, branch_id: str, argv: list[str]):
+        """Start a background process in the branch's sandbox, for
+        backends that expose ``exec_detached`` (``FirecrackerSandbox``
+        does). Returns the backend's handle (guest pid + log path)."""
+        with self._lock:
+            self._ensure_open()
+            branch = self._branches.get(branch_id)
+            if branch is None or branch.state != _STATE_LIVE:
+                raise KeyError(f"no live branch: {branch_id}")
+            start = getattr(self.sandbox, "exec_detached", None)
+            if start is None:
+                raise RuntimeError(
+                    f"sandbox backend {type(self.sandbox).__name__} does not "
+                    "support exec_detached")
+            self.metrics.execs += 1
+        return start(branch_id, argv)
 
     def kill(self, branch_id: str) -> KillReceipt:
         """Journal kill intent, reap sandbox then KV, then drop the record.
@@ -461,9 +503,11 @@ class ForkOrchestrator:
                          "reconcile()", branch_id, exc_info=True)
             with self._lock:
                 self._killing.discard(branch_id)
+                self.metrics.kill_failures += 1
             raise  # record stays in state "killing"; reconcile() retries
         with self._lock:
             self._killing.discard(branch_id)
+            self.metrics.kills += 1
             self._forget(branch_id)
         _log.debug("killed %s (freed %d KV tokens)", branch_id, freed)
         return KillReceipt(branch_id, freed)
@@ -532,7 +576,10 @@ class ForkOrchestrator:
         if expired:
             _log.info("reaping %d branch(es) with lapsed leases: %s",
                       len(expired), expired)
-        return self._fan_out(expired, self.kill)
+        receipts = self._fan_out(expired, self.kill)
+        with self._lock:
+            self.metrics.reaped_expired += len(receipts)
+        return receipts
 
     def reconcile(self) -> list[KillReceipt]:
         """Collect leaked branches: mid-fork and mid-kill leftovers from a
@@ -551,7 +598,59 @@ class ForkOrchestrator:
                       "mid-kill: %s", len(stuck), stuck)
         receipts = self._fan_out(stuck, self.kill)
         receipts.extend(self.reap_expired())
+        with self._lock:
+            self.metrics.reconciles += 1
         return receipts
+
+    # -- background collection -------------------------------------------------
+
+    def start_reaper(self, interval_s: float = 5.0) -> None:
+        """Run ``reconcile()`` (which includes lease reaping) every
+        ``interval_s`` seconds on a daemon thread, and collect branches
+        whose sandbox died out from under them (backends may expose
+        ``sweep_dead() -> list[branch_id]``, as ``FirecrackerSandbox``
+        does). Errors are logged, never fatal to the loop. Idempotent;
+        ``close()`` stops it."""
+        if interval_s <= 0:
+            raise ValueError("interval_s must be positive")
+        with self._lock:
+            self._ensure_open()
+            if self._reaper_thread is not None and self._reaper_thread.is_alive():
+                return
+            self._reaper_stop = threading.Event()
+            self._reaper_thread = threading.Thread(
+                target=self._reaper_loop, args=(interval_s,),
+                name="agentfork-reaper", daemon=True)
+            self._reaper_thread.start()
+
+    def stop_reaper(self) -> None:
+        with self._lock:
+            thread, self._reaper_thread = self._reaper_thread, None
+            self._reaper_stop.set()
+        if thread is not None and thread is not threading.current_thread():
+            thread.join()
+
+    def _reaper_loop(self, interval_s: float) -> None:
+        while not self._reaper_stop.wait(interval_s):
+            try:
+                self.reconcile()
+                sweep = getattr(self.sandbox, "sweep_dead", None)
+                if sweep is not None:
+                    for branch_id in sweep():
+                        _log.warning("branch %s: sandbox died; collecting",
+                                     branch_id)
+                        self.kill(branch_id)
+                        with self._lock:
+                            self.metrics.swept_dead += 1
+            except RuntimeError:
+                return  # closed under us
+            except Exception:
+                _log.exception("background reaper pass failed")
+
+    def metrics_snapshot(self) -> dict:
+        """A consistent copy of the counters, as a plain dict."""
+        with self._lock:
+            return dict(vars(self.metrics))
 
     # -- introspection / teardown ---------------------------------------------
 
@@ -572,6 +671,7 @@ class ForkOrchestrator:
         released so a successor can take over, and every mutating method
         raises from then on. Idempotent. Must not race in-flight lifecycle
         calls on other threads."""
+        self.stop_reaper()
         with self._lock:
             if self._closed:
                 return

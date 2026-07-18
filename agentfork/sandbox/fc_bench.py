@@ -70,13 +70,16 @@ def jail_root(jailer: JailerConfig, fc_bin: str, vm_dir: str) -> str:
                         jail_id_for(vm_dir), "root")
 
 
-def jailer_argv(jailer: JailerConfig, fc_bin: str, vm_dir: str) -> list[str]:
-    return [os.path.abspath(jailer.jailer_bin),
+def jailer_argv(jailer: JailerConfig, fc_bin: str, vm_dir: str,
+                netns: str | None = None) -> list[str]:
+    argv = [os.path.abspath(jailer.jailer_bin),
             "--id", jail_id_for(vm_dir),
             "--exec-file", os.path.abspath(fc_bin),
             "--uid", str(jailer.uid), "--gid", str(jailer.gid),
-            "--chroot-base-dir", jailer.chroot_base,
-            "--", "--api-sock", "fc.sock"]
+            "--chroot-base-dir", jailer.chroot_base]
+    if netns is not None:  # jailer joins the namespace itself
+        argv += ["--netns", netns]
+    return argv + ["--", "--api-sock", "fc.sock"]
 
 
 class _UDSHTTP:
@@ -128,17 +131,24 @@ class MicroVM:
     """
 
     def __init__(self, fc_bin: str, vm_dir: str,
-                 jailer: JailerConfig | None = None):
+                 jailer: JailerConfig | None = None,
+                 netns: str | None = None):
         self.vm_dir = vm_dir
         self.jailer = jailer
+        self.netns = netns
         # jailed VMMs live in the jailer-built chroot; per-VM paths resolve
         # there instead of vm_dir (which keeps host-side logs and pid files)
         self.host_dir = jail_root(jailer, fc_bin, vm_dir) if jailer else vm_dir
         if jailer:
             os.makedirs(self.host_dir, exist_ok=True)
-            argv = jailer_argv(jailer, fc_bin, vm_dir)
+            argv = jailer_argv(jailer, fc_bin, vm_dir,
+                               netns=f"/var/run/netns/{netns}" if netns else None)
         else:
             argv = [os.path.abspath(fc_bin), "--api-sock", "fc.sock"]
+            if netns is not None:
+                # unjailed: enter the netns via `ip netns exec` (the jailer
+                # does this itself with --netns, so only the plain path needs it)
+                argv = ["ip", "netns", "exec", netns] + argv
         self.sock = os.path.join(self.host_dir, "fc.sock")
         # output goes to a file, not DEVNULL: a VMM that dies at startup is
         # otherwise undiagnosable
@@ -178,7 +188,7 @@ class MicroVM:
                 f"Firecracker {method} {path} returned HTTP {status}")
 
     def boot(self, kernel: str, rootfs: str, overlay: str | None = None,
-             vsock_uds: str | None = None) -> float:
+             vsock_uds: str | None = None, tap: str | None = None) -> float:
         """Configure and start the guest.
 
         ``overlay`` and ``vsock_uds`` must be paths relative to ``vm_dir``
@@ -206,6 +216,13 @@ class MicroVM:
         if vsock_uds is not None:
             self._request("PUT", "/vsock", {
                 "guest_cid": 3, "uds_path": vsock_uds})
+        if tap is not None:
+            # the tap lives in the VMM's netns; guest MAC/IP are identical
+            # across clones because each runs in its own namespace
+            from agentfork.sandbox.netns import GUEST_MAC
+            self._request("PUT", "/network-interfaces/eth0", {
+                "iface_id": "eth0", "host_dev_name": tap,
+                "guest_mac": GUEST_MAC})
         self._request("PUT", "/machine-config", {
             "vcpu_count": 1, "mem_size_mib": 256})
         self._request("PUT", "/actions", {"action_type": "InstanceStart"})

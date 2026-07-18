@@ -261,9 +261,13 @@ def test_failed_kill_is_journaled_and_retried_by_reconcile(tmp_path):
 class ExecSandbox(RecordingSandbox):
     """RecordingSandbox that also supports the optional exec channel."""
 
-    def exec(self, branch_id, argv, timeout_s=None):
+    def exec(self, branch_id, argv, timeout_s=None, stdin=None):
         self.events.append(("exec", branch_id, tuple(argv), timeout_s))
         return f"ran:{argv[0]}"
+
+    def exec_detached(self, branch_id, argv):
+        self.events.append(("exec_detached", branch_id, tuple(argv)))
+        return ("detached", branch_id)
 
 
 def test_exec_delegates_to_backends_that_support_it():
@@ -290,6 +294,19 @@ def test_exec_on_backend_without_exec_raises():
     orch.create_parent("parent")
     with pytest.raises(RuntimeError, match="does not support exec"):
         orch.exec("parent", ["true"])
+    with pytest.raises(RuntimeError, match="does not support exec_detached"):
+        orch.exec_detached("parent", ["true"])
+
+
+def test_exec_detached_delegates_to_backends_that_support_it():
+    sandbox = ExecSandbox()
+    orch = ForkOrchestrator(sandbox=sandbox)
+    orch.create_parent("parent")
+
+    assert orch.exec_detached("parent", ["srv"]) == ("detached", "parent")
+    assert sandbox.events[-1] == ("exec_detached", "parent", ("srv",))
+    with pytest.raises(KeyError, match="no live branch"):
+        orch.exec_detached("ghost", ["srv"])
 
 
 def test_closed_orchestrator_refuses_mutation(tmp_path):

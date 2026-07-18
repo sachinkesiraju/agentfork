@@ -16,7 +16,9 @@ from agentfork.orchestrator import (
     ReaperSandbox,
     SandboxBackend,
 )
-from agentfork.sandbox.vsock import ExecResult, VsockError
+from agentfork.sandbox.fc_bench import JailerConfig
+from agentfork.sandbox.netns import NetworkConfig
+from agentfork.sandbox.vsock import DetachedExec, ExecResult, VsockError
 
 __version__ = "0.3.0"
 
@@ -24,11 +26,14 @@ __all__ = [
     "Branch",
     "BranchReaper",
     "CacheStats",
+    "DetachedExec",
     "ExecResult",
     "ForkOrchestrator",
     "KVBackend",
     "KillReceipt",
+    "JailerConfig",
     "KillResult",
+    "NetworkConfig",
     "NullSandbox",
     "ReaperSandbox",
     "SandboxBackend",
