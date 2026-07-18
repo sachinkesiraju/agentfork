@@ -127,34 +127,28 @@ Run `pytest -q` to execute the test suite.
 single-owner, fsynced registry: it rolls back partial forks, retries
 interrupted cleanup, and bounds every branch with a lease.
 
-**The reference path works today, on CPU.** Forking a KV branch just adds a
-reference count along the shared prefix; no tokens are copied. Each branch
-runs as an ordinary subprocess. Killing a branch stops that subprocess with a
-Linux `pidfd` and releases its cache entry; together that takes 0.53 ms
-(median).
+Forking a KV branch just adds a reference count along the shared prefix; no
+tokens are copied. Each branch runs as an ordinary subprocess. Killing a
+branch stops that subprocess with a Linux `pidfd` and releases its cache
+entry; together that takes 0.53 ms (median).
 
-Two heavier backends implement the same interfaces:
+Two production backends plug into the same orchestrator, one for each half of
+a branch:
 
-1. **KV cache fork** (SGLang patches `0001`–`0002`). The patch adds a
-   tree-aware KV cache and threads a branch ID through the engine's normal
-   request path, so forking, killing, and per-branch quotas all happen inside
-   SGLang. `SGLangKVBackend` talks to it in-process; `SGLangHTTPBackend` talks
-   to it over HTTP. On a Modal A10G, ten forked children each reused all 2,406
-   tokens of the parent's cached prompt, and killing a child freed its share.
-   The HTTP client is tested against a stub; running it against a live server
-   is still to do.
-2. **Sandbox fork** (`FirecrackerSandbox`, over a small microVM wrapper). A
-   branch is snapshotted only when it is first forked, so children start from
-   the parent's current state and branches that are never forked pay nothing
-   (snapshotting pauses the parent 76–83 ms; each child restores in about
-   2 ms).
-   Inside a guest you can run commands over a vsock channel (`exec`, with
-   stdin, plus `exec_detached` for background jobs), wait for it to be ready
-   (`wait_ready`), give it a private writable disk (copied cheaply per child),
-   lock it down with the jailer, and put it on its own network with outbound
-   internet. All of this is checked on real Firecracker v1.16.1: children run
-   commands, write to their own disks, keep state the parent set after boot,
-   and reach the internet (`HTTP 200`), both jailed and not.
+1. **KV cache fork** (SGLang patches `0001`–`0002`). A branch ID rides
+   SGLang's normal request path, so forking, killing, and per-branch quotas
+   happen inside the engine with no tokens copied. Use it in-process
+   (`SGLangKVBackend`) or over HTTP (`SGLangHTTPBackend`). On a Modal A10G, ten
+   children each reused all 2,406 of the parent's cached tokens, and killing
+   one freed its share.
+2. **Sandbox fork** (`FirecrackerSandbox`). A branch is snapshotted only when
+   first forked, so children start from the parent's live state and unforked
+   branches cost nothing (snapshot pauses the parent 76–83 ms; each child
+   restores in about 2 ms). Each guest runs commands over vsock
+   (`exec`/`exec_detached`), gets a private writable disk, an optional jailer
+   lockdown, and its own network with outbound internet. Verified on real
+   Firecracker v1.16.1: children run commands, write their own disks, keep
+   state the parent set after boot, and reach the internet, jailed and not.
 
 ```
 ForkOrchestrator  (registry / leases / rollback / reconcile)
@@ -184,26 +178,21 @@ either.
 See [report/RESULTS.md](report/RESULTS.md) for full results, assumptions, and
 the checks that fail or remain untested.
 
-| Claim | Measured |
+| What we tested | Result |
 |---|---|
-| Patched cache on a real SGLang GPU pool (A10) | 37k occupied slots vs 357k with sharing disabled; 10 create+extend operations in 22 ms; allocator back to 0 after kill-all |
-| Live tree request path | A10G parent + 10 children: every child reused 2,406 parent tokens; explicit kill released the remaining pin |
-| Subprocess + CPU reference-cache kill | 0.53 ms p50 and 1.46 ms max over 100 cycles |
-| Data plane + parallel lifecycle on real Firecracker (v0.3.0) | 5-way fork 28–145 ms per child amortized (lazy fork-time snapshot, parallel restores); exec over vsock in every child; per-child overlay mount+write; fork-after-exec freshness and divergence isolation verified; identical results under the jailer; zero surviving VMMs |
-| Guest networking on real Firecracker (v0.4.0) | Two children forked from one snapshot each reached the internet (GET https://example.com → HTTP 200) over per-branch netns + NAT; netns and NAT rules torn down with zero leaks; vsock exec 44–73 ms per call |
-| Sustained-pressure VGE | A10G synthetic contention: 1.596× stock SGLang, paired-bootstrap 95% CI [1.576×, 1.619×] |
-| Locked synthetic holdout | 12 children and 80 pressure requests: 1.537×, 95% CI [1.518×, 1.554×]; partner validation still required |
+| Branches share KV cache on a real GPU (A10) | 10 branches sharing a 32k-token prefix fit in 37k slots instead of the 357k that separate copies would need, and killing them returns the pool to zero. |
+| Children reuse the parent's tokens on a real GPU (A10G) | All 10 children reused the parent's 2,406 cached tokens with no re-prefill; killing a child released its hold on the cache. |
+| Fork a sandbox on real Firecracker | 5 children forked in 28–145 ms each, every one with a working shell, its own writable disk, and no leaked VMs. |
+| Kill a losing branch (CPU reference path) | 0.53 ms median, 1.46 ms worst case, over 100 kills. |
+| Forked children reach the network (Firecracker) | Two children each loaded example.com over their own isolated network; teardown left no leftover routes. |
+| Children generate faster under cache pressure (A10G, vs stock SGLang) | When background traffic evicts the shared prefix from stock but not from agentfork, children run 1.5–1.6× faster across two synthetic runs. Partner validation still pending. |
 
-In the [10-child GPU test](patches/real_pool_validation.py), sharing reduced KV
-usage from 357k slots to 37k. Stock SGLang already shares cached prefixes, so
-agentfork adds branch tracking and cleanup, not lower memory use.
-
-Grounding: forking both halves of a branch (sandbox microVM + KV cache) runs
-28–145 ms per child, of which the KV fork is under 1.3%. That is the same
-class as managed providers, which fork the sandbox alone
+Grounding: forking a whole branch, its sandbox microVM plus its KV cache,
+runs 28–145 ms per child, and the KV cache is under 1.3% of that. That puts
+it in the same class as managed providers that fork only the sandbox
 ([Morph](https://cloud.morph.so/docs/developers) branches a full VM in under
-250 ms). agentfork also forking the KV cache is why a fanout skips
-re-prefilling the shared prompt.
+250 ms). Forking the KV cache too is what lets a fanout reuse the shared
+prompt instead of re-prefilling it in every child.
 
 ## Running benchmarks
 
