@@ -9,7 +9,7 @@ both halves in 0.53 ms p50, with no orphan processes or leaked KV pages.
 ![tree-keyed KV: one resident prefix, N logical branches](docs/img/kv-dedup.svg)
 
 **Measured at a glance:** 22 ms for 10 create+extend operations on an A10 ·
-9.65× fewer KV slots than an explicitly unshared allocation · 1,029-line
+9.65× fewer KV slots than an explicitly unshared allocation · 1,080-line
 additive SGLang patch set.
 
 ## What it does
@@ -127,7 +127,7 @@ under the same orchestrator:
 from agentfork import ForkOrchestrator, SGLangHTTPBackend
 
 kv = SGLangHTTPBackend(
-    "https://sglang.example.internal", api_key="admin-secret")
+    "https://sglang.example.internal", admin_api_key="admin-secret")
 with ForkOrchestrator(kv=kv, registry_path="branches.json") as orch:
     orch.reconcile()
     orch.create_parent("parent")
@@ -157,7 +157,8 @@ Two production backends have adapters behind those same protocols:
    carries branch identity through OpenAI/native requests, adds scheduler-side
    lifecycle and quota admission, and exposes `/tree_cache` control operations.
    `SGLangKVBackend` supports in-process use and `SGLangHTTPBackend` drives
-   lifecycle plus native `/generate` requests on a remote engine. The live
+   lifecycle plus admin-authenticated `/tree_generate` requests on a remote
+   engine. The live
    in-process request path was validated on a Modal A10G: ten children each
    reused 2,406 parent tokens and explicit kill released the remaining
    parent pin. The HTTP client is integration-tested against a protocol stub;
@@ -224,7 +225,7 @@ the checks that fail or remain untested.
 | End-to-end orchestrator + real Firecracker (`demo/fc_demo.py`, aarch64 v1.16.1, idle 256 MiB guests) | Root boot 111–165 ms; 10-way fork at 235–317 ms per child, dominated by the ~125 ms per-branch snapshot write; 9 losers killed in 132–231 ms; zero surviving VMMs across 3 runs |
 | Data plane + parallel lifecycle on real Firecracker (v0.3.0, same host) | 5-way fork 28–145 ms per child amortized (lazy fork-time snapshot, parallel restores); exec over vsock answered in every child; per-child overlay mount+write; fork-after-exec freshness and divergence isolation verified; 4 losers killed in 8–12 ms; identical results under the jailer; zero surviving VMMs |
 | Guest networking on real Firecracker (v0.4.0, same host) | Two children forked from one snapshot each brought up eth0 172.16.0.2/30 (isolated per netns) and both GET https://example.com → HTTP 200 (DNS + HTTPS egress via veth+NAT); netns and NAT rules torn down with zero leaks; vsock exec channel itself 44–73 ms per call |
-| SGLang patch set size | 1,029 additive lines: 547 cache primitive + 482 request/control integration |
+| SGLang patch set size | 1,080 additive lines: 547 cache primitive + 482 request/control integration + 51 auth/accounting hardening |
 | 10,000-branch cache test | 0.95 s to create branches and 0.17 s to bulk-kill them; allocator back to 0; this tests cache metadata, not concurrent inference |
 | Tree-native cache controls | Direct API tests cover budgets, reservations, demotion, invalidation, and telemetry; request reservations are enforced before scheduler admission |
 | Live tree request path | A10G parent + 10 children: every child reused 2,406 parent tokens; explicit kill released the remaining pin |
@@ -252,6 +253,7 @@ export SGLANG_DIR=/path/to/sglang
 git -C "$SGLANG_DIR" checkout 40517b593b23870cf351a05a1d53e930cea6a58d
 git -C "$SGLANG_DIR" apply "$PWD/patches/0001-sglang-tree-radix-cache.patch"
 git -C "$SGLANG_DIR" apply "$PWD/patches/0002-Wire-branch-lifecycle-through-the-SGLang-request-pat.patch"
+git -C "$SGLANG_DIR" apply "$PWD/patches/0003-Harden-tree-request-auth-and-accounting.patch"
 PYTHONPATH="$SGLANG_DIR/python" python patches/real_pool_validation.py
 PYTHONPATH="$SGLANG_DIR/python" python patches/scale_10k_branch_validation.py
 PYTHONPATH="$SGLANG_DIR/python" python patches/tree_native_features_validation.py

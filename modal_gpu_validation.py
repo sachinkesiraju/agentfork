@@ -13,8 +13,8 @@ over the lmsysorg/sglang image (for CUDA torch + deps) and, on a real GPU:
    request-carried tree/branch identity.
 
 Run: SGLANG_DIR=/path/to/sglang python3 -m modal run modal_gpu_validation.py
-(SGLANG_DIR defaults to ~/sglang; it must be a checkout with patches 0001 and
-0002 applied in order.)
+(SGLANG_DIR defaults to ~/sglang; it must be a checkout with patches 0001,
+0002, and 0003 applied in order.)
 """
 
 import json

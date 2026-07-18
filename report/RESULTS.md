@@ -13,7 +13,7 @@ v1.16.1 and are labeled separately.
 
 | Check | Target | Measured | Verdict |
 |---|---|---|---|
-| SGLang patch set size | ≤ 1.5 kLOC | **1,029 additive LOC**: 547 for the cache primitive/tests plus 482 for request, scheduler, and HTTP lifecycle integration | PASS |
+| SGLang patch set size | ≤ 1.5 kLOC | **1,080 additive LOC**: 547 for the cache primitive/tests, 482 for request/scheduler integration, and 51 for request auth/accounting hardening | PASS |
 | Existing SGLang radix tests unaffected | no new failures | 26 pass / 7 fail **before and after** (all 7 pre-existing env failures: missing `-lcrypto` for HiCache cpp hash ext; `torch.cpu.memory_allocated` on CPU-only torch) | PASS |
 | Prefix reuse on 10-way fanout | ≥ 90% | **100%** — every sibling hits the full parent prefix in the SGLang `TreeRadixCache` unit test and CPU reference test. The previously quoted 320,063/39,937 run is omitted because its raw output is not checked in. | PASS |
 | Parent pause during fork | < 100 ms p50 | **~76–83 ms total recorded pause window**: ~1 ms pause API call followed by 75–82 ms full snapshot creation while the parent remains paused | PASS |
@@ -111,7 +111,7 @@ needs an end-to-end trace from an actual fanout workload.
 
 - **Remote live HTTP/OpenAI path:** patch 0002 and the in-process
   `Engine.generate` branch path ran on A10G. `SGLangHTTPBackend` lifecycle +
-  `/generate` coordination is integration-tested against an HTTP protocol
+  admin-only `/tree_generate` coordination is integration-tested against an HTTP protocol
   stub, not yet against a live SGLang HTTP server.
 - **Unified runtime:** `ForkOrchestrator` coordinates Firecracker restore with
   the reference KV cache (`demo/fc_demo.py`), but nothing coordinates the

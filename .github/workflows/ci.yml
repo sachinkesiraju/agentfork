@@ -39,4 +39,6 @@ jobs:
           ref: 40517b593b23870cf351a05a1d53e930cea6a58d
           path: sglang
       - run: git -C sglang apply ../patches/0001-sglang-tree-radix-cache.patch
-      - run: git -C sglang apply --check ../patches/0002-Wire-branch-lifecycle-through-the-SGLang-request-pat.patch
+      - run: git -C sglang apply ../patches/0002-Wire-branch-lifecycle-through-the-SGLang-request-pat.patch
+      - run: git -C sglang apply ../patches/0003-Harden-tree-request-auth-and-accounting.patch
+      - run: python -m compileall -q sglang/python/sglang
