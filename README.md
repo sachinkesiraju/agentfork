@@ -132,7 +132,8 @@ tokens are copied. Each branch runs as an ordinary subprocess. Killing a
 branch stops that subprocess with a Linux `pidfd` and releases its cache
 entry; together that takes 0.53 ms (median).
 
-Two heavier backends implement the same interfaces:
+Two production backends plug into the same orchestrator, one for each half of
+a branch:
 
 1. **KV cache fork** (SGLang patches `0001`–`0002`). The patch adds a
    tree-aware KV cache and threads a branch ID through the engine's normal
