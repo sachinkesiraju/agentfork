@@ -135,26 +135,20 @@ entry; together that takes 0.53 ms (median).
 Two production backends plug into the same orchestrator, one for each half of
 a branch:
 
-1. **KV cache fork** (SGLang patches `0001`–`0002`). The patch adds a
-   tree-aware KV cache and threads a branch ID through the engine's normal
-   request path, so forking, killing, and per-branch quotas all happen inside
-   SGLang. `SGLangKVBackend` talks to it in-process; `SGLangHTTPBackend` talks
-   to it over HTTP. On a Modal A10G, ten forked children each reused all 2,406
-   tokens of the parent's cached prompt, and killing a child freed its share.
-   The HTTP client is tested against a stub; running it against a live server
-   is still to do.
-2. **Sandbox fork** (`FirecrackerSandbox`, over a small microVM wrapper). A
-   branch is snapshotted only when it is first forked, so children start from
-   the parent's current state and branches that are never forked pay nothing
-   (snapshotting pauses the parent 76–83 ms; each child restores in about
-   2 ms).
-   Inside a guest you can run commands over a vsock channel (`exec`, with
-   stdin, plus `exec_detached` for background jobs), wait for it to be ready
-   (`wait_ready`), give it a private writable disk (copied cheaply per child),
-   lock it down with the jailer, and put it on its own network with outbound
-   internet. All of this is checked on real Firecracker v1.16.1: children run
-   commands, write to their own disks, keep state the parent set after boot,
-   and reach the internet (`HTTP 200`), both jailed and not.
+1. **KV cache fork** (SGLang patches `0001`–`0002`). A branch ID rides
+   SGLang's normal request path, so forking, killing, and per-branch quotas
+   happen inside the engine with no tokens copied. Use it in-process
+   (`SGLangKVBackend`) or over HTTP (`SGLangHTTPBackend`). On a Modal A10G, ten
+   children each reused all 2,406 of the parent's cached tokens, and killing
+   one freed its share. The HTTP client is only tested against a stub so far.
+2. **Sandbox fork** (`FirecrackerSandbox`). A branch is snapshotted only when
+   first forked, so children start from the parent's live state and unforked
+   branches cost nothing (snapshot pauses the parent 76–83 ms; each child
+   restores in about 2 ms). Each guest runs commands over vsock
+   (`exec`/`exec_detached`), gets a private writable disk, an optional jailer
+   lockdown, and its own network with outbound internet. Verified on real
+   Firecracker v1.16.1: children run commands, write their own disks, keep
+   state the parent set after boot, and reach the internet, jailed and not.
 
 ```
 ForkOrchestrator  (registry / leases / rollback / reconcile)
