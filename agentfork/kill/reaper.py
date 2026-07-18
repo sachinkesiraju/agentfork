@@ -12,6 +12,7 @@ import ctypes
 import os
 import signal
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -47,12 +48,22 @@ class KillResult:
 class BranchReaper:
     """Owns (process, tree_id) pairs; kill() reaps both in one call.
 
-    ``pdeathsig=True`` (the default) arms the ``PR_SET_PDEATHSIG`` orphan
-    backstop, which requires ``preexec_fn`` — CPython documents that as
-    unsafe if any other thread exists in the calling process at spawn time.
-    Pass ``pdeathsig=False`` under a threaded supervisor; orphans of a died
-    supervisor are then collected by ``ForkOrchestrator.reconcile()`` on the
-    next start instead of by the kernel immediately.
+    Orphan-backstop modes (``pdeathsig``): the ``PR_SET_PDEATHSIG`` signal
+    makes a branch process die with the supervisor.
+
+    - ``True`` (default) arms it via ``preexec_fn`` — fast, but CPython
+      documents ``preexec_fn`` as unsafe if any other thread exists at spawn
+      time, so spawns must be serialized.
+    - ``"shim"`` arms it via a re-exec launcher (``_pdeathsig``) with no
+      ``preexec_fn``: thread-safe (nothing runs in the fork child before
+      exec), at the cost of one interpreter startup per spawn. Spawns may
+      then run concurrently.
+    - ``False`` skips the backstop entirely (also thread-safe); orphans of a
+      died supervisor are collected by ``ForkOrchestrator.reconcile()`` on
+      the next start rather than by the kernel immediately.
+
+    ``thread_safe`` reports whether spawns may run concurrently under this
+    mode.
     """
 
     @staticmethod
@@ -60,11 +71,19 @@ class BranchReaper:
         return all((hasattr(os, "pidfd_open"), hasattr(os, "P_PIDFD"),
                     hasattr(signal, "pidfd_send_signal")))
 
-    def __init__(self, kv_cache=None, pdeathsig: bool = True):
+    def __init__(self, kv_cache=None, pdeathsig: bool | str = True):
+        if pdeathsig not in (True, False, "shim"):
+            raise ValueError("pdeathsig must be True, False, or 'shim'")
         self.kv = kv_cache
         self.pdeathsig = pdeathsig
         self._lock = threading.RLock()
         self._branches: dict[str, tuple[subprocess.Popen, int]] = {}
+
+    @property
+    def thread_safe(self) -> bool:
+        """True when spawn() is safe to call from multiple threads at once
+        (no ``preexec_fn``)."""
+        return self.pdeathsig is not True
 
     @locked
     def spawn(self, tree_id: str, argv: list[str]) -> int:
@@ -74,8 +93,14 @@ class BranchReaper:
             raise ValueError(f"branch exists: {tree_id}")
         if not argv:
             raise ValueError("argv must not be empty")
-        preexec = (partial(_preexec_pdeathsig, os.getpid())
-                   if self.pdeathsig else None)
+        preexec = None
+        if self.pdeathsig == "shim":
+            # thread-safe: no Python runs in the fork child; the launcher
+            # arms the death signal after exec'ing, then exec's the command
+            argv = [sys.executable, "-m", "agentfork.kill._pdeathsig",
+                    str(os.getpid()), *argv]
+        elif self.pdeathsig is True:
+            preexec = partial(_preexec_pdeathsig, os.getpid())
         proc = subprocess.Popen(
             argv,
             preexec_fn=preexec,

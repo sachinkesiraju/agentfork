@@ -119,19 +119,21 @@ class ReaperSandbox:
     Every branch runs the same argv template. The reaper is used purely for
     process lifecycle; the orchestrator owns the KV half separately.
     ``pdeathsig`` is forwarded to the default ``BranchReaper`` (ignored when
-    an explicit ``reaper`` is injected); pass ``False`` under threaded
-    supervisors. ``parallel_lifecycle`` stays False: fanning spawns out to
-    threads would make ``preexec_fn`` unsafe.
+    an explicit ``reaper`` is injected).
+
+    ``parallel_lifecycle`` follows the reaper's ``thread_safe``: with
+    ``pdeathsig="shim"`` or ``False`` the reaper spawns without
+    ``preexec_fn``, so the orchestrator may fan out spawns concurrently; with
+    the default ``pdeathsig=True`` (``preexec_fn``) it stays serial.
     """
 
-    parallel_lifecycle = False
-
     def __init__(self, argv: list[str], reaper: BranchReaper | None = None,
-                 pdeathsig: bool = True):
+                 pdeathsig: bool | str = True):
         if not argv:
             raise ValueError("argv must not be empty")
         self.argv = list(argv)
         self.reaper = reaper or BranchReaper(pdeathsig=pdeathsig)
+        self.parallel_lifecycle = self.reaper.thread_safe
 
     def spawn(self, branch_id: str, parent_id: str | None) -> None:
         self.reaper.spawn(branch_id, self.argv)
