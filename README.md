@@ -273,17 +273,17 @@ SGLANG_DIR="$SGLANG_DIR" modal run modal_gpu_validation.py
 
 ## Limitations
 
-- SGLang is measured only on one A10G with a 0.6B model. Cross-worker
-  routing, tensor parallelism, and mixed-tenant pressure need a GPU fleet
-  (a live HTTP-server test exists but has not been run here).
-- Firecracker is single-host: moving migration bundles between hosts is the
-  deployer's job, and cleanup is retried, not atomic.
+- SGLang is measured on only one A10G with a 0.6B model; scale, tensor
+  parallelism, and multi-tenant pressure need a GPU fleet (a live-server test
+  exists but is unrun here).
+- Firecracker is single-host — moving migration bundles between hosts is the
+  deployer's job — and cleanup is retried, not atomic.
 - Nothing is validated at production GPU scale or with GPU-plus-microVM
   colocation.
-- The default `ReaperSandbox` serializes spawns (`preexec_fn`); pass
-  `pdeathsig="shim"` to fan them out.
-- Single-winner handoff exists (`export_artifact`); a protocol that merges
-  several winners' state does not.
+- `ReaperSandbox` runs spawns serially by default; `pdeathsig="shim"` fans
+  them out.
+- Single-winner handoff exists (`export_artifact`); multi-winner merge does
+  not.
 
 ## Why agentfork vs. alternatives
 
