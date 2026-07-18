@@ -186,29 +186,16 @@ the checks that fail or remain untested.
 
 | Claim | Measured |
 |---|---|
-| CPU reference prefix reuse (10-way fanout) | 100% of the parent prefix reused; separate trees stayed isolated |
 | Patched cache on a real SGLang GPU pool (A10) | 37k occupied slots vs 357k with sharing disabled; 10 create+extend operations in 22 ms; allocator back to 0 after kill-all |
-| Stock SGLang live-engine baseline | 2,402–2,403 of 2,404 prompt tokens cached per sibling; this uses stock RadixAttention, not the patch |
-| Subprocess + CPU reference-cache kill | 0.53 ms p50 and 1.46 ms max over 100 cycles |
-| Supervisor crash test | 0 surviving Python children across 50 runs with 5 children each |
-| Firecracker snapshot load | 2.1 ms p50 API time per child; 25 children loaded in 150 ms; full VMM teardown was 31 ms p50 |
-| Firecracker host-page sharing | 117.7 MiB total RSS vs 23.8 MiB total PSS across 25 idle VMMs |
-| End-to-end orchestrator + real Firecracker (`demo/fc_demo.py`, aarch64 v1.16.1, idle 256 MiB guests) | Root boot 111–165 ms; 10-way fork at 235–317 ms per child, dominated by the ~125 ms per-branch snapshot write; 9 losers killed in 132–231 ms; zero surviving VMMs across 3 runs |
-| Data plane + parallel lifecycle on real Firecracker (v0.3.0, same host) | 5-way fork 28–145 ms per child amortized (lazy fork-time snapshot, parallel restores); exec over vsock answered in every child; per-child overlay mount+write; fork-after-exec freshness and divergence isolation verified; 4 losers killed in 8–12 ms; identical results under the jailer; zero surviving VMMs |
-| Guest networking on real Firecracker (v0.4.0, same host) | Two children forked from one snapshot each brought up eth0 172.16.0.2/30 (isolated per netns) and both GET https://example.com → HTTP 200 (DNS + HTTPS egress via veth+NAT); netns and NAT rules torn down with zero leaks; vsock exec channel itself 44–73 ms per call |
-| SGLang patch set size | 1,080 additive lines: 547 cache primitive + 482 request/control integration + 51 auth/accounting hardening |
-| 10,000-branch cache test | 0.95 s to create branches and 0.17 s to bulk-kill them; allocator back to 0; this tests cache metadata, not concurrent inference |
-| Tree-native cache controls | Direct API tests cover budgets, reservations, demotion, invalidation, and telemetry; request reservations are enforced before scheduler admission |
 | Live tree request path | A10G parent + 10 children: every child reused 2,406 parent tokens; explicit kill released the remaining pin |
-| Sustained-pressure VGE | A10G synthetic contention: 1.596× stock SGLang, paired-bootstrap 95% CI [1.576×, 1.619×] |
-| Locked synthetic holdout | Changed to 12 children and 80 pressure requests: 1.537×, 95% CI [1.518×, 1.554×]; partner validation still required |
+| Subprocess + CPU reference-cache kill | 0.53 ms p50 and 1.46 ms max over 100 cycles |
+| Data plane + parallel lifecycle on real Firecracker (v0.3.0) | 5-way fork 28–145 ms per child amortized (lazy fork-time snapshot, parallel restores); exec over vsock in every child; per-child overlay mount+write; fork-after-exec freshness and divergence isolation verified; identical results under the jailer; zero surviving VMMs |
+| Guest networking on real Firecracker (v0.4.0) | Two children forked from one snapshot each reached the internet (GET https://example.com → HTTP 200) over per-branch netns + NAT; netns and NAT rules torn down with zero leaks; vsock exec 44–73 ms per call |
+| SGLang patch set size | 1,080 additive lines: 547 cache primitive + 482 request/control integration + 51 auth/accounting hardening |
 
 In the [10-child GPU test](patches/real_pool_validation.py), sharing reduced KV
 usage from 357k slots to 37k. Stock SGLang already shares cached prefixes, so
 agentfork adds branch tracking and cleanup, not lower memory use.
-
-Provider-cache numbers are estimates based on assumed prices, not real-world
-measurements.
 
 ## Running benchmarks
 
