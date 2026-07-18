@@ -119,19 +119,21 @@ class ReaperSandbox:
     Every branch runs the same argv template. The reaper is used purely for
     process lifecycle; the orchestrator owns the KV half separately.
     ``pdeathsig`` is forwarded to the default ``BranchReaper`` (ignored when
-    an explicit ``reaper`` is injected); pass ``False`` under threaded
-    supervisors. ``parallel_lifecycle`` stays False: fanning spawns out to
-    threads would make ``preexec_fn`` unsafe.
+    an explicit ``reaper`` is injected).
+
+    ``parallel_lifecycle`` follows the reaper's ``thread_safe``: with
+    ``pdeathsig="shim"`` or ``False`` the reaper spawns without
+    ``preexec_fn``, so the orchestrator may fan out spawns concurrently; with
+    the default ``pdeathsig=True`` (``preexec_fn``) it stays serial.
     """
 
-    parallel_lifecycle = False
-
     def __init__(self, argv: list[str], reaper: BranchReaper | None = None,
-                 pdeathsig: bool = True):
+                 pdeathsig: bool | str = True):
         if not argv:
             raise ValueError("argv must not be empty")
         self.argv = list(argv)
         self.reaper = reaper or BranchReaper(pdeathsig=pdeathsig)
+        self.parallel_lifecycle = self.reaper.thread_safe
 
     def spawn(self, branch_id: str, parent_id: str | None) -> None:
         self.reaper.spawn(branch_id, self.argv)
@@ -188,6 +190,7 @@ class OrchestratorMetrics:
     reconciles: int = 0       # reconcile() passes
     reaped_expired: int = 0   # branches collected for lapsed leases
     swept_dead: int = 0       # branches collected because their VMM died
+    restarted: int = 0        # dead branches restarted from a checkpoint
 
 
 class ForkOrchestrator:
@@ -592,6 +595,24 @@ class ForkOrchestrator:
             self.metrics.execs += 1
         return start(branch_id, argv)
 
+    def export_artifact(self, branch_id: str, guest_path: str,
+                        dest_path: str):
+        """Hand off a winning branch's work: extract ``guest_path`` from the
+        branch's sandbox to ``dest_path`` on the host, for backends that
+        expose ``export_artifact`` (``FirecrackerSandbox`` does). Pair with
+        ``kill_losers`` to keep the winner, then hand its output off durably."""
+        with self._lock:
+            self._ensure_open()
+            branch = self._branches.get(branch_id)
+            if branch is None or branch.state != _STATE_LIVE:
+                raise KeyError(f"no live branch: {branch_id}")
+            export = getattr(self.sandbox, "export_artifact", None)
+            if export is None:
+                raise RuntimeError(
+                    f"sandbox backend {type(self.sandbox).__name__} does not "
+                    "support export_artifact")
+        return export(branch_id, guest_path, dest_path)
+
     def kill(self, branch_id: str) -> KillReceipt:
         return self._kill(branch_id, allow_closing=False)
 
@@ -769,13 +790,18 @@ class ForkOrchestrator:
 
     # -- background collection -------------------------------------------------
 
-    def start_reaper(self, interval_s: float = 5.0) -> None:
+    def start_reaper(self, interval_s: float = 5.0,
+                     restart_dead: bool = False) -> None:
         """Run ``reconcile()`` (which includes lease reaping) every
-        ``interval_s`` seconds on a daemon thread, and collect branches
-        whose sandbox died out from under them (backends may expose
-        ``sweep_dead() -> list[branch_id]``, as ``FirecrackerSandbox``
-        does). Errors are logged, never fatal to the loop. Idempotent;
-        ``close()`` stops it."""
+        ``interval_s`` seconds on a daemon thread, and handle branches whose
+        sandbox died out from under them (backends may expose
+        ``sweep_dead() -> list[branch_id]``, as ``FirecrackerSandbox`` does).
+
+        With ``restart_dead=True``, a swept-dead branch is first offered to
+        the backend's ``restart(branch_id)`` (restore from its checkpoint);
+        only if that is unavailable or returns False is the branch collected.
+        Default is to collect. Errors are logged, never fatal to the loop.
+        Idempotent; ``close()`` stops it."""
         if interval_s <= 0:
             raise ValueError("interval_s must be positive")
         with self._lock:
@@ -787,7 +813,7 @@ class ForkOrchestrator:
             # on an event nobody will set
             stop = self._reaper_stop = threading.Event()
             self._reaper_thread = threading.Thread(
-                target=self._reaper_loop, args=(interval_s, stop),
+                target=self._reaper_loop, args=(interval_s, stop, restart_dead),
                 name="agentfork-reaper", daemon=True)
             self._reaper_thread.start()
 
@@ -798,13 +824,22 @@ class ForkOrchestrator:
         if thread is not None and thread is not threading.current_thread():
             thread.join()
 
-    def _reaper_loop(self, interval_s: float, stop: threading.Event) -> None:
+    def _reaper_loop(self, interval_s: float, stop: threading.Event,
+                     restart_dead: bool = False) -> None:
+        restart = getattr(self.sandbox, "restart", None) if restart_dead else None
         while not stop.wait(interval_s):
             try:
                 self.reconcile()
                 sweep = getattr(self.sandbox, "sweep_dead", None)
                 if sweep is not None:
                     for branch_id in sweep():
+                        with self._lock:
+                            live = (branch_id in self._branches
+                                    and self._branches[branch_id].state == _STATE_LIVE
+                                    and branch_id not in self._killing)
+                        if restart is not None and live and self._try_restart(
+                                restart, branch_id):
+                            continue
                         _log.warning("branch %s: sandbox died; collecting",
                                      branch_id)
                         if self.kill(branch_id).reaped:
@@ -819,6 +854,19 @@ class ForkOrchestrator:
                 _log.exception("background reaper pass failed")
             except Exception:
                 _log.exception("background reaper pass failed")
+
+    def _try_restart(self, restart, branch_id: str) -> bool:
+        """Best-effort restart of a swept-dead branch; False (fall back to
+        collect) on any failure or if the backend can't restart it."""
+        try:
+            if restart(branch_id):
+                with self._lock:
+                    self.metrics.restarted += 1
+                _log.info("branch %s: restarted after sandbox death", branch_id)
+                return True
+        except Exception:
+            _log.exception("restart of %s failed; will collect", branch_id)
+        return False
 
     def metrics_snapshot(self) -> dict:
         """A consistent copy of the counters, as a plain dict."""

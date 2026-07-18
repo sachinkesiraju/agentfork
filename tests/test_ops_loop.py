@@ -78,6 +78,61 @@ def test_background_reaper_collects_branches_whose_sandbox_died():
         orch.close()
 
 
+class RestartableSandbox(DyingSandbox):
+    """DyingSandbox that can restart a dead branch (like FirecrackerSandbox
+    with a checkpoint)."""
+
+    def __init__(self, restartable=True):
+        super().__init__()
+        self.restartable = restartable
+        self.restarts = 0
+
+    def restart(self, branch_id):
+        if not self.restartable:
+            return False
+        self.restarts += 1
+        self.dead.discard(branch_id)
+        self.live.add(branch_id)
+        return True
+
+
+def test_reaper_restarts_a_dead_branch_when_restart_dead_enabled():
+    sandbox = RestartableSandbox(restartable=True)
+    orch = ForkOrchestrator(sandbox=sandbox)
+    try:
+        orch.create_parent("root")
+        child = orch.fork("root", n=1)[0]
+        orch.start_reaper(interval_s=0.05, restart_dead=True)
+
+        sandbox.dead.add(child.branch_id)  # the VMM crashed
+
+        # the branch is restarted, not collected: it stays in the registry
+        assert _wait_until(lambda: sandbox.restarts >= 1)
+        assert child.branch_id in {b.branch_id for b in orch.branches()}
+        assert orch.metrics_snapshot()["restarted"] >= 1
+        assert orch.metrics_snapshot()["swept_dead"] == 0
+    finally:
+        orch.close()
+
+
+def test_reaper_collects_when_restart_returns_false():
+    sandbox = RestartableSandbox(restartable=False)  # restart() -> False
+    orch = ForkOrchestrator(sandbox=sandbox)
+    try:
+        orch.create_parent("root")
+        child = orch.fork("root", n=1)[0]
+        orch.start_reaper(interval_s=0.05, restart_dead=True)
+
+        sandbox.dead.add(child.branch_id)
+
+        # restart declined, so the branch is collected instead
+        assert _wait_until(
+            lambda: child.branch_id not in {b.branch_id for b in orch.branches()})
+        assert orch.metrics_snapshot()["swept_dead"] == 1
+    finally:
+        orch.close()
+
+
 def test_close_stops_the_reaper_thread():
     orch = ForkOrchestrator()
     orch.start_reaper(interval_s=0.05)

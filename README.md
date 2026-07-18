@@ -273,27 +273,17 @@ SGLANG_DIR="$SGLANG_DIR" modal run modal_gpu_validation.py
 
 ## Limitations
 
-- The SGLang in-process branch request path is live and quota reservations
-  are enforced before queue admission, but it has only been measured on one
-  A10G with a 0.6B model. The HTTP lifecycle/`tree_generate` client is covered
-  by a protocol integration test, not yet by a live SGLang HTTP server.
-  Cross-worker routing, tensor parallelism, and mixed-tenant pressure remain
-  unmeasured.
-- The Firecracker adapter runs guest workloads end to end on real microVMs
-  (exec with stdin/detach, overlays, per-branch networking, the jailer,
-  readiness probes), but it is single-host: snapshots are not distributed,
-  and the reaper *collects* a crashed VMM rather than restarting it. Cleanup
-  is retried, not atomic.
-- GPU validation used one A10 with a Qwen3-0.6B baseline, and Firecracker
-  validation used aarch64 nested-KVM guests with no in-guest GPU. Neither
-  covers production scale or GPU-plus-microVM colocation.
-- Multi-branch operations fan out for backends declaring `parallel_lifecycle`
-  (`FirecrackerSandbox`, `NullSandbox`); the orchestrator lock covers only
-  registry bookkeeping. `ReaperSandbox` stays serial because its
-  `PR_SET_PDEATHSIG` backstop uses `preexec_fn` (CPython-documented
-  thread-unsafe); pass `pdeathsig=False` under threaded supervisors.
-- No winner merge, artifact handoff, hibernation, migration, or resume
-  protocol is implemented.
+- SGLang is measured only on one A10G with a 0.6B model. Cross-worker
+  routing, tensor parallelism, and mixed-tenant pressure need a GPU fleet
+  (a live HTTP-server test exists but has not been run here).
+- Firecracker is single-host: moving migration bundles between hosts is the
+  deployer's job, and cleanup is retried, not atomic.
+- Nothing is validated at production GPU scale or with GPU-plus-microVM
+  colocation.
+- The default `ReaperSandbox` serializes spawns (`preexec_fn`); pass
+  `pdeathsig="shim"` to fan them out.
+- Single-winner handoff exists (`export_artifact`); a protocol that merges
+  several winners' state does not.
 
 ## Why agentfork vs. alternatives
 

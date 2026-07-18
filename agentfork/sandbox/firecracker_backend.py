@@ -621,6 +621,171 @@ class FirecrackerSandbox:
                         f"{timeout_s}s") from exc
                 time.sleep(0.25)
 
+    # -- checkpoint / restart / migrate ---------------------------------------
+
+    def checkpoint(self, branch_id: str) -> None:
+        """Snapshot a live branch to its own directory so it can be
+        restarted or resumed later — a restart point and the base for
+        hibernation/migration. Pauses the guest, snapshots, and resumes;
+        the branch's own ``mem``/``state`` are marked current so a later
+        fork or restart reuses them without re-snapshotting."""
+        with self._parent_lock(branch_id):
+            with self._lock:
+                vm = self._vms.get(branch_id)
+                if vm is None:
+                    raise KeyError(f"no live branch: {branch_id}")
+                gen = self._gen.get(branch_id, 0)
+            hdir = self._host_dir(branch_id)
+            mem, state = os.path.join(hdir, "mem"), os.path.join(hdir, "state")
+            if self.vsock:
+                try:  # flush guest page cache so the overlay is coherent
+                    self._exec_live(branch_id, ["sync"], timeout_s=10.0)
+                except VsockError:
+                    _log.debug("pre-checkpoint sync of %s failed", branch_id)
+            vm.pause()
+            try:
+                vm.snapshot(mem, state)
+                with self._lock:
+                    self._snapshots[branch_id] = (mem, state)
+                    self._snap_gen[branch_id] = gen
+            finally:
+                vm.resume()
+        _log.info("checkpointed %s", branch_id)
+
+    def _restore_paths(self, branch_id: str) -> tuple[str, str] | None:
+        """(mem, state) to restore this branch from, staged for the jailer if
+        needed. None when no checkpoint exists on disk."""
+        hdir = self._host_dir(branch_id)
+        mem, state = os.path.join(hdir, "mem"), os.path.join(hdir, "state")
+        if not (os.path.exists(mem) and os.path.exists(state)):
+            return None
+        if self.jailer is not None:
+            # the chroot was rebuilt by the jailer; the snapshot records its
+            # device backing file by name, so stage the rootfs alongside
+            self._link_into(os.path.abspath(self.rootfs), hdir, "rootfs.img")
+        return mem, state
+
+    def restart(self, branch_id: str) -> bool:
+        """Re-spawn a branch whose VMM has died, from its own checkpoint and
+        its overlay (which persists on disk across the crash). Returns False
+        if the branch has no checkpoint to restart from — it must be
+        re-forked. In-memory state resumes from the last ``checkpoint()``;
+        disk state is whatever the overlay holds. The reaper can call this on
+        a swept-dead branch instead of collecting it."""
+        with self._lock:
+            vm = self._vms.get(branch_id)
+            if vm is not None and vm.proc.poll() is None:
+                return True  # still alive; nothing to do
+            self._vms.pop(branch_id, None)
+        restore = self._restore_paths(branch_id)
+        if restore is None:
+            return False
+        self._teardown_netns(branch_id)  # drop the dead VMM's namespace
+        self._remove(self._pid_path(branch_id))
+        # the dead VMM left its api/vsock sockets behind; a fresh VMM in the
+        # same dir would see the stale api socket, think it's ready, and
+        # connect to nothing (firecracker also refuses to bind over it)
+        hdir = self._host_dir(branch_id)
+        for sock in ("fc.sock", _VSOCK):
+            self._remove(os.path.join(hdir, sock))
+        netns = self._setup_netns(branch_id)
+        try:
+            vm = self._new_vm(self._vm_dir(branch_id), netns)
+            vm.restore(*restore)
+        except BaseException:
+            self._teardown_netns(branch_id)
+            raise
+        self._write_pid_record(branch_id, vm.proc.pid)
+        with self._lock:
+            self._vms[branch_id] = vm
+        _log.info("restarted %s from checkpoint", branch_id)
+        return True
+
+    def export_bundle(self, branch_id: str, dest_dir: str) -> None:
+        """Copy a branch's checkpoint (mem, state, overlay) into a portable
+        bundle directory — the primitive for moving a branch to another host.
+        Requires a prior ``checkpoint()`` (or that the branch was forked
+        from). The destination, once transferred, feeds ``import_bundle`` on
+        the target host."""
+        restore = self._restore_paths(branch_id)
+        if restore is None:
+            raise KeyError(f"no checkpoint for branch: {branch_id}")
+        mem, state = restore
+        os.makedirs(dest_dir, exist_ok=True)
+        self._copy_overlay_file_if_present(branch_id, dest_dir)
+        shutil.copyfile(state, os.path.join(dest_dir, "state"))
+        self._copy_overlay(mem, os.path.join(dest_dir, "mem"))
+        manifest = {"branch_id": branch_id, "overlay_mib": self.overlay_mib,
+                    "vsock": self.vsock, "kernel": os.path.basename(self.kernel)}
+        with open(os.path.join(dest_dir, "manifest.json"), "w",
+                  encoding="utf-8") as f:
+            json.dump(manifest, f)
+        _log.info("exported %s to bundle %s", branch_id, dest_dir)
+
+    def _copy_overlay_file_if_present(self, branch_id: str,
+                                      dest_dir: str) -> None:
+        src = os.path.join(self._host_dir(branch_id), _OVERLAY)
+        if self.overlay_mib is not None and os.path.exists(src):
+            self._copy_overlay(src, os.path.join(dest_dir, _OVERLAY))
+
+    def import_bundle(self, branch_id: str, src_dir: str) -> None:
+        """Stage a bundle produced by ``export_bundle`` (possibly on another
+        host) as ``branch_id`` on this host, so ``restart(branch_id)`` brings
+        it up here. Migration = export on the source host, ship the bundle,
+        import + restart on the target."""
+        for name in ("mem", "state"):
+            if not os.path.exists(os.path.join(src_dir, name)):
+                raise FileNotFoundError(f"bundle missing {name}: {src_dir}")
+        with self._lock:
+            if branch_id in self._vms:
+                raise ValueError(f"branch exists: {branch_id}")
+        hdir = self._host_dir(branch_id)
+        shutil.copyfile(os.path.join(src_dir, "state"),
+                        os.path.join(hdir, "state"))
+        self._copy_overlay(os.path.join(src_dir, "mem"),
+                           os.path.join(hdir, "mem"))
+        overlay_src = os.path.join(src_dir, _OVERLAY)
+        if self.overlay_mib is not None and os.path.exists(overlay_src):
+            dst = os.path.join(hdir, _OVERLAY)
+            self._copy_overlay(overlay_src, dst)
+            self._chown_into_jail(dst)
+        with self._lock:
+            self._snapshots[branch_id] = (os.path.join(hdir, "mem"),
+                                          os.path.join(hdir, "state"))
+            self._snap_gen[branch_id] = self._gen.get(branch_id, 0)
+        _log.info("imported %s from bundle %s", branch_id, src_dir)
+
+    def export_artifact(self, branch_id: str, guest_path: str,
+                        dest_path: str) -> int:
+        """Copy a tree of files out of a live branch's guest to ``dest_path``
+        on the host — the durable handoff for a winning branch's work
+        (``kill_losers`` keeps the winner; this extracts what it produced).
+
+        Streams ``tar`` of ``guest_path`` over the exec channel into a host
+        tarball and returns its byte size. The whole archive rides one exec
+        response, so this suits build outputs and diffs, not multi-GB trees;
+        for those, snapshot/``export_bundle`` the overlay instead."""
+        if not self.vsock:
+            raise RuntimeError("export_artifact requires vsock=True")
+        with self._lock:
+            if branch_id not in self._vms:
+                raise KeyError(f"no such branch: {branch_id}")
+        result = self._exec_live(
+            branch_id,
+            ["tar", "-C", os.path.dirname(guest_path) or "/",
+             "-cf", "-", os.path.basename(guest_path)],
+            timeout_s=120.0)
+        if result.exit_code != 0:
+            raise RuntimeError(
+                f"artifact tar of {guest_path!r} in {branch_id} failed "
+                f"(exit {result.exit_code}): {result.stderr.decode(errors='replace')[:200]}")
+        os.makedirs(os.path.dirname(os.path.abspath(dest_path)), exist_ok=True)
+        with open(dest_path, "wb") as f:
+            f.write(result.stdout)
+        _log.info("exported artifact %s from %s to %s (%d bytes)",
+                  guest_path, branch_id, dest_path, len(result.stdout))
+        return len(result.stdout)
+
     def kill(self, branch_id: str) -> None:
         with self._lifecycle_changed:
             while self._parent_forks.get(branch_id, 0):
