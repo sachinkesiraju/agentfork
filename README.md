@@ -273,30 +273,17 @@ SGLANG_DIR="$SGLANG_DIR" modal run modal_gpu_validation.py
 
 ## Limitations
 
-- The SGLang in-process branch request path is live on one A10G with a 0.6B
-  model, with quota reservations enforced before queue admission. A live
-  HTTP-server integration test exists (`AGENTFORK_SGLANG_URL`) but has not
-  been run here for want of a GPU server; cross-worker routing, tensor
-  parallelism, and mixed-tenant pressure remain unmeasured — these need a GPU
-  fleet, not more code.
-- The Firecracker adapter runs guest workloads end to end on real microVMs
-  (exec with stdin/detach, overlays, per-branch networking, the jailer,
-  readiness probes), and now checkpoints, restarts a crashed VMM from its
-  checkpoint, and exports/imports a branch bundle for migration to another
-  host. Moving bundles between hosts is left to the deployer (no built-in
-  transport), and cleanup is retried, not atomic.
-- GPU validation used one A10 with a Qwen3-0.6B baseline, and Firecracker
-  validation used aarch64 nested-KVM guests with no in-guest GPU. Neither
-  covers production scale or GPU-plus-microVM colocation.
-- Multi-branch operations fan out for backends declaring `parallel_lifecycle`
-  (`FirecrackerSandbox`, `NullSandbox`, and `ReaperSandbox` with
-  `pdeathsig="shim"` or `False`). The default `ReaperSandbox` stays serial
-  because `pdeathsig=True` arms `PR_SET_PDEATHSIG` via `preexec_fn`
-  (CPython-documented thread-unsafe); `pdeathsig="shim"` arms it via a
-  thread-safe re-exec launcher instead, at one interpreter startup per spawn.
-- Winner handoff (`export_artifact`), checkpoint/hibernation, restart/resume,
-  and export/import migration are implemented; a higher-level merge protocol
-  that reconciles several winners' state is not.
+- SGLang is measured only on one A10G with a 0.6B model. Cross-worker
+  routing, tensor parallelism, and mixed-tenant pressure need a GPU fleet
+  (a live HTTP-server test exists but has not been run here).
+- Firecracker is single-host: moving migration bundles between hosts is the
+  deployer's job, and cleanup is retried, not atomic.
+- Nothing is validated at production GPU scale or with GPU-plus-microVM
+  colocation.
+- The default `ReaperSandbox` serializes spawns (`preexec_fn`); pass
+  `pdeathsig="shim"` to fan them out.
+- Single-winner handoff exists (`export_artifact`); a protocol that merges
+  several winners' state does not.
 
 ## Why agentfork vs. alternatives
 
