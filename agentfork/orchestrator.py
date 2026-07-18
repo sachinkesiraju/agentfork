@@ -57,7 +57,7 @@ import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable, Protocol
 
 from agentfork._locking import locked
@@ -149,7 +149,7 @@ class ReaperSandbox:
             return False
 
 
-@dataclass
+@dataclass(frozen=True)
 class Branch:
     branch_id: str
     parent_id: str | None
@@ -209,9 +209,12 @@ class ForkOrchestrator:
         self.default_lease_s = default_lease_s
         self._clock = clock
         self._lock = threading.RLock()
+        self._lifecycle_changed = threading.Condition(self._lock)
         self._seq = 0
+        self._closing = False
         self._closed = False
         self._branches: dict[str, Branch] = {}
+        self._loaded_branch_ids: set[str] = set()
         self._spawning: set[str] = set()   # forks in flight in this process
         self._killing: set[str] = set()    # kills in flight in this process
         self.metrics = OrchestratorMetrics()
@@ -224,8 +227,19 @@ class ForkOrchestrator:
             if self.registry_path and os.path.exists(self.registry_path):
                 with open(self.registry_path, encoding="utf-8") as f:
                     data = json.load(f)
+                if data.get("version") != 1:
+                    raise ValueError(
+                        f"unsupported registry version: {data.get('version')!r}")
                 self._branches = {b["branch_id"]: Branch.from_dict(b)
                                   for b in data.get("branches", [])}
+                self._loaded_branch_ids = set(self._branches)
+                numeric_suffixes = [
+                    int(branch_id.rsplit("/", 1)[1])
+                    for branch_id in self._branches
+                    if "/" in branch_id
+                    and branch_id.rsplit("/", 1)[1].isdigit()
+                ]
+                self._seq = max(numeric_suffixes, default=0)
                 if self._branches:
                     _log.info("registry %s: loaded %d branch(es) from a "
                               "previous owner", self.registry_path,
@@ -262,11 +276,13 @@ class ForkOrchestrator:
             os.close(self._registry_lock_fd)  # closing the fd drops the flock
             self._registry_lock_fd = None
 
-    def _ensure_open(self) -> None:
+    def _ensure_open(self, *, allow_closing: bool = False) -> None:
         """A closed orchestrator gave up registry ownership; letting it keep
         writing would corrupt a successor's registry. Reads stay allowed."""
         if self._closed:
             raise RuntimeError("orchestrator is closed")
+        if self._closing and not allow_closing:
+            raise RuntimeError("orchestrator is closing")
 
     def _persist(self) -> None:
         if not self.registry_path:
@@ -289,13 +305,59 @@ class ForkOrchestrator:
 
     @locked
     def _record(self, branch: Branch) -> None:
+        previous = self._branches.get(branch.branch_id)
         self._branches[branch.branch_id] = branch
-        self._persist()
+        try:
+            self._persist()
+        except BaseException:
+            if previous is None:
+                self._branches.pop(branch.branch_id, None)
+            else:
+                self._branches[branch.branch_id] = previous
+            raise
 
     @locked
     def _forget(self, branch_id: str) -> None:
-        self._branches.pop(branch_id, None)
-        self._persist()
+        previous = self._branches.pop(branch_id, None)
+        try:
+            self._persist()
+        except BaseException:
+            if previous is not None:
+                self._branches[branch_id] = previous
+            raise
+        self._loaded_branch_ids.discard(branch_id)
+
+    def _replace_branch(self, branch_id: str, **changes) -> Branch:
+        previous = self._branches[branch_id]
+        current = replace(previous, **changes)
+        self._branches[branch_id] = current
+        try:
+            self._persist()
+        except BaseException:
+            self._branches[branch_id] = previous
+            raise
+        return current
+
+    def _next_child_id(self, parent_id: str) -> str:
+        while True:
+            self._seq += 1
+            child_id = f"{parent_id}/{self._seq}"
+            if child_id not in self._branches:
+                return child_id
+
+    def _rollback_branch(self, branch_id: str) -> None:
+        """Attempt both backend cleanups and forget only after both succeed."""
+        errors = []
+        for cleanup in (self.kv.kill, self.sandbox.kill):
+            try:
+                cleanup(branch_id)
+            except BaseException as exc:
+                errors.append(exc)
+                _log.warning("rollback cleanup failed for %s", branch_id,
+                             exc_info=True)
+        if not errors:
+            with self._lock:
+                self._forget(branch_id)
 
     def _lease_expiry(self, lease_s: float | None) -> float | None:
         lease_s = lease_s if lease_s is not None else self.default_lease_s
@@ -337,31 +399,37 @@ class ForkOrchestrator:
         """Create a root branch: journal, create the KV tree, spawn sandbox."""
         with self._lock:
             self._ensure_open()
+            if tokens and getattr(self.kv, "external_data_path", False):
+                raise RuntimeError(
+                    "this KV backend is populated by inference requests; "
+                    "create the branch without tokens and call generate()")
             if branch_id in self._branches:
                 raise ValueError(f"branch exists: {branch_id}")
             branch = Branch(branch_id, None, _STATE_FORKING, self._clock(),
                             self._lease_expiry(lease_s))
-            self._spawning.add(branch_id)
             self._record(branch)
+            self._spawning.add(branch_id)
         try:
             try:
                 self.kv.create_tree(branch_id)
                 self.sandbox.spawn(branch_id, None)
+                sandbox_wait_ready = getattr(self.sandbox, "wait_ready", None)
+                if sandbox_wait_ready is not None:
+                    sandbox_wait_ready(branch_id)
                 if tokens:
                     self.kv.extend(branch_id, tokens)
+                with self._lock:
+                    branch = self._replace_branch(
+                        branch_id, state=_STATE_LIVE)
             except BaseException:
                 _log.warning("create_parent %s failed; rolling back",
                              branch_id, exc_info=True)
-                self.kv.kill(branch_id)
-                self.sandbox.kill(branch_id)
-                self._forget(branch_id)
+                self._rollback_branch(branch_id)
                 raise
-            with self._lock:
-                branch.state = _STATE_LIVE
-                self._persist()
         finally:
-            with self._lock:
+            with self._lifecycle_changed:
                 self._spawning.discard(branch_id)
+                self._lifecycle_changed.notify_all()
         _log.info("created root branch %s", branch_id)
         return branch
 
@@ -388,8 +456,7 @@ class ForkOrchestrator:
                 if child_ids is not None:
                     child_id = child_ids[k]
                 else:
-                    self._seq += 1
-                    child_id = f"{parent_id}/{self._seq}"
+                    child_id = self._next_child_id(parent_id)
                 if child_id in self._branches or any(
                         c.branch_id == child_id for c in children):
                     raise ValueError(f"branch exists: {child_id}")
@@ -397,8 +464,14 @@ class ForkOrchestrator:
                                        self._clock(), self._lease_expiry(lease_s)))
             for branch in children:
                 self._branches[branch.branch_id] = branch
+            try:
+                self._persist()
+            except BaseException:
+                for branch in children:
+                    self._branches.pop(branch.branch_id, None)
+                raise
+            for branch in children:
                 self._spawning.add(branch.branch_id)
-            self._persist()
 
         def spawn_one(branch: Branch) -> Branch:
             child_id = branch.branch_id
@@ -406,19 +479,27 @@ class ForkOrchestrator:
                 try:
                     self.kv.fork_branch(parent_id, child_id)
                     self.sandbox.spawn(child_id, parent_id)
+                    sandbox_wait_ready = getattr(
+                        self.sandbox, "wait_ready", None)
+                    if sandbox_wait_ready is not None:
+                        sandbox_wait_ready(child_id)
+                    with self._lock:
+                        parent = self._branches.get(parent_id)
+                        if parent is None or parent.state != _STATE_LIVE:
+                            raise RuntimeError(
+                                f"parent {parent_id} died while forking "
+                                f"{child_id}")
+                        branch = self._replace_branch(
+                            child_id, state=_STATE_LIVE)
                 except BaseException:
                     _log.warning("fork of %s from %s failed; rolling back",
                                  child_id, parent_id, exc_info=True)
-                    self.kv.kill(child_id)
-                    self.sandbox.kill(child_id)
-                    self._forget(child_id)
+                    self._rollback_branch(child_id)
                     raise
-                with self._lock:
-                    branch.state = _STATE_LIVE
-                    self._persist()
             finally:
-                with self._lock:
+                with self._lifecycle_changed:
                     self._spawning.discard(child_id)
+                    self._lifecycle_changed.notify_all()
             return branch
 
         forked = self._fan_out(children, spawn_one)
@@ -430,9 +511,45 @@ class ForkOrchestrator:
     def extend(self, branch_id: str, tokens: list[int]) -> int:
         with self._lock:
             self._ensure_open()
-            if branch_id not in self._branches:
-                raise KeyError(f"no such branch: {branch_id}")
+            branch = self._branches.get(branch_id)
+            if branch is None or branch.state != _STATE_LIVE:
+                raise KeyError(f"no live branch: {branch_id}")
         return self.kv.extend(branch_id, tokens)
+
+    def generate(
+        self,
+        branch_id: str,
+        prompt: str | list[int],
+        sampling_params: dict,
+        *,
+        branch_end: bool = False,
+        reserve_tokens: int | None = None,
+    ) -> dict:
+        """Submit inference through a KV backend with an external data path.
+
+        The backend supplies the branch namespace and parent metadata, keeping
+        inference and lifecycle operations on the same branch identity.
+        """
+        with self._lock:
+            self._ensure_open()
+            branch = self._branches.get(branch_id)
+            if branch is None or branch.state != _STATE_LIVE:
+                raise KeyError(f"no live branch: {branch_id}")
+            backend_generate = getattr(self.kv, "generate", None)
+            if backend_generate is None:
+                raise RuntimeError(
+                    f"KV backend {type(self.kv).__name__} does not support "
+                    "inference requests")
+        result = backend_generate(
+            branch_id,
+            prompt,
+            sampling_params,
+            branch_end=branch_end,
+            reserve_tokens=reserve_tokens,
+        )
+        if branch_end:
+            self.kill(branch_id)
+        return result
 
     def exec(self, branch_id: str, argv: list[str],
              timeout_s: float | None = None, stdin: bytes | None = None):
@@ -476,6 +593,11 @@ class ForkOrchestrator:
         return start(branch_id, argv)
 
     def kill(self, branch_id: str) -> KillReceipt:
+        return self._kill(branch_id, allow_closing=False)
+
+    def _kill(
+        self, branch_id: str, *, allow_closing: bool
+    ) -> KillReceipt:
         """Journal kill intent, reap sandbox then KV, then drop the record.
 
         The two halves are sequential, not atomic. Intent is journaled as
@@ -489,28 +611,36 @@ class ForkOrchestrator:
         names a dead branch, and their own leases bound their lifetime.
         """
         with self._lock:
-            self._ensure_open()
+            self._ensure_open(allow_closing=allow_closing)
             if (branch_id not in self._branches
                     or branch_id in self._killing
                     or branch_id in self._spawning):
                 return KillReceipt(branch_id, 0, reaped=False)
             self._killing.add(branch_id)
-            self._branches[branch_id].state = _STATE_KILLING
-            self._persist()
+            try:
+                self._replace_branch(branch_id, state=_STATE_KILLING)
+            except BaseException:
+                self._killing.discard(branch_id)
+                self._lifecycle_changed.notify_all()
+                raise
         try:
             self.sandbox.kill(branch_id)
             freed = self.kv.kill(branch_id)
         except BaseException:
             _log.warning("kill of %s failed; record stays journaled for "
                          "reconcile()", branch_id, exc_info=True)
-            with self._lock:
+            with self._lifecycle_changed:
                 self._killing.discard(branch_id)
                 self.metrics.kill_failures += 1
+                self._lifecycle_changed.notify_all()
             raise  # record stays in state "killing"; reconcile() retries
-        with self._lock:
+        with self._lifecycle_changed:
             self._killing.discard(branch_id)
             self.metrics.kills += 1
-            self._forget(branch_id)
+            try:
+                self._forget(branch_id)
+            finally:
+                self._lifecycle_changed.notify_all()
         _log.debug("killed %s (freed %d KV tokens)", branch_id, freed)
         return KillReceipt(branch_id, freed)
 
@@ -525,8 +655,9 @@ class ForkOrchestrator:
         """
         with self._lock:
             self._ensure_open()
-            if winner_id not in self._branches:
-                raise KeyError(f"no such branch: {winner_id}")
+            winner = self._branches.get(winner_id)
+            if winner is None or winner.state != _STATE_LIVE:
+                raise KeyError(f"no live branch: {winner_id}")
             keep = set()
             cursor: str | None = winner_id
             while cursor is not None and cursor not in keep:
@@ -557,13 +688,12 @@ class ForkOrchestrator:
     def renew_lease(self, branch_id: str, lease_s: float) -> Branch:
         self._ensure_open()
         branch = self._branches.get(branch_id)
-        if branch is None:
-            raise KeyError(f"no such branch: {branch_id}")
+        if branch is None or branch.state != _STATE_LIVE:
+            raise KeyError(f"no live branch: {branch_id}")
         if lease_s <= 0:
             raise ValueError("lease_s must be positive")
-        branch.lease_expires_at = self._clock() + lease_s
-        self._persist()
-        return branch
+        return self._replace_branch(
+            branch_id, lease_expires_at=self._clock() + lease_s)
 
     def reap_expired(self) -> list[KillReceipt]:
         """Kill branches whose lease has lapsed. Children of an expired
@@ -588,23 +718,53 @@ class ForkOrchestrator:
 
     def reconcile(self) -> list[KillReceipt]:
         """Collect leaked branches: mid-fork and mid-kill leftovers from a
-        crashed or failed supervisor, plus anything past its lease. Not run
-        automatically; call it at startup on a registry a previous process
-        wrote. Branches with fork or kill work in flight in *this* process
-        are not leaks and are left alone."""
+        crashed or failed supervisor, every row loaded from a previous owner,
+        plus anything past its lease. Loaded rows are cleaned instead of
+        adopted because backend handles and process-local KV state cannot be
+        reconstructed generically. Not run automatically; call it at startup.
+        Branches with work in flight in *this* process are left alone."""
         with self._lock:
             self._ensure_open()
             stuck = [b.branch_id for b in self._branches.values()
                      if b.state in (_STATE_FORKING, _STATE_KILLING)
                      and b.branch_id not in self._spawning
                      and b.branch_id not in self._killing]
+            # Registry rows loaded from a previous owner cannot safely be
+            # adopted: the reference KV cache is process-local, remote
+            # adapters may have lost bookkeeping, and sandbox handles are not
+            # generally reconstructable. Reconcile them by replaying kill.
+            stuck.extend(
+                branch_id for branch_id in self._loaded_branch_ids
+                if branch_id not in stuck
+                and branch_id not in self._spawning
+                and branch_id not in self._killing
+            )
+            now = self._clock()
+            expired = [
+                branch.branch_id for branch in self._branches.values()
+                if branch.lease_expires_at is not None
+                and branch.lease_expires_at <= now
+                and branch.branch_id not in self._spawning
+                and branch.branch_id not in self._killing
+                and branch.branch_id not in stuck
+            ]
         if stuck:
             _log.info("reconcile: collecting %d branch(es) left mid-fork or "
                       "mid-kill: %s", len(stuck), stuck)
-        receipts = self._fan_out(stuck, self.kill)
-        receipts.extend(self.reap_expired())
+        if expired:
+            _log.info("reaping %d branch(es) with lapsed leases: %s",
+                      len(expired), expired)
+        candidates = stuck + expired
+        try:
+            receipts = self._fan_out(candidates, self.kill)
+        finally:
+            with self._lock:
+                self.metrics.reconciles += 1
         with self._lock:
-            self.metrics.reconciles += 1
+            expired_ids = set(expired)
+            self.metrics.reaped_expired += sum(
+                1 for r in receipts
+                if r.reaped and r.branch_id in expired_ids)
         return receipts
 
     # -- background collection -------------------------------------------------
@@ -676,29 +836,46 @@ class ForkOrchestrator:
             branch = self._branches.get(branch_id)
             if branch is None or branch.state != _STATE_LIVE:
                 return False
-        return self.sandbox.alive(branch_id)
+        if not self.sandbox.alive(branch_id):
+            return False
+        kv_has_tree = getattr(self.kv, "has_tree", None)
+        return kv_has_tree(branch_id) if kv_has_tree is not None else True
 
     def close(self) -> None:
         """Kill every recorded branch; raise the first error after trying
         all. The orchestrator ends closed either way: registry ownership is
         released so a successor can take over, and every mutating method
-        raises from then on. Idempotent. Must not race in-flight lifecycle
-        calls on other threads."""
+        raises from then on. Idempotent. New lifecycle calls are refused while
+        closing, and already in-flight spawns/kills are drained before the
+        final cleanup sweep."""
         self.stop_reaper()
-        with self._lock:
+        with self._lifecycle_changed:
             if self._closed:
                 return
+            if self._closing:
+                while not self._closed:
+                    self._lifecycle_changed.wait()
+                return
+            self._closing = True
+            while self._spawning or self._killing:
+                self._lifecycle_changed.wait()
             branch_ids = list(self._branches)
         error = None
         try:
             try:
-                self._fan_out(branch_ids, self.kill)
+                self._fan_out(
+                    branch_ids,
+                    lambda branch_id: self._kill(
+                        branch_id, allow_closing=True),
+                )
             except Exception as exc:
                 error = exc
         finally:
-            with self._lock:
+            with self._lifecycle_changed:
                 self._closed = True
+                self._closing = False
                 self._release_registry_lock()
+                self._lifecycle_changed.notify_all()
         if error is not None:
             raise error
 

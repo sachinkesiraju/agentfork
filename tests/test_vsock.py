@@ -8,12 +8,14 @@ Only the muxer is fake: it speaks Firecracker's ``CONNECT <port>`` /
 covered here: AF_VSOCK itself and a real VMM's muxer — those need a guest.
 """
 
+import json
 import os
 import shutil
 import socket
 import sys
 import tempfile
 import threading
+import time
 
 import pytest
 
@@ -142,25 +144,36 @@ def test_exec_detached_starts_a_background_process(channel):
     import time
 
     marker = os.path.join(tempfile.gettempdir(), f"afv-{os.getpid()}.marker")
+    detached = None
     try:
         detached = channel.exec_detached(
             [sys.executable, "-c",
-             f"import time; time.sleep(0.1); print('bg-done'); "
+             "import time; time.sleep(0.1); print('bg-done'); "
              f"open({marker!r}, 'w').write('x')"])
 
         assert detached.pid > 0
         assert detached.log_path  # guest-side path for tail-follow
         # returns before the process finishes...
         assert not os.path.exists(marker)
-        # ...and the process really runs to completion afterwards
+        # ...and the process runs to completion, its stdout landing in the
+        # log. Poll the log *content*: a child's block-buffered stdout only
+        # flushes at exit, which can trail the marker write, so waiting on
+        # the marker and reading once races (empty read on a slow runner).
         deadline = time.monotonic() + 5
-        while not os.path.exists(marker) and time.monotonic() < deadline:
+        contents = b""
+        while time.monotonic() < deadline:
+            try:
+                with open(detached.log_path, "rb") as f:
+                    contents = f.read()
+            except FileNotFoundError:
+                contents = b""
+            if contents == b"bg-done\n":
+                break
             time.sleep(0.02)
+        assert contents == b"bg-done\n"
         assert os.path.exists(marker)
-        with open(detached.log_path, "rb") as f:
-            assert f.read() == b"bg-done\n"
     finally:
-        for path in (marker, locals().get("detached") and detached.log_path):
+        for path in (marker, detached.log_path if detached else None):
             if path and os.path.exists(path):
                 os.unlink(path)
 
@@ -177,7 +190,6 @@ def test_concurrent_execs_are_served_concurrently(channel):
         results[i] = channel.exec(
             [sys.executable, "-c", f"import time; time.sleep(0.3); print({i})"])
     threads = [threading.Thread(target=run, args=(i,)) for i in range(4)]
-    import time
     t0 = time.perf_counter()
     for t in threads:
         t.start()
@@ -187,3 +199,17 @@ def test_concurrent_execs_are_served_concurrently(channel):
     assert [r.stdout for r in results] == [b"0\n", b"1\n", b"2\n", b"3\n"]
     # four 0.3s sleeps served serially take >=1.2s; generous margin for CI
     assert elapsed < 1.0
+
+
+def test_guest_agent_rejects_non_string_argv():
+    client, server = socket.socketpair()
+    thread = threading.Thread(
+        target=guest_agent.handle_connection, args=(server,))
+    thread.start()
+    client.sendall(
+        json.dumps({"argv": [123], "timeout_s": None}).encode() + b"\n")
+    reply = json.loads(client.makefile().readline())
+    thread.join(1)
+    client.close()
+
+    assert "non-empty strings" in reply["error"]

@@ -53,6 +53,17 @@ def test_jail_id_sanitization_and_truncation_stay_collision_free():
     assert jail_id_for(long_a) == jail_id_for(long_a)  # deterministic
 
 
+def test_jail_id_never_starts_with_dash():
+    # the child branch dir encoding (__agentfork__…) sanitizes to a "--…"
+    # prefix; the jailer would parse a leading-dash --id value as a flag and
+    # refuse to start, so the id must begin with an alphanumeric
+    for name in ("__agentfork__abcd1234-root_1", "-leading", "--double", "_x"):
+        jid = jail_id_for("/work/" + name)
+        assert not jid.startswith("-"), (name, jid)
+    # still collision-free after stripping leading dashes
+    assert jail_id_for("/work/--a") != jail_id_for("/work/--b")
+
+
 def test_jail_root_is_under_chroot_base_and_exec_file_name():
     root = jail_root(JAILER, "/opt/fc/firecracker", "/work/branch-a")
     assert root == "/srv/jailer/firecracker/branch-a/root"

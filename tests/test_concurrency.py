@@ -7,10 +7,12 @@ one-orchestrator-per-registry-file rule enforced with ``flock``.
 """
 
 from concurrent.futures import ThreadPoolExecutor
+import threading
+import time
 
 import pytest
 
-from agentfork import ForkOrchestrator, TreeKVCache
+from agentfork import ForkOrchestrator, ReaperSandbox, TreeKVCache
 from agentfork.kill.reaper import BranchReaper
 
 PREFIX = list(range(128))
@@ -110,19 +112,16 @@ class SlowSandbox:
     parallel_lifecycle = True
 
     def __init__(self, delay=0.15):
-        import threading
         self.delay = delay
         self.live = set()
         self._lock = threading.Lock()
 
     def spawn(self, branch_id, parent_id):
-        import time
         time.sleep(self.delay)
         with self._lock:
             self.live.add(branch_id)
 
     def kill(self, branch_id):
-        import time
         time.sleep(self.delay)
         with self._lock:
             self.live.discard(branch_id)
@@ -131,9 +130,40 @@ class SlowSandbox:
         return branch_id in self.live
 
 
-def test_fork_fans_out_when_sandbox_is_parallel_safe():
-    import time
+class BlockingForkSandbox:
+    parallel_lifecycle = True
 
+    def __init__(self):
+        self.live = set()
+        self.child_started = threading.Event()
+        self.release_child = threading.Event()
+
+    def spawn(self, branch_id, parent_id):
+        if parent_id is not None:
+            self.child_started.set()
+            self.release_child.wait(5)
+        self.live.add(branch_id)
+
+    def kill(self, branch_id):
+        self.live.discard(branch_id)
+
+    def alive(self, branch_id):
+        return branch_id in self.live
+
+
+class BlockingKillSandbox(BlockingForkSandbox):
+    def __init__(self):
+        super().__init__()
+        self.kill_started = threading.Event()
+        self.release_kill = threading.Event()
+
+    def kill(self, branch_id):
+        self.kill_started.set()
+        self.release_kill.wait(5)
+        super().kill(branch_id)
+
+
+def test_fork_fans_out_when_sandbox_is_parallel_safe():
     sandbox = SlowSandbox(delay=0.25)
     with ForkOrchestrator(sandbox=sandbox) as orch:
         orch.create_parent("root", tokens=PREFIX)
@@ -171,9 +201,6 @@ def test_parallel_fork_failure_rolls_back_only_failed_children():
 
 
 def test_kill_losers_waits_out_an_in_flight_fork():
-    import threading
-    import time
-
     sandbox = SlowSandbox(delay=0.3)
     orch = ForkOrchestrator(sandbox=sandbox)
     orch.create_parent("root", tokens=PREFIX)
@@ -202,8 +229,6 @@ def test_kill_losers_waits_out_an_in_flight_fork():
 
 
 def test_kill_is_noop_while_same_branch_kill_is_in_flight():
-    import threading
-
     sandbox = SlowSandbox(delay=0.3)
     orch = ForkOrchestrator(sandbox=sandbox)
     orch.create_parent("root", tokens=PREFIX)
@@ -211,12 +236,113 @@ def test_kill_is_noop_while_same_branch_kill_is_in_flight():
     slow = threading.Thread(target=orch.kill, args=("root",))
     slow.start()
     try:
-        import time
         time.sleep(0.05)  # let the slow kill journal intent and enter I/O
         receipt = orch.kill("root")  # concurrent duplicate: no-op
         assert receipt.kv_freed_tokens == 0
     finally:
         slow.join()
+    assert orch.branches() == []
+
+
+def test_close_waits_for_in_flight_fork_then_reaps_it():
+    sandbox = BlockingForkSandbox()
+    orch = ForkOrchestrator(sandbox=sandbox)
+    orch.create_parent("root")
+    fork = threading.Thread(
+        target=orch.fork, args=("root",),
+        kwargs={"child_ids": ["root/child"]},
+    )
+    fork.start()
+    assert sandbox.child_started.wait(1)
+    closed = threading.Event()
+    close = threading.Thread(
+        target=lambda: (orch.close(), closed.set()))
+    close.start()
+
+    time.sleep(0.05)
+    assert not closed.is_set()
+    sandbox.release_child.set()
+    fork.join(2)
+    close.join(2)
+
+    assert closed.is_set()
+    assert orch.branches() == []
+    assert sandbox.live == set()
+
+
+def test_parent_killed_during_fork_rolls_child_back():
+    sandbox = BlockingForkSandbox()
+    orch = ForkOrchestrator(sandbox=sandbox)
+    orch.create_parent("root")
+    errors = []
+
+    def fork_child():
+        try:
+            orch.fork("root", child_ids=["root/child"])
+        except RuntimeError as exc:
+            errors.append(exc)
+
+    fork = threading.Thread(target=fork_child)
+    fork.start()
+    assert sandbox.child_started.wait(1)
+    orch.kill("root")
+    sandbox.release_child.set()
+    fork.join(2)
+
+    assert errors
+    assert orch.branches() == []
+    assert sandbox.live == set()
+
+
+def test_new_kill_is_rejected_once_close_begins():
+    sandbox = BlockingKillSandbox()
+    orch = ForkOrchestrator(sandbox=sandbox)
+    orch.create_parent("root")
+    close = threading.Thread(target=orch.close)
+    close.start()
+    assert sandbox.kill_started.wait(1)
+
+    with pytest.raises(RuntimeError, match="closing"):
+        orch.kill("root")
+
+    sandbox.release_kill.set()
+    close.join(2)
+    assert not close.is_alive()
+
+
+def test_persist_failure_during_kill_does_not_deadlock_close(monkeypatch):
+    sandbox = BlockingKillSandbox()
+    orch = ForkOrchestrator(sandbox=sandbox)
+    orch.create_parent("root")
+    original_persist = orch._persist
+    fail_once = [True]
+
+    def transient_failure():
+        if not orch._branches and fail_once[0]:
+            fail_once[0] = False
+            raise OSError("disk full")
+        original_persist()
+
+    monkeypatch.setattr(orch, "_persist", transient_failure)
+    errors = []
+
+    def kill_root():
+        try:
+            orch.kill("root")
+        except OSError as exc:
+            errors.append(exc)
+
+    kill = threading.Thread(target=kill_root)
+    kill.start()
+    assert sandbox.kill_started.wait(1)
+    close = threading.Thread(target=orch.close)
+    close.start()
+    sandbox.release_kill.set()
+    kill.join(2)
+    close.join(2)
+
+    assert errors
+    assert not close.is_alive()
     assert orch.branches() == []
 
 
@@ -226,7 +352,5 @@ def test_reaper_pdeathsig_flag():
 
 
 def test_reaper_sandbox_forwards_pdeathsig():
-    from agentfork import ReaperSandbox
-
     assert ReaperSandbox(["true"]).reaper.pdeathsig is True
     assert ReaperSandbox(["true"], pdeathsig=False).reaper.pdeathsig is False

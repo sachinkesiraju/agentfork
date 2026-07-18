@@ -53,13 +53,17 @@ def jail_id_for(vm_dir: str) -> str:
     can merge long ones — and two branches sharing one jail chroot silently
     clobber each other's snapshot and overlay files. Whenever the name had
     to be altered, a short digest of the original is appended so distinct
-    inputs keep distinct jail IDs."""
+    inputs keep distinct jail IDs. The result never starts with ``-``: the
+    jailer's CLI would parse a leading-dash ``--id`` value as another flag
+    and refuse to start (a real branch dir like ``__agentfork__…`` sanitizes
+    to a ``--…`` prefix)."""
     name = os.path.basename(vm_dir)
     sanitized = re.sub(r"[^A-Za-z0-9-]", "-", name)
-    if sanitized == name and len(sanitized) <= 64:
+    if sanitized == name and len(sanitized) <= 64 and not name.startswith("-"):
         return sanitized
     digest = hashlib.sha256(name.encode()).hexdigest()[:8]
-    return f"{sanitized[:55]}-{digest}"
+    core = sanitized.lstrip("-")[:55] or "b"
+    return f"{core}-{digest}"
 
 
 def jail_root(jailer: JailerConfig, fc_bin: str, vm_dir: str) -> str:

@@ -68,8 +68,15 @@ def handle_connection(conn: socket.socket) -> None:
             detach = bool(request.get("detach", False))
             stdin_b64 = request.get("stdin")
             stdin_bytes = base64.b64decode(stdin_b64) if stdin_b64 else None
-            if not isinstance(argv, list) or not argv:
-                raise ValueError("argv must be a non-empty list")
+            if (not isinstance(argv, list) or not argv
+                    or not all(isinstance(arg, str) and arg for arg in argv)):
+                raise ValueError(
+                    "argv must be a non-empty list of non-empty strings")
+            if (timeout_s is not None
+                    and (not isinstance(timeout_s, (int, float))
+                         or isinstance(timeout_s, bool)
+                         or timeout_s <= 0)):
+                raise ValueError("timeout_s must be a positive number or null")
             if detach and stdin_bytes:
                 raise ValueError("stdin and detach are mutually exclusive")
         except (ValueError, KeyError, TypeError) as exc:
@@ -98,7 +105,7 @@ def handle_connection(conn: socket.socket) -> None:
             proc = subprocess.Popen(
                 argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 stdin=subprocess.PIPE if stdin_bytes is not None else None)
-        except OSError as exc:
+        except (OSError, TypeError, ValueError) as exc:
             conn.sendall(json.dumps({"error": f"spawn failed: {exc}"}).encode() + b"\n")
             return
         timed_out = False
