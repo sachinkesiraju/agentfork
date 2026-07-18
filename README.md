@@ -85,32 +85,22 @@ the work happens after the fork.
 
 ## Quickstart
 
-Requires Python 3.10 or newer. The demo also requires Linux 5.4 or newer.
+Requires Python 3.10 or newer. The Firecracker sandbox needs Linux with
+`/dev/kvm`; the SGLang KV backend needs a GPU host.
 
 ```bash
 git clone https://github.com/sachinkesiraju/agentfork.git
 cd agentfork
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-python demo/demo.py
+tools/setup_sglang.sh   # patches SGLang for the KV backend; prints launch commands
 ```
 
-`demo/demo.py` runs the whole fanout on CPU: fork a 32k-token parent into ten
-branches, keep a winner, and check that nothing leaks. Token IDs and sleeping
-processes stand in for a model and a sandbox, so it needs no GPU or microVM and
-ends with `CLEAN`.
-
-The same `create_parent` / `fork` / `kill_losers` lifecycle drives the
-production backends: a Firecracker microVM per branch (`FirecrackerSandbox`,
-see `demo/fc_demo.py`) and a shared KV cache in a patched SGLang engine.
-Prepare the SGLang server (needs a GPU):
-
-```bash
-tools/setup_sglang.sh   # patches SGLang and prints the launch commands
-```
-
-Then fork candidates from a shared prompt and keep the winner, with inference
-(`generate`) as the data path:
+The lifecycle is `create_parent` / `fork` / `kill_losers` over two production
+backends: a Firecracker microVM per branch (`FirecrackerSandbox`, see
+`demo/fc_demo.py`) and a shared KV cache in a patched SGLang engine. With the
+server up, fork candidates from a shared prompt and keep the winner, with
+inference (`generate`) as the data path:
 
 ```python
 from agentfork import ForkOrchestrator, SGLangHTTPBackend
