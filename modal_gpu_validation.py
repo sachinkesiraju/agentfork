@@ -40,6 +40,7 @@ image = (
         index_url="https://pypi.org/simple",
     )
     .env({
+        "AGENTFORK_VALIDATION": "1",
         "SGLANG_DIR": "/root/sgl",
         "SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK": "1",
     })
@@ -65,7 +66,10 @@ def validate() -> str:
 
     out = {"gpu": torch.cuda.get_device_name(0)}
 
-    def apply_cache_pressure(engine, count=96):
+    ENGINE_CHILDREN = 12
+    PRESSURE_REQUESTS_PER_CHILD = 80
+
+    def apply_cache_pressure(engine, count=PRESSURE_REQUESTS_PER_CHILD):
         for index in range(count):
             engine.generate(
                 (f"Noise tenant {index} unique context. " * 400) + "Task:",
@@ -134,8 +138,12 @@ def validate() -> str:
 
     # --- 3. stock live-engine prefix-cache baseline ---
     import sglang as sgl
-    eng = sgl.Engine(model_path="Qwen/Qwen3-0.6B", mem_fraction_static=0.6,
-                     log_level="warning")
+    eng = sgl.Engine(
+        model_path="Qwen/Qwen3-0.6B",
+        mem_fraction_static=0.6,
+        log_level="warning",
+        disable_cuda_graph=True,
+    )
     try:
         prefix = "You are a helpful assistant. " * 400  # ~2.4k tokens shared
         parent_prompt = prefix + "Parent:"
@@ -143,9 +151,10 @@ def validate() -> str:
         first = eng.generate(parent_prompt, {"max_new_tokens": 4})
         parent_s = time.perf_counter() - t0
         parent_text = first.get("text", "")
-        pressure_requests = apply_cache_pressure(eng)
+        pressure_requests = 0
         cached, times = [], []
-        for i in range(10):
+        for i in range(ENGINE_CHILDREN):
+            pressure_requests += apply_cache_pressure(eng)
             t0 = time.perf_counter()
             result = eng.generate(
                 parent_prompt + parent_text + f" Child {i}:",
@@ -159,7 +168,7 @@ def validate() -> str:
             "parent_generation_s": parent_s,
             "pressure_requests": pressure_requests,
             "sibling_cached_tokens": cached,
-            "sibling_gen_s_p50": round(sorted(times)[5], 3),
+            "sibling_gen_s_p50": round(sorted(times)[len(times) // 2], 3),
             "total_generation_s": round(parent_s + sum(times), 4),
             "sibling_generation_s": times,
         }
@@ -173,6 +182,7 @@ def validate() -> str:
         log_level="warning",
         radix_cache_backend="tree_radix",
         tree_cache_quota_tokens=65536,
+        disable_cuda_graph=True,
     )
     try:
         prefix = "You are a helpful assistant. " * 400
@@ -187,9 +197,10 @@ def validate() -> str:
         )
         tree_parent_s = time.perf_counter() - t0
         parent_text = parent.get("text", "")
-        pressure_requests = apply_cache_pressure(eng)
+        pressure_requests = 0
         cached, times = [], []
-        for i in range(10):
+        for i in range(ENGINE_CHILDREN):
+            pressure_requests += apply_cache_pressure(eng)
             t0 = time.perf_counter()
             result = eng.generate(
                 parent_prompt + parent_text + f" Child {i}:",
@@ -209,7 +220,7 @@ def validate() -> str:
             "parent_generation_s": tree_parent_s,
             "pressure_requests": pressure_requests,
             "sibling_cached_tokens": cached,
-            "sibling_gen_s_p50": round(sorted(times)[5], 3),
+            "sibling_gen_s_p50": round(sorted(times)[len(times) // 2], 3),
             "total_generation_s": round(tree_parent_s + sum(times), 4),
             "sibling_generation_s": times,
             "telemetry_before_kill": telemetry.value,
