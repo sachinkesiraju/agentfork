@@ -144,50 +144,34 @@ with ForkOrchestrator(kv=kv, registry_path="branches.json") as orch:
 
 ## How it works
 
-`ForkOrchestrator` gives the sandbox and KV branch one ID, records intent in a
-single-owner, fsynced registry, rolls back partial forks, retries interrupted
-cleanup, and bounds every branch with a lease.
+`ForkOrchestrator` gives the sandbox and KV branch one ID, backed by a
+single-owner, fsynced registry: it rolls back partial forks, retries
+interrupted cleanup, and bounds every branch with a lease.
 
-**The reference path runs today.** `TreeKVCache.fork_branch` walks the
-parent's cached path and bumps a reference count at each node; no tokens are
-copied. `ReaperSandbox` spawns a fresh subprocess for the child. On kill,
-`agentfork/kill/reaper.py` reaps the subprocess through Linux `pidfd` and
-drops the matching cache entry; the combined path measured 0.53 ms p50.
+**The reference path runs today.** `TreeKVCache.fork_branch` bumps a refcount
+along the parent's cached path (no tokens copied); `ReaperSandbox` spawns a
+subprocess; kill reaps it through Linux `pidfd` and drops the cache
+entry — 0.53 ms p50 combined.
 
-Two production backends have adapters behind those same protocols:
+Two production backends sit behind the same protocols:
 
-1. **KV cache fork**: `patches/0001-sglang-tree-radix-cache.patch` adds
-   `TreeRadixCache`; `patches/0002-Wire-branch-lifecycle-through-the-SGLang-request-pat.patch`
-   carries branch identity through OpenAI/native requests, adds scheduler-side
-   lifecycle and quota admission, and exposes `/tree_cache` control operations.
-   `SGLangKVBackend` supports in-process use and `SGLangHTTPBackend` drives
-   lifecycle plus admin-authenticated `/tree_generate` requests on a remote
-   engine. The live
-   in-process request path was validated on a Modal A10G: ten children each
-   reused 2,406 parent tokens and explicit kill released the remaining
-   parent pin. The HTTP client is integration-tested against a protocol stub;
-   a live HTTP/OpenAI server run remains a separate validation item.
-2. **Sandbox fork**: `agentfork/sandbox/fc_bench.py` measures Firecracker
-   snapshot and restore, with each child sharing the parent's memory pages
-   copy-on-write. The recorded parent pause was 76–83 ms including snapshot
-   creation, and snapshot-load API time was 2.1 ms p50 per child.
-   `agentfork/sandbox/firecracker_backend.py`'s `FirecrackerSandbox` adapts
-   `fc_bench`'s `MicroVM` to `SandboxBackend`. Snapshots are taken lazily at
-   fork time, so children inherit the parent's current state and unforked
-   branches never pay the snapshot write. Each guest gets a vsock exec
-   channel (`orch.exec(branch_id, argv)` with stdin, plus
-   `orch.exec_detached()` for background processes, served by
-   `agentfork/sandbox/guest_agent.py` baked into the rootfs by
-   `tools/build_rootfs.sh`), a `wait_ready()` readiness probe, and, with
-   `overlay_mib` set, a writable scratch drive that children inherit as
-   their own reflink/sparse copy. `JailerConfig` runs every VMM chrooted
-   and deprivileged under the jailer; `NetworkConfig` gives each branch its
-   own network namespace (so N snapshot clones don't collide on tap/MAC/IP)
-   with NAT egress, and reseeds each clone's entropy after restore. All of
-   it is validated on real Firecracker v1.16.1: children answer exec over
-   vsock, mount and write their own overlays, inherit state the parent
-   wrote after boot, and reach the internet (`HTTP 200` from a forked
-   child), jailed and unjailed.
+1. **KV cache fork** (`patches/0001`–`0002`): adds `TreeRadixCache` and carries
+   branch identity through OpenAI/native requests, with scheduler-side
+   lifecycle, quota admission, and `/tree_cache` control operations.
+   `SGLangKVBackend` (in-process) and `SGLangHTTPBackend` (remote,
+   admin-authenticated `/tree_generate`) drive it. Validated in-process on a
+   Modal A10G — ten children each reused 2,406 parent tokens and kill released
+   the pin; the HTTP client is protocol-tested, with a live-server run pending.
+2. **Sandbox fork** (`FirecrackerSandbox` over `fc_bench`'s `MicroVM`):
+   snapshots are lazy, at fork time, so children inherit the parent's current
+   state and unforked branches skip the write (parent pause 76–83 ms; restore
+   2.1 ms p50 per child). Each guest gets a vsock exec channel (`exec` with
+   stdin, `exec_detached`) via `guest_agent.py` (baked in by
+   `tools/build_rootfs.sh`), a `wait_ready()` probe, reflink/sparse writable
+   overlays, the jailer, and a per-branch network namespace with NAT egress
+   and post-restore entropy reseed. Validated on real Firecracker v1.16.1:
+   children exec over vsock, write their own overlays, inherit post-boot
+   state, and reach the internet (`HTTP 200`), jailed and unjailed.
 
 ```
 ForkOrchestrator  (registry / leases / rollback / reconcile)
