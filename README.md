@@ -238,21 +238,17 @@ SGLANG_DIR="$SGLANG_DIR" modal run modal_gpu_validation.py
 
 ## Why agentfork vs. alternatives
 
-A branch in an agent tree is really two things at once: a sandbox where the
-agent acts, and a KV cache holding the context it thinks with. They have to
-fork and die as one, or a child's environment and its memory drift apart.
-Other projects branch just one piece: a sandbox fork, an inference session,
-shared-prefix caching, or moving KV caches between tiers. Stitch them together
-yourself and you own the mapping between a VM, a session, and a cache, plus two
-separate ways to leak.
+A branch in an agent tree is two things at once: a sandbox where the agent
+acts and a KV cache it thinks with. They have to fork and die together, or a
+child's environment and its memory drift apart. Other projects branch just one
+piece, so you own the mapping between VM, session, and cache, plus two ways to
+leak.
 
-agentfork gives both halves a single branch ID, and that is what makes a fork
-cheap and a kill clean. A child comes up warm on both sides at once (28–145 ms
-per child, the KV fork under 1.3% of that), so it can think and act right away
-instead of stalling on a cold VM or re-prefilling the shared prompt. That
-prompt is prefilled once by the parent and reused by reference across children,
-never recomputed per child. And because one ID owns both, a kill reclaims the
-VM and the GPU cache together, so nothing leaks as branches churn.
+agentfork gives both halves one branch ID. A child comes up warm on both sides
+at once (28–145 ms, the KV fork under 1.3% of that), so it thinks and acts
+right away instead of stalling on a cold VM or re-prefilling the shared prompt.
+That prompt is prefilled once and reused by reference across children, and a
+kill frees the VM and GPU cache together, so nothing leaks.
 
 | Project | What it does | What's missing |
 |---|---|---|
