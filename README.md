@@ -243,6 +243,14 @@ session, shared-prefix caching, or moving KV caches between tiers. agentfork
 gives one identity to both the sandbox and the KV branch, so a single ID
 covers ownership and cleanup on both sides.
 
+Keeping both under one ID is what makes a fork cheap and a kill clean. Each
+child comes up warm on both sides at once (28–145 ms per child, the KV fork
+under 1.3% of that), so it can think and act right away instead of stalling on
+a cold VM or re-prefilling the shared prompt. That prompt is prefilled once and
+reused by reference across children rather than recomputed per child, and a
+kill reclaims the VM and the GPU cache together, so nothing leaks as branches
+churn.
+
 | Project | What it does | What's missing |
 |---|---|---|
 | [forkd](https://github.com/deeplethe/forkd) | Forks microVMs from a shared snapshot, copy-on-write | A branch ID that also owns and reclaims the LLM KV cache |
