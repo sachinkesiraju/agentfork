@@ -249,6 +249,9 @@ SGLANG_DIR="$SGLANG_DIR" modal run modal_gpu_validation.py
   deployer's job, and cleanup is retried, not atomic.
 - Nothing is validated at production GPU scale or with GPU-plus-microVM
   colocation.
+- The `U > C − P` break-even is validated to the token against the reference
+  caches; the GPU sweep of the same boundary is unrun (instructions in
+  [report/PRESSURE.md](report/PRESSURE.md)).
 - `ReaperSandbox` runs spawns serially by default; `pdeathsig="shim"` fans
   them out.
 - Single-winner handoff exists (`export_artifact`); multi-winner merge does
