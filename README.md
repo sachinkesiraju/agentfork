@@ -120,12 +120,29 @@ with ForkOrchestrator(kv=kv, registry_path="branches.json") as orch:
 ```
 
 The example above wires the lifecycle by hand. `agentfork.harness.TreeAgent`
-drives the whole loop for you — prepare shared context, fan out N candidates
-that each **strictly extend** it (a `PrefixViolation` is raised before any
-branch is forked otherwise), score them, keep the winner, and re-fork it to
-verify — over a pluggable LLM seam. `demo/tree_agent_demo.py` runs it against a
-real model with no GPU (CPU reference cache): it fixes a planted bug from N
-candidate fixes and re-forks the winner against a fuller suite.
+drives the whole loop — prepare shared context, fan out N candidates that each
+**strictly extend** it (a `PrefixViolation` is raised before any branch is
+forked otherwise), score them, keep the winner, re-fork it to verify — and
+runs on the CPU reference cache with no GPU:
+
+```python
+from agentfork.harness import Round, TreeAgent
+from agentfork.kv.tree_cache import TreeKVCache
+from agentfork.orchestrator import ForkOrchestrator, NullSandbox
+
+with ForkOrchestrator(kv=TreeKVCache(), sandbox=NullSandbox()) as orch:
+    agent = TreeAgent(orch)
+    round1 = Round(
+        continuations=[SHARED + " fix A", SHARED + " fix B", SHARED + " fix C"],
+        work=lambda branch_id, prefix: run_candidate(branch_id, prefix),
+        evaluator=lambda result: 1.0 if result.output["passed"] else 0.0)
+    winner = agent.solve("root", SHARED, [round1])  # keeps only the winner
+```
+
+The LLM that proposes candidates is a pluggable seam (`agentfork.harness.LLM`,
+with Anthropic and OpenAI-compatible adapters). `demo/tree_agent_demo.py` runs
+this end to end against a real model — it plants a bug, fixes it from N
+candidates, then re-forks the winner against a fuller suite:
 
 ```bash
 export ANTHROPIC_API_KEY=...          # or: --provider together (TOGETHER_API_KEY)
