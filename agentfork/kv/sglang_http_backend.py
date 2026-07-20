@@ -17,6 +17,14 @@ import urllib.parse
 import urllib.request
 
 
+class SGLangTreeCacheError(RuntimeError):
+    """A ``/tree_cache`` op the server rejected at the cache level (it replied
+    with ``success: false``), as opposed to a transport/auth/HTTP-status
+    failure. The live patched server returns these as HTTP 400 with a
+    ``{"success": false, "message": ...}`` body; this type lets callers tell an
+    absent/invalid branch apart from an unreachable or unauthorized server."""
+
+
 class SGLangHTTPBackend:
     external_data_path = True
 
@@ -141,11 +149,10 @@ class SGLangHTTPBackend:
         try:
             self.telemetry(tree_id)
             return True
-        except RuntimeError as exc:
-            msg = str(exc).lower()
-            if "no such" in msg or "not found" in msg or "http 404" in msg:
-                return False
-            raise
+        except SGLangTreeCacheError:
+            # telemetry's only cache-level failure is an unknown branch; a
+            # transport/auth error stays a hard error rather than "absent".
+            return False
 
     def generate(
         self,
@@ -199,6 +206,7 @@ class SGLangHTTPBackend:
             "/tree_cache",
             body,
             retry=operation in ("kill", "telemetry", "invalidate"),
+            expect_op_result=True,
         )
         if not payload.get("success"):
             message = payload.get("message", "unknown error")
@@ -208,12 +216,15 @@ class SGLangHTTPBackend:
             # such branch" on a kill as success rather than a spurious failure.
             if operation == "kill" and "no such" in message.lower():
                 return payload
-            raise RuntimeError(
+            raise SGLangTreeCacheError(
                 f"SGLang tree-cache operation {operation} failed: {message}"
             )
         return payload
 
-    def _request_json(self, path: str, body: dict, *, retry: bool) -> dict:
+    def _request_json(
+        self, path: str, body: dict, *, retry: bool,
+        expect_op_result: bool = False,
+    ) -> dict:
         headers = {"Content-Type": "application/json"}
         key = (
             self.admin_api_key
@@ -245,6 +256,19 @@ class SGLangHTTPBackend:
                 return payload
             except urllib.error.HTTPError as exc:
                 detail = exc.read().decode("utf-8", "replace")
+                # The live /tree_cache endpoint reports cache-level failures
+                # (unknown branch, quota, bad reserve) as HTTP 400 with a
+                # structured {"success": false, "message": ...} body. Surface
+                # that body to _operation so it can apply its success/idempotency
+                # logic, instead of collapsing it into a transport error. Auth
+                # (401/403) and 5xx stay hard errors.
+                if expect_op_result and exc.code == 400:
+                    try:
+                        parsed = json.loads(detail)
+                    except json.JSONDecodeError:
+                        parsed = None
+                    if isinstance(parsed, dict) and "success" in parsed:
+                        return parsed
                 if exc.code not in (429, 502, 503, 504) or attempt >= attempts:
                     raise RuntimeError(
                         f"SGLang {path} failed: HTTP {exc.code}: {detail}"

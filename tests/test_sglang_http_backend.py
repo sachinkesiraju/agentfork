@@ -6,6 +6,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import pytest
 
 from agentfork import ForkOrchestrator, SGLangHTTPBackend
+from agentfork.kv.sglang_http_backend import SGLangTreeCacheError
 
 
 class Stub:
@@ -134,6 +135,35 @@ def test_kill_of_already_gone_branch_is_idempotent():
     stub = ErrorStub(200, {"success": False, "message": "no such tree"})
     try:
         assert SGLangHTTPBackend(stub.url).kill("ghost") == 0
+    finally:
+        stub.close()
+
+
+def test_tree_cache_failure_returned_as_http_400_is_a_cache_error():
+    # The live patched server reports cache-level op failures (unknown branch,
+    # quota, bad reserve) as HTTP 400 with a {"success": false, ...} body, not
+    # a 200 body. That body must still drive the op-result logic: telemetry of
+    # a missing branch is a cache error, so has_tree() reports absence rather
+    # than raising, and the raised type is SGLangTreeCacheError.
+    stub = ErrorStub(400, {"success": False, "message": "'ghost'"})
+    try:
+        backend = SGLangHTTPBackend(stub.url)
+        assert backend.has_tree("ghost") is False
+        with pytest.raises(SGLangTreeCacheError, match="ghost"):
+            backend.telemetry("ghost")
+    finally:
+        stub.close()
+
+
+def test_auth_failure_is_not_mistaken_for_an_absent_branch():
+    # A 401 is a transport/auth failure, not a cache "success: false" result;
+    # has_tree() must surface it, never silently report the branch as absent.
+    stub = ErrorStub(401, {"error": "Unauthorized"})
+    try:
+        backend = SGLangHTTPBackend(stub.url)
+        with pytest.raises(RuntimeError) as ei:
+            backend.has_tree("root")
+        assert not isinstance(ei.value, SGLangTreeCacheError)
     finally:
         stub.close()
 
