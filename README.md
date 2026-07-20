@@ -99,27 +99,32 @@ pip install -e ".[dev]"
 tools/setup_sglang.sh   # patches SGLang for the KV backend; prints launch commands
 ```
 
-The lifecycle is `create_parent` / `fork` / `kill_losers` over two production
-backends: a Firecracker microVM per branch (`FirecrackerSandbox`, see
-`demo/fc_demo.py`) and a shared KV cache in a patched SGLang engine. With the
-server up, fork candidates from a shared prompt and keep the winner, with
-inference (`generate`) as the data path:
+Prepare a shared context, fan out N candidates that each extend it, keep the
+winner, and kill the losers. `TreeAgent` drives that loop over the CPU
+reference cache, so it runs with no GPU:
 
 ```python
-from agentfork import ForkOrchestrator, SGLangHTTPBackend
+from agentfork.harness import Round, TreeAgent
+from agentfork.kv.tree_cache import TreeKVCache
+from agentfork.orchestrator import ForkOrchestrator, NullSandbox
 
-kv = SGLangHTTPBackend(
-    "https://sglang.example.internal", admin_api_key="admin-secret")
-with ForkOrchestrator(kv=kv, registry_path="branches.json") as orch:
-    orch.create_parent("parent")
-    orch.generate("parent", "Shared context", {"max_new_tokens": 4})
+with ForkOrchestrator(kv=TreeKVCache(), sandbox=NullSandbox()) as orch:
+    agent = TreeAgent(orch)
+    round1 = Round(
+        continuations=[SHARED + " fix A", SHARED + " fix B", SHARED + " fix C"],
+        work=lambda branch_id, prefix: run_candidate(branch_id, prefix),
+        evaluator=lambda result: 1.0 if result.output["passed"] else 0.0)
+    winner = agent.solve("root", SHARED, [round1])  # keeps only the winner
+```
 
-    children = orch.fork("parent", n=3)  # three candidates from one prompt
-    for child in children:
-        orch.generate(child.branch_id, "Shared context\nCandidate:",
-                      {"max_new_tokens": 64}, reserve_tokens=64)
+Each continuation must strictly extend the shared prefix (a `PrefixViolation`
+is raised before any branch is forked otherwise). `demo/tree_agent_demo.py`
+runs this against a real LLM end to end — it plants a bug, fixes it from N
+candidates, then re-forks the winner against a fuller suite:
 
-    orch.kill_losers(children[0].branch_id)  # keep the winner, drop the rest
+```bash
+export ANTHROPIC_API_KEY=...          # or: --provider together (TOGETHER_API_KEY)
+python demo/tree_agent_demo.py
 ```
 
 Run `pytest -q` to execute the test suite.
