@@ -121,6 +121,66 @@ with ForkOrchestrator(kv=kv, registry_path="branches.json") as orch:
 
 Run `pytest -q` to execute the test suite.
 
+## Running an agent tree
+
+`ForkOrchestrator` forks and kills branches, but it forks *state*, not an
+*agent*: it never decides what runs on a branch or which branch to keep.
+`agentfork.harness` is that layer. `TreeAgent` owns an orchestrator and drives
+the golden-path loop: prepare a shared context on a root branch, fan out N
+candidate branches whose continuations each **strictly extend** the shared
+committed prefix, run per-branch work, score each branch with a pluggable
+evaluator, keep the winner and kill the losers, then (optionally) fork the
+winner again for a verification round.
+
+```python
+from agentfork.harness import Round, TreeAgent
+from agentfork.kv.tree_cache import TreeKVCache
+from agentfork.orchestrator import ForkOrchestrator, NullSandbox
+
+orch = ForkOrchestrator(kv=TreeKVCache(), sandbox=NullSandbox())
+agent = TreeAgent(orch)
+
+round1 = Round(
+    continuations=[SHARED + " fix A", SHARED + " fix B", SHARED + " fix C"],
+    work=lambda branch_id, prefix: run_candidate(branch_id, prefix),
+    evaluator=lambda result: 1.0 if result.output["passed"] else 0.0)
+winner = agent.solve("root", SHARED, [round1])  # returns the winning branch
+orch.close()
+```
+
+Each continuation must strictly extend its parent's committed prefix; a
+violation raises `PrefixViolation` **before** any branch is forked, so a bad
+prompt never leaks a branch. The harness tracks each branch's committed
+token/text prefix itself (mirroring `SGLangKVBackend`'s length tracking) and
+supports both token-list continuations (via `extend()`, the `TreeKVCache`
+path) and string continuations (via `generate()`, the `external_data_path`
+SGLang path); a string handed to a token backend is UTF-8 encoded. A branch
+whose work fails is recorded as a failed result and dropped at selection
+without poisoning its siblings; `kill_losers` keeps the winner and its ancestor
+chain, so the next round forks the winner.
+
+The LLM is a seam (`agentfork.harness.LLM`): `FakeLLM` is a deterministic fake
+for tests, and `AnthropicLLM` / `OpenAICompatLLM` call real models over stdlib
+`urllib`. `demo/tree_agent_demo.py` runs the whole thing against a real model —
+it plants a bug in a tiny Python project, asks for N candidate fixes from one
+shared context, applies each in its branch's workdir, runs the project's test
+as the cheap check, kills the failures, then re-forks the winner against a
+fuller edge-case suite:
+
+```bash
+export ANTHROPIC_API_KEY=...          # or: --provider together (TOGETHER_API_KEY)
+python demo/tree_agent_demo.py
+```
+
+Honest scope: this runs on plain Linux with no GPU using `NullSandbox` +
+`TreeKVCache`, so the "sandbox" is the harness's own per-branch host workdir,
+and the KV cache is the CPU reference model — the loop and the committed-prefix
+invariant are real, but the token counts are the reference cache's accounting,
+not a GPU's. The string/`generate()` lineage path is exercised by the token
+path's logic but has not been run against a live SGLang engine here. Winner
+selection is single-winner (`kill_losers` keeps one leaf); there is no
+multi-winner merge.
+
 ## How it works
 
 `ForkOrchestrator` gives the sandbox and KV branch one ID, backed by a
