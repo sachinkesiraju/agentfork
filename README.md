@@ -76,12 +76,21 @@ N × (shared setup + branch work)
 to
 
 ```
-shared setup + sum(branch work)
+shared setup + N × (fork + branch work)
 ```
 
-Forking pays off when setup is expensive, branches are short, and most of them
-are killed early. It pays off less when there are few branches or when most of
-the work happens after the fork.
+where fork is milliseconds per child (28–145 ms for the microVM; the KV fork
+is under 1.3% of that), so it pays off when setup is expensive relative to
+per-branch work, and less when there are few branches or most of the work
+happens after the fork. Two caveats keep this honest. The sandbox half of the
+saving is unconditional — the alternative really is N cold boots. The KV half
+depends on the baseline: against uncached sessions the whole prefill is saved,
+but a stock radix cache (SGLang, vLLM) already shares the prefix when nothing
+is competing for the cache, so against stock the KV saving appears only under
+cache pressure — exactly when `U > C − P` (see below). Killing losers early
+does not change this compute formula; what it buys is memory: each kill
+deterministically reclaims the loser's KV suffix and VM, which is what makes
+wide or deep trees affordable at all.
 
 ## Quickstart
 
