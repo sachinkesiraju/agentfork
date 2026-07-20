@@ -33,6 +33,8 @@ v1.16.1 and are labeled separately.
 | Fork one prefix into **10,000** logical branches without physical copies | N=10,000, 0 copies, exact reclaim | On a real SGLang pool/allocator backed by small CPU tensors: **10,000 forks in 0.95 s (10.5k forks/s)** with allocator usage unchanged; after per-branch divergence, **1,667× vs unshared**; **bulk kill of 10,001 branches in 0.17 s (59k kills/s)** returns the allocator to 0 (`patches/scale_10k_branch_validation.py`). This is metadata scale, not concurrent inference scale. | PASS |
 | Tree-native cache controls: quotas, reservations, demotion, invalidation, telemetry | each measured | Cache-level accounting produced the recorded quota and 34/66 reservation decisions; patch 0002 enforces request reservations before scheduler admission. Reservations remain logical token admission, not physical HBM allocation. | PASS for direct API and request admission |
 | Patched live-engine branch request path | parent → 10 children → kill on a real GPU | Modal A10G run `ap-9QgyHHLNJXINTSxlVdc75i`: every child reused 2,406 cached tokens; tree telemetry reported 1 live parent, 2,406 uniquely pinned tokens, 24,060 saved tokens, and kill released 2,406. The direct HBM test used 37k slots, killed to zero, and 21 patched CPU tests passed on the GPU host. | PASS |
+| `SGLangHTTPBackend` against a **live HTTP server** | auth + `/tree_cache` lifecycle + `/tree_generate` + error paths over a socket | Recorded 2026-07-20 (this box, no GPU) against `demo/sglang_tree_server.py` (real patched `TreeRadixCache` + 2 GiB CPU KV pool + real `TreeCacheLifecycle` + SGLang `decide_request_auth`): 401 on missing/wrong Bearer, 403 for tree fields on guarded `/generate`, 400 on unknown branch and negative reserve, 200 on `/health`; parent prefill `cached=0/4392 prompt`, 10 children each reused **4,392–4,405** cached tokens, telemetry `saved_tokens=44,037`. No model forward (stub text; `model_output=false`). The live run exposed one real client bug — `has_tree()` mis-handled the server's HTTP-400 `{"success":false}` op-failure body (fakes had used HTTP 200) — now fixed in `SGLangHTTPBackend` with regression tests; the repo's own `tests/test_sglang_live_server.py` (corrected from an unrunnable draft) passes against this server. | **PASS for live HTTP control/auth/cache path; model forward not run over HTTP** |
+| **Integrated** run: one `ForkOrchestrator` drives live inference backend **and** real sandbox under one branch id | fork N, per-branch generate + sandbox exec, kill losers both halves, export winner, allocator to baseline | Recorded 2026-07-20 (this box), `demo/integrated_demo.py` with **10 real Firecracker microVMs** + live `SGLangHTTPBackend`: parent boot+prefill 1,251 ms; 10-way fork 201 ms (20 ms/branch); each child a real in-guest `exec` (vsock, 9–175 ms) + real `generate()` (cached 4,392–4,405); winner artifact tar'd out (10,240 B); `kill_losers` freed **151 tokens/loser (1,359 total)**, winner survived; live pool **peak 5,915 → 0 (== baseline 65,536)** after close. Also PASS with `ReaperSandbox` fallback. | PASS |
 | Tree engine vs stock SGLang VGE | ≥1.5× point, ≥1.2× CI lower bound | On the same A10G and identical post-parent sibling prompts, stock sibling generation totaled 0.3293 s and tree-native totaled 0.3238 s: **1.017×** point uplift, paired-bootstrap 95% CI **[1.002×, 1.033×]**. The target is not met; stock RadixAttention already captures the shared-prefix speedup. | **FAIL** |
 | Tree engine under one cache-pressure burst | ≥1.5× point, ≥1.2× CI lower bound | Modal A10G run `ap-5jH2jxYxWXapTqAGcXjcKK`, after 96 unrelated long-prefix requests per arm: stock evicted the parent before the first child while tree pinning preserved all 2,406 parent tokens. Sibling-time VGE was **1.186×**, paired-bootstrap 95% CI **[0.994×, 1.530×]**. | **FAIL** |
 | Tree engine under sustained cache pressure | ≥1.5× point, ≥1.2× CI lower bound | Modal A10G run `ap-J2AAT7NDK7jHjYZhM6JRbA`, with 96 unrelated long-prefix requests before every child: stock cached-token hits were 0/10 while tree-native preserved all 2,406 parent tokens for 10/10. Stock sibling work took 1.508 s and tree-native took 0.945 s: **1.596×** VGE, paired-bootstrap 95% CI **[1.576×, 1.619×]**. | **PASS, synthetic** |
@@ -110,14 +112,37 @@ needs an end-to-end trace from an actual fanout workload.
 
 ## What is NOT validated
 
-- **Remote live HTTP/OpenAI path:** patch 0002 and the in-process
-  `Engine.generate` branch path ran on A10G. `SGLangHTTPBackend` lifecycle +
-  admin-only `/tree_generate` coordination is integration-tested against an HTTP protocol
-  stub, not yet against a live SGLang HTTP server.
-- **Unified runtime:** `ForkOrchestrator` coordinates Firecracker restore with
-  the reference KV cache (`demo/fc_demo.py`), but nothing coordinates the
-  patched SGLang cache or inference submission, and cleanup steps are
-  sequential, not atomic.
+- **Remote live HTTP path — now run against a live server (partial).**
+  `SGLangHTTPBackend` has now driven a **live HTTP server** end to end
+  (`demo/sglang_tree_server.py`, recorded in `report/integrated_run.md`): the
+  server mounts the *real* patched `TreeRadixCache` + `MHATokenToKVPool`
+  allocator, the real `TreeCacheLifecycle.handle` for `/tree_cache` ops, the
+  real committed-prefix charge validation on `/tree_generate`, and SGLang's own
+  `decide_request_auth`/`AuthLevel.ADMIN_FORCE` for auth. Verified live over a
+  socket: Bearer auth (401 no/wrong key, 403 for tree fields on the guarded
+  `/generate`, 403 when no admin key is configured), the full `/tree_cache`
+  create/fork/reserve/telemetry/kill lifecycle, `/tree_generate` cached-token
+  reuse + charge + telemetry, and error paths (unknown branch → 400, negative
+  reserve → the cache's own 400). **Still unreachable on this CPU box:** the
+  transformer forward pass over HTTP — there is no GPU/model, so
+  `/tree_generate` does the real KV-cache work a prefill does (match shared
+  prefix, allocate real slots for the uncached tail, insert, charge/telemeter)
+  and returns cache-computed `meta_info.cached_tokens`, but its `text` is a
+  stub (`meta_info.model_output=false`). The A10G run (above) remains the only
+  place a real model forward executed, and that was the in-process
+  `Engine.generate`, not over HTTP.
+- **Unified runtime — now validated in one orchestrator run.**
+  `demo/integrated_demo.py` runs a single `ForkOrchestrator` that binds the
+  live `SGLangHTTPBackend` KV backend **and** a real sandbox under one branch
+  id, in the "fork N fixes" shape: `create_parent` + `generate` on a long
+  shared context, `fork` N children, then per child a real `generate()` on its
+  KV branch **and** a real command in its sandbox, `kill_losers` tearing down
+  both halves, winner artifact exported, and the live server's allocator
+  verified back to baseline. Recorded with **10 real Firecracker microVMs**
+  (in-guest `exec` over vsock, artifact tar'd out over the same channel; needs
+  `/dev/kvm` + root) and, as a fallback, with `ReaperSandbox` (real per-branch
+  subprocess). See `report/integrated_run.md`. Cleanup is still **sequential,
+  not atomic** (sandbox killed, then KV freed).
 - **Production-scale GPU behavior:** the direct cache API was tested on one A10
   with a synthetic 2 GiB pool. 70B-class models, tensor/pipeline parallelism,
   mixed workloads, and scheduler contention remain unmeasured.

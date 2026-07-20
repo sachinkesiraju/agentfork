@@ -35,8 +35,11 @@ protocols:
   per-branch networking, and the jailer.
 - **`SGLangKVBackend`** (in-process) and **`SGLangHTTPBackend`** (over HTTP)
   fork the KV cache inside a patched SGLang engine. That request path was
-  measured live on an A10G; the HTTP client is protocol-tested but has not yet
-  run against a live server (see [report/RESULTS.md](report/RESULTS.md)).
+  measured live on an A10G; the HTTP client is validated against a live
+  server (`demo/sglang_tree_server.py` — real patched cache and auth, model
+  forward stubbed on CPU), and `demo/integrated_demo.py` runs it together
+  with a real sandbox under one orchestrator (see
+  [report/RESULTS.md](report/RESULTS.md)).
 
 Use it for:
 
@@ -224,17 +227,15 @@ SGLANG_DIR="$SGLANG_DIR" modal run modal_gpu_validation.py
 
 ## Limitations
 
-- SGLang is measured on only one A10G/0.6B; scale, tensor parallelism, and
-  multi-tenant pressure need a GPU fleet (a live-server test exists but is
-  unrun here).
+- All SGLang results are from one A10-class GPU with a 0.6B model — the live
+  cache-pressure sweep included — and the live HTTP server ran with the
+  transformer forward stubbed. A real GPU forward over HTTP, multi-GPU scale,
+  and GPU-plus-microVM colocation are unrun.
 - Firecracker is single-host: moving migration bundles between hosts is the
   deployer's job, and cleanup is retried, not atomic.
-- Nothing is validated at production GPU scale or with GPU-plus-microVM
-  colocation.
-- `ReaperSandbox` runs spawns serially by default; `pdeathsig="shim"` fans
-  them out.
-- Single-winner handoff exists (`export_artifact`); multi-winner merge does
-  not.
+- Winner selection is single-winner (`export_artifact` hands off one leaf);
+  multi-winner merge does not exist, and the harness's string/`generate()`
+  path is untested against a live SGLang engine.
 
 ## Why agentfork vs. alternatives
 
@@ -255,7 +256,7 @@ kill frees the VM and GPU cache together, so nothing leaks.
 | [forkd](https://github.com/deeplethe/forkd) | Forks microVMs from a shared snapshot, copy-on-write | A branch ID that also owns and reclaims the LLM KV cache |
 | [SGLang](https://github.com/sgl-project/sglang) RadixAttention, [vLLM](https://github.com/vllm-project/vllm) APC | Automatically reuses KV for requests sharing a prefix | Explicit agent-tree ownership, branch policy, and sandbox coordination |
 | [LMCache](https://github.com/LMCache/LMCache), [Mooncake](https://github.com/kvcache-ai/Mooncake), [Dynamo](https://github.com/ai-dynamo/dynamo) | Moves and tiers KV cache across memory and workers | Branch identity and sandbox coordination on top of that movement |
-| **agentfork** | Forks a sandbox and its KV cache under one branch ID, and reclaims both on kill | Live HTTP/OpenAI validation, multi-worker routing, and hosting it as a service |
+| **agentfork** | Forks a sandbox and its KV cache under one branch ID, and reclaims both on kill | GPU forward over HTTP, multi-worker routing, and hosting it as a service |
 
 ## License
 

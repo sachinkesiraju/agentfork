@@ -42,22 +42,28 @@ def test_live_tree_lifecycle_create_fork_generate_kill(backend):
         backend.create_tree(root)
         assert backend.has_tree(root)
 
-        # extend the root's cached prefix via a real generate on the tree
-        backend.generate(root, prompt, max_new_tokens=1)
+        # extend the root's cached prefix via a real generate on the tree.
+        # generate() takes a sampling_params dict and returns the server's
+        # response dict (text + meta_info), not a bare string.
+        out = backend.generate(root, prompt, {"max_new_tokens": 1})
+        assert isinstance(out, dict) and isinstance(out.get("meta_info"), dict)
 
         branch = backend.fork_branch(root, child)
         assert branch.branch_id == child
         assert backend.has_tree(child)
 
-        # the child continues from the parent's cached prefix
-        out = backend.generate(child, prompt, max_new_tokens=4)
-        assert isinstance(out, str) and out
+        # the child continues from the parent's cached prefix, so its generate
+        # reuses the parent's committed tokens instead of re-prefilling them
+        out = backend.generate(child, prompt, {"max_new_tokens": 4})
+        assert isinstance(out, dict)
+        assert out["meta_info"]["cached_tokens"] > 0
 
         tel = backend.telemetry(root)
-        assert isinstance(tel, dict)
+        assert isinstance(tel, dict) and tel["live_branches"] >= 1
 
         freed = backend.kill(child)
         assert isinstance(freed, int) and freed >= 0
+        # an unknown branch is reported absent, not by raising
         assert not backend.has_tree(child)
     finally:
         for tid in (child, root):
@@ -68,12 +74,12 @@ def test_live_tree_lifecycle_create_fork_generate_kill(backend):
 
 
 def test_live_public_generate_rejects_tree_fields(backend):
-    # patch 0003 blocks tree_id/branch_id on the public generate path; only
-    # the admin /tree_generate may carry them
+    # patch 0003 guards the public generate path on branch_id: agent-tree
+    # branches may only be driven through the admin /tree_generate endpoint.
     import urllib.error
     import urllib.request
 
-    body = b'{"text": "hi", "tree_id": "x", "sampling_params": {"max_new_tokens": 1}}'
+    body = b'{"text": "hi", "branch_id": "x", "sampling_params": {"max_new_tokens": 1}}'
     req = urllib.request.Request(
         _URL.rstrip("/") + "/generate", data=body,
         headers={"Content-Type": "application/json"}, method="POST")
