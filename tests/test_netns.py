@@ -107,6 +107,28 @@ def test_freed_indices_are_recycled_not_exhausted():
     assert i2 == 0
 
 
+def test_reserve_skips_indices_recovered_after_a_restart():
+    # A restarted adapter recovers live branches' journaled /30 indices and
+    # reserves them; the allocator must not hand those out again (which would
+    # collide on `ip link add`), but must still recycle any it skipped over.
+    cfg = NetworkConfig(uplink="eth0", host_subnet="10.0.0.0/24")
+    mgr = NetnsManager(cfg, runner=RecordingRunner())
+    mgr.reserve(0)
+    mgr.reserve(2)  # index 1 was never used by a survivor
+
+    _, first = mgr.setup("new-a")   # index 1 (skipped, so recyclable) comes first
+    _, second = mgr.setup("new-b")  # then the cursor past the reserved 2
+    assert first == 1
+    assert second == 3
+    assert 0 not in (first, second) and 2 not in (first, second)
+
+
+def test_reserve_rejects_negative_index():
+    mgr = NetnsManager(NetworkConfig(uplink="eth0"), runner=RecordingRunner())
+    with pytest.raises(ValueError, match="non-negative"):
+        mgr.reserve(-1)
+
+
 def test_subnet_exhaustion_raises_a_clear_error_and_rolls_back():
     cfg = NetworkConfig(uplink="eth0", host_subnet="10.0.0.0/30")  # one /30
     mgr = NetnsManager(cfg, runner=RecordingRunner())

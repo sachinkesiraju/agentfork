@@ -61,6 +61,9 @@ Name=eth0
 Address=172.16.0.2/30
 Gateway=172.16.0.1
 NET
+# drop any existing symlink (Ubuntu points resolv.conf at systemd-resolved),
+# so tee writes a real file inside the tree instead of following the link out
+sudo rm -f "$ROOT/etc/resolv.conf"
 echo "nameserver $NAMESERVER" | sudo tee "$ROOT/etc/resolv.conf" >/dev/null
 
 # 3. identity regen on boot: a restored clone must not keep the parent's
@@ -77,15 +80,17 @@ ExecStart=/bin/sh -c 'rm -f /etc/machine-id && systemd-machine-id-setup && rm -f
 WantedBy=multi-user.target
 UNIT
 
-# 4. enable everything (symlink into the multi-user target)
-for unit in guest-agent regen-identity systemd-networkd; do
-  sudo ln -sf "/etc/systemd/system/${unit}.service" \
-    "$ROOT/etc/systemd/system/multi-user.target.wants/${unit}.service" \
-    2>/dev/null || true
+# 4. enable everything (symlink into the multi-user target). The wants dir may
+#    not exist in a minimal base image; create it, and let a genuine symlink
+#    failure abort under set -e rather than silently shipping a broken rootfs
+#    with no guest agent.
+WANTS="$ROOT/etc/systemd/system/multi-user.target.wants"
+sudo mkdir -p "$WANTS"
+for unit in guest-agent regen-identity; do
+  sudo ln -sf "/etc/systemd/system/${unit}.service" "$WANTS/${unit}.service"
 done
 sudo ln -sf /lib/systemd/system/systemd-networkd.service \
-  "$ROOT/etc/systemd/system/multi-user.target.wants/systemd-networkd.service" \
-  2>/dev/null || true
+  "$WANTS/systemd-networkd.service"
 
 sudo mksquashfs "$ROOT" "$OUT" -quiet -noappend
 echo "built $OUT"

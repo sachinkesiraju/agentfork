@@ -247,11 +247,14 @@ class ForkOrchestrator:
                     _log.info("registry %s: loaded %d branch(es) from a "
                               "previous owner", self.registry_path,
                               len(self._branches))
+            if reap_interval_s is not None:
+                self.start_reaper(reap_interval_s)
         except BaseException:
+            # start_reaper is inside the try too: if it raises, releasing the
+            # flock keeps the registry from staying "owned" for the life of the
+            # process and blocking a retry to construct on the same file.
             self._release_registry_lock()
             raise
-        if reap_interval_s is not None:
-            self.start_reaper(reap_interval_s)
 
     # -- registry ------------------------------------------------------------
 
@@ -298,13 +301,19 @@ class ForkOrchestrator:
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, self.registry_path)
-        dir_fd = os.open(os.path.dirname(self.registry_path) or ".", os.O_RDONLY)
+        # The rename is the durable commit point. Everything past it is
+        # best-effort: an error here (e.g. os.open failing under fd pressure)
+        # must NOT propagate, or callers would roll back in-memory state that
+        # is already committed on disk, diverging memory from the registry.
         try:
-            os.fsync(dir_fd)  # make the rename itself durable
+            dir_fd = os.open(
+                os.path.dirname(self.registry_path) or ".", os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)  # make the rename itself durable
+            finally:
+                os.close(dir_fd)
         except OSError:
             pass  # some filesystems reject directory fsync; best effort
-        finally:
-            os.close(dir_fd)
 
     @locked
     def _record(self, branch: Branch) -> None:
@@ -660,9 +669,13 @@ class ForkOrchestrator:
             raise  # record stays in state "killing"; reconcile() retries
         with self._lifecycle_changed:
             self._killing.discard(branch_id)
-            self.metrics.kills += 1
             try:
                 self._forget(branch_id)
+                # Count the kill only once the record is durably forgotten. If
+                # _forget's persist fails, the branch stays journaled and
+                # reconcile() retries this kill; bumping before _forget would
+                # double-count that single logical kill.
+                self.metrics.kills += 1
             finally:
                 self._lifecycle_changed.notify_all()
         _log.debug("killed %s (freed %d KV tokens)", branch_id, freed)

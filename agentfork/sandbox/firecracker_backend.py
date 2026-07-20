@@ -146,6 +146,26 @@ class FirecrackerSandbox:
         self._netns_index: dict[str, int] = {}  # branch -> its /30 index
         self._parent_locks: dict[str, threading.Lock] = {}
         self._reseed_threads: dict[str, threading.Thread] = {}
+        self._recover_netns_indices()
+
+    def _recover_netns_indices(self) -> None:
+        """After a restart, VMMs from the previous process survive (they are
+        not pdeathsig-tied). Their /30 indices are journaled next to each
+        fc.pid; reserve them in a fresh NetnsManager so a new spawn does not
+        reuse a live index and collide on `ip link add`."""
+        if self._netns is None:
+            return
+        try:
+            entries = os.listdir(self.work_dir)
+        except OSError:
+            return
+        for name in entries:
+            idx_path = os.path.join(self.work_dir, name, "netns.idx")
+            try:
+                with open(idx_path, encoding="utf-8") as f:
+                    self._netns.reserve(int(f.read().strip()))
+            except (OSError, ValueError):
+                continue
 
     @staticmethod
     def _branch_dir_name(branch_id: str) -> str:
@@ -470,10 +490,13 @@ class FirecrackerSandbox:
         if self._netns is None:
             return None
         name, index = self._netns.setup(branch_id)
-        with open(self._netns_idx_path(branch_id), "w", encoding="utf-8") as f:
-            f.write(str(index))
+        # Record the index in memory BEFORE journaling it: if the file write
+        # fails, spawn's except -> _teardown_netns still finds the index and
+        # tears the namespace/veth/NAT down instead of leaking it.
         with self._lock:
             self._netns_index[branch_id] = index
+        with open(self._netns_idx_path(branch_id), "w", encoding="utf-8") as f:
+            f.write(str(index))
         return name
 
     def _teardown_netns(self, branch_id: str) -> None:
@@ -637,7 +660,13 @@ class FirecrackerSandbox:
                     f"branch {branch_id} guest agent not ready after "
                     f"{timeout_s}s")
             try:
-                self._exec_branch(
+                with self._lock:
+                    if branch_id not in self._vms:
+                        raise KeyError(f"no such branch: {branch_id}")
+                # _exec_live, not _exec_branch: the no-op probe mutates nothing,
+                # so it must not bump _gen and mark the snapshot stale (that
+                # forced a needless re-snapshot on the first fork).
+                self._exec_live(
                     branch_id,
                     ["true"],
                     timeout_s=min(1.0, remaining),
@@ -797,14 +826,18 @@ class FirecrackerSandbox:
         for those, snapshot/``export_bundle`` the overlay instead."""
         if not self.vsock:
             raise RuntimeError("export_artifact requires vsock=True")
-        with self._lock:
-            if branch_id not in self._vms:
-                raise KeyError(f"no such branch: {branch_id}")
-        result = self._exec_live(
-            branch_id,
-            ["tar", "-C", os.path.dirname(guest_path) or "/",
-             "-cf", "-", os.path.basename(guest_path)],
-            timeout_s=120.0)
+        # Hold the per-branch lock: without it this exec can land on a guest
+        # frozen in a concurrent fork's pause->snapshot->resume window and
+        # block up to the full 120 s timeout.
+        with self._parent_lock(branch_id):
+            with self._lock:
+                if branch_id not in self._vms:
+                    raise KeyError(f"no such branch: {branch_id}")
+            result = self._exec_live(
+                branch_id,
+                ["tar", "-C", os.path.dirname(guest_path) or "/",
+                 "-cf", "-", os.path.basename(guest_path)],
+                timeout_s=120.0)
         if result.exit_code != 0:
             raise RuntimeError(
                 f"artifact tar of {guest_path!r} in {branch_id} failed "
@@ -818,7 +851,13 @@ class FirecrackerSandbox:
 
     def kill(self, branch_id: str) -> None:
         with self._lifecycle_changed:
-            while self._parent_forks.get(branch_id, 0):
+            # Wait out an in-flight fork of this branch (as parent) AND an
+            # in-flight spawn of this branch itself. Killing a half-spawned
+            # branch would race spawn: kill sees no _vms entry yet, tears down
+            # its netns/dir, then spawn finishes and installs a live VMM that
+            # kill believes is dead (leaked VMM + dir removed underneath it).
+            while (self._parent_forks.get(branch_id, 0)
+                   or branch_id in self._pending):
                 self._lifecycle_changed.wait()
             vm = self._vms.pop(branch_id, None)
             self._snapshots.pop(branch_id, None)
@@ -832,6 +871,10 @@ class FirecrackerSandbox:
                 _log.warning("vm.kill of %s raised; continuing teardown",
                              branch_id, exc_info=True)
             self._teardown_netns(branch_id)  # after the VMM releases the tap
+            # A background reseed execs against this branch's dir; let it drain
+            # before rmtree, or it can os.makedirs the dir back after cleanup
+            # and leave a leaked empty directory behind.
+            self.await_reseed(branch_id)
             self._remove(pid_path)
             self._cleanup_artifacts(branch_id)
             with self._lock:

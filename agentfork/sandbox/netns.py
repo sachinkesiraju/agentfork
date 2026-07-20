@@ -89,6 +89,22 @@ class NetnsManager:
             if index not in self._free:
                 self._free.append(index)
 
+    def reserve(self, index: int) -> None:
+        """Mark ``index`` as already in use, e.g. recovered from a journal
+        after a restart, so it is never handed to a new branch that would
+        collide with a surviving VMM's /30. Indices skipped below the cursor
+        are added to the free list so they are still recyclable."""
+        if index < 0:
+            raise ValueError(f"index must be non-negative: {index}")
+        with self._alloc_lock:
+            if index < self._next:
+                if index in self._free:
+                    self._free.remove(index)
+                return
+            self._free.extend(
+                i for i in range(self._next, index) if i not in self._free)
+            self._next = index + 1
+
     def netns_name(self, branch_id: str) -> str:
         # ip netns names: keep them short and filesystem-safe. Sanitizing or
         # truncating can merge distinct branch IDs, so append a digest of the

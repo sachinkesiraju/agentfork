@@ -109,6 +109,41 @@ def test_exec_spawn_failure_raises_vsock_error(channel):
         channel.exec(["/definitely/not/a/binary"])
 
 
+def test_malformed_agent_reply_raises_vsock_error(short_dir):
+    # A valid-JSON reply missing the exec keys must surface as VsockError (the
+    # contract callers catch), not a bare KeyError leaking out.
+    uds = os.path.join(short_dir, "v.sock")
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(uds)
+    listener.listen(8)
+
+    def serve():
+        while True:
+            try:
+                conn, _ = listener.accept()
+            except OSError:
+                return
+            for _ in range(2):  # drain CONNECT, then the request line
+                buf = b""
+                while not buf.endswith(b"\n"):
+                    chunk = conn.recv(256)
+                    if not chunk:
+                        break
+                    buf += chunk
+                if _ == 0:
+                    conn.sendall(b"OK 1024\n")
+            conn.sendall(b'{"unexpected": true}\n')
+            conn.close()
+
+    threading.Thread(target=serve, daemon=True).start()
+    try:
+        client = VsockExecClient(uds, port=52, handshake_timeout_s=5.0)
+        with pytest.raises(VsockError, match="incomplete agent exec reply"):
+            client.exec(["true"])
+    finally:
+        listener.close()
+
+
 def test_exec_empty_argv_rejected_client_side(channel):
     with pytest.raises(ValueError):
         channel.exec([])
