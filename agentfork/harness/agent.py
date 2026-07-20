@@ -30,6 +30,12 @@ continuations go through ``extend()`` (the ``TreeKVCache`` path); string
 continuations go through ``generate()`` (the ``external_data_path`` SGLang
 path), and a string given to a token backend is encoded first.
 
+On the ``generate()`` path the ledger tracks the caller-supplied prompt text;
+committing context there is an inference call, so the engine's own committed
+prefix also includes any tokens it generates. Callers on that path must
+therefore compose each continuation to extend the prompt text they passed. This
+path is untested against a live SGLang engine here.
+
 Scope matches the rest of the repository: stdlib only, the orchestrator and its
 backends do the heavy lifting, and locking is narrow — only the prefix ledger
 is guarded here; every backend call already serializes itself.
