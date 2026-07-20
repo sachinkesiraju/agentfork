@@ -79,18 +79,12 @@ to
 shared setup + N × (fork + branch work)
 ```
 
-where fork is milliseconds per child (28–145 ms for the microVM; the KV fork
-is under 1.3% of that), so it pays off when setup is expensive relative to
-per-branch work, and less when there are few branches or most of the work
-happens after the fork. Two caveats keep this honest. The sandbox half of the
-saving is unconditional — the alternative really is N cold boots. The KV half
-depends on the baseline: against uncached sessions the whole prefill is saved,
-but a stock radix cache (SGLang, vLLM) already shares the prefix when nothing
-is competing for the cache, so against stock the KV saving appears only under
-cache pressure — exactly when `U > C − P` (see below). Killing losers early
-does not change this compute formula; what it buys is memory: each kill
-deterministically reclaims the loser's KV suffix and VM, which is what makes
-wide or deep trees affordable at all.
+where fork is milliseconds per child (28–145 ms, KV under 1.3% of that), so it
+pays off when setup is expensive relative to per-branch work, and less with few
+branches or when most work happens after the fork. One caveat on the KV half:
+a stock radix cache (SGLang, vLLM) already shares the prefix when nothing is
+competing for it, so against stock the KV saving shows up only under cache
+pressure — exactly when `U > C − P` (see below).
 
 ## Quickstart
 
