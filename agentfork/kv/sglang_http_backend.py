@@ -70,11 +70,26 @@ class SGLangHTTPBackend:
         if child_id is None:
             raise ValueError("child_id is required for remote SGLang forks")
         with self._condition:
+            if parent_id in self._closing_branches:
+                raise RuntimeError(f"parent branch is being killed: {parent_id}")
             try:
                 namespace = self._namespaces[parent_id]
             except KeyError:
                 raise KeyError(f"untracked parent branch: {parent_id}") from None
-        self._operation("fork", child_id, parent_id=parent_id)
+            # Register as in-flight against the parent so a concurrent kill of
+            # the parent waits for this fork instead of deleting it mid-request
+            # (which would leave the child pointing at a gone parent).
+            self._active[parent_id] = self._active.get(parent_id, 0) + 1
+        try:
+            self._operation("fork", child_id, parent_id=parent_id)
+        finally:
+            with self._condition:
+                remaining = self._active[parent_id] - 1
+                if remaining:
+                    self._active[parent_id] = remaining
+                else:
+                    self._active.pop(parent_id, None)
+                self._condition.notify_all()
         with self._condition:
             self._namespaces[child_id] = namespace
             self._parents[child_id] = parent_id
@@ -115,6 +130,8 @@ class SGLangHTTPBackend:
             "extend(); use ForkOrchestrator.generate()")
 
     def reserve(self, tree_id: str, tokens: int) -> None:
+        if tokens < 0:
+            raise ValueError(f"reserve tokens must be non-negative: {tokens}")
         self._operation("reserve", tree_id, tokens=tokens)
 
     def telemetry(self, tree_id: str) -> dict:
@@ -125,7 +142,8 @@ class SGLangHTTPBackend:
             self.telemetry(tree_id)
             return True
         except RuntimeError as exc:
-            if "no such" in str(exc).lower():
+            msg = str(exc).lower()
+            if "no such" in msg or "not found" in msg or "http 404" in msg:
                 return False
             raise
 
@@ -138,6 +156,9 @@ class SGLangHTTPBackend:
         branch_end: bool = False,
         reserve_tokens: int | None = None,
     ) -> dict:
+        if reserve_tokens is not None and reserve_tokens < 0:
+            raise ValueError(
+                f"reserve_tokens must be non-negative: {reserve_tokens}")
         with self._condition:
             if branch_id in self._closing_branches:
                 raise RuntimeError(f"branch is being killed: {branch_id}")
@@ -180,9 +201,15 @@ class SGLangHTTPBackend:
             retry=operation in ("kill", "telemetry", "invalidate"),
         )
         if not payload.get("success"):
+            message = payload.get("message", "unknown error")
+            # kill is retried, and it is not idempotent server-side: if the
+            # first attempt succeeded but its response was lost, the retry hits
+            # an already-deleted branch. The delete did happen, so treat "no
+            # such branch" on a kill as success rather than a spurious failure.
+            if operation == "kill" and "no such" in message.lower():
+                return payload
             raise RuntimeError(
-                f"SGLang tree-cache operation {operation} failed: "
-                f"{payload.get('message', 'unknown error')}"
+                f"SGLang tree-cache operation {operation} failed: {message}"
             )
         return payload
 

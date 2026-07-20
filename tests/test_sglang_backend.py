@@ -120,6 +120,24 @@ def test_kill_calls_through_and_removes_bookkeeping():
     assert "t" not in cache.sequences
 
 
+def test_kill_keeps_local_bookkeeping_if_the_engine_kill_fails():
+    # If kill_tree raises, the length must NOT have been dropped first, or the
+    # branch would be live in the engine but untracked here (has_tree False,
+    # extend KeyErrors) -- a leak. Freeing the engine first preserves tracking.
+    cache = FakeTreeRadixCache()
+    backend = SGLangKVBackend(cache)
+    backend.create_tree("t")
+    backend.extend("t", [1, 2, 3])
+
+    def boom(_tree_id):
+        raise RuntimeError("engine kill failed")
+
+    cache.kill_tree = boom
+    with pytest.raises(RuntimeError, match="engine kill failed"):
+        backend.kill("t")
+    assert "t" in backend._lengths  # still tracked, so a retry can free it
+
+
 def test_extend_charges_full_length_when_entirely_new():
     cache = FakeTreeRadixCache()
     backend = SGLangKVBackend(cache)

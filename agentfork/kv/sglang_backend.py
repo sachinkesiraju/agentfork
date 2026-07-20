@@ -51,8 +51,12 @@ class SGLangKVBackend:
 
     @locked
     def kill(self, tree_id: str) -> int:
+        # Free in the engine first: if kill_tree raises, dropping the length
+        # beforehand would leave the branch live in the engine but untracked
+        # here (has_tree False, extend KeyErrors), i.e. a leak.
+        freed = self._cache.kill_tree(tree_id)
         self._lengths.pop(tree_id, None)
-        return self._cache.kill_tree(tree_id)
+        return freed
 
     @locked
     def extend(self, tree_id: str, tokens: list[int]) -> int:

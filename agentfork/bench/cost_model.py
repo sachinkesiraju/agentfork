@@ -51,6 +51,11 @@ def model(s: Scenario) -> dict:
         + (n - 1) * p * s.provider_cached_discount + n * u,
         "resident": None,  # opaque, provider-side
     }
+    # agentfork and self-hosted radix are defined identically on token
+    # arithmetic: both prefill the shared prefix once and charge per-branch
+    # suffixes. So the two *_vs_self_hosted ratios below are 1.0 by
+    # construction (parity by model definition), not a measured result. The
+    # modeled advantage is versus independent prefill and provider caching.
     self_hosted = {"prefill_charged": p + n * u, "resident": p + n * u}
     agentfork = {"prefill_charged": p + n * u, "resident": p + n * u}
     out = {

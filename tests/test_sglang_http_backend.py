@@ -119,10 +119,21 @@ def test_tree_lifecycle_and_generation_use_admin_key():
 
 
 def test_unsuccessful_payload_raises_with_server_message():
+    stub = ErrorStub(200, {"success": False, "message": "capacity exceeded"})
+    try:
+        with pytest.raises(RuntimeError, match="capacity exceeded"):
+            SGLangHTTPBackend(stub.url).kill("ghost")
+    finally:
+        stub.close()
+
+
+def test_kill_of_already_gone_branch_is_idempotent():
+    # kill is retried; a retry after a lost success response hits an
+    # already-deleted branch. "no such" on a kill is treated as success, not
+    # a spurious failure, so the retry does not report the kill as failed.
     stub = ErrorStub(200, {"success": False, "message": "no such tree"})
     try:
-        with pytest.raises(RuntimeError, match="no such tree"):
-            SGLangHTTPBackend(stub.url).kill("ghost")
+        assert SGLangHTTPBackend(stub.url).kill("ghost") == 0
     finally:
         stub.close()
 

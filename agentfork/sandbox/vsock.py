@@ -133,6 +133,9 @@ class VsockExecClient:
                 reply = json.loads(line)
             except json.JSONDecodeError as exc:
                 raise VsockError(f"malformed agent reply: {line[:80]!r}") from exc
+            if not isinstance(reply, dict):
+                raise VsockError(
+                    f"agent reply was not a JSON object: {line[:80]!r}")
             if "error" in reply:
                 raise VsockError(f"guest agent error: {reply['error']}")
             return reply
@@ -149,12 +152,16 @@ class VsockExecClient:
         if stdin is not None:
             request["stdin"] = base64.b64encode(stdin).decode()
         reply = self._roundtrip(request, timeout_s)
-        return ExecResult(
-            exit_code=reply["exit_code"],
-            stdout=base64.b64decode(reply["stdout"]),
-            stderr=base64.b64decode(reply["stderr"]),
-            timed_out=reply.get("timed_out", False),
-        )
+        try:
+            return ExecResult(
+                exit_code=reply["exit_code"],
+                stdout=base64.b64decode(reply["stdout"]),
+                stderr=base64.b64decode(reply["stderr"]),
+                timed_out=reply.get("timed_out", False),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise VsockError(f"incomplete agent exec reply: {reply!r}"[:200]) \
+                from exc
 
     def exec_detached(self, argv: list[str],
                       timeout_s: float | None = 30.0) -> DetachedExec:
@@ -163,4 +170,8 @@ class VsockExecClient:
         if not argv:
             raise ValueError("argv must not be empty")
         reply = self._roundtrip({"argv": argv, "detach": True}, timeout_s)
-        return DetachedExec(pid=reply["pid"], log_path=reply["log"])
+        try:
+            return DetachedExec(pid=reply["pid"], log_path=reply["log"])
+        except (KeyError, TypeError) as exc:
+            raise VsockError(
+                f"incomplete agent detach reply: {reply!r}"[:200]) from exc

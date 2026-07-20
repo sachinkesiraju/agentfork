@@ -160,6 +160,56 @@ def test_spawn_root_without_vsock(tmp_path):
         ("boot", "kernel", "rootfs.ext4", None, None)
 
 
+def test_kill_waits_for_an_in_flight_spawn_of_the_same_branch(tmp_path):
+    # Regression: kill must not race a spawn of the same branch. If kill runs
+    # while spawn is mid-boot, it sees no _vms entry, tears down the branch's
+    # netns/dir, and returns -- then spawn installs a live VMM kill believes is
+    # dead (leaked VMM, dir removed underneath it). kill must wait out _pending.
+    boot_gate = threading.Event()
+
+    class BlockingBootMicroVM(FakeMicroVM):
+        def boot(self, kernel, rootfs, overlay=None, vsock_uds=None, tap=None):
+            boot_gate.wait(5)
+            return super().boot(kernel, rootfs, overlay, vsock_uds, tap)
+
+    class BlockingFactory(FakeMicroVMFactory):
+        def __call__(self, fc_bin, vm_dir, jailer=None, netns=None):
+            vm = BlockingBootMicroVM(fc_bin, vm_dir)
+            self.instances.append(vm)
+            self.by_dir[vm_dir] = vm
+            return vm
+
+    sandbox, factory, _ = _make_sandbox(
+        tmp_path, factory=BlockingFactory(), vsock=False)
+
+    spawn_done = threading.Event()
+    spawner = threading.Thread(
+        target=lambda: (sandbox.spawn("root", None), spawn_done.set()))
+    spawner.start()
+
+    for _ in range(500):  # wait until the spawn is registered in flight
+        with sandbox._lock:
+            if "root" in sandbox._pending:
+                break
+        time.sleep(0.001)
+    assert "root" in sandbox._pending
+
+    kill_done = threading.Event()
+    killer = threading.Thread(
+        target=lambda: (sandbox.kill("root"), kill_done.set()))
+    killer.start()
+
+    assert not kill_done.wait(0.2)  # kill blocks while the spawn is in flight
+
+    boot_gate.set()
+    spawner.join(5)
+    killer.join(5)
+    assert spawn_done.is_set() and kill_done.is_set()
+    # the fully-spawned VMM was actually killed, not leaked
+    assert ("kill",) in factory.instances[-1].events
+    assert sandbox.alive("root") is False
+
+
 def test_first_fork_snapshots_parent_then_restores_child(tmp_path):
     sandbox, factory, _ = _make_sandbox(tmp_path)
     sandbox.spawn("root", None)
