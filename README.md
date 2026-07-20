@@ -238,8 +238,10 @@ SGLANG_DIR="$SGLANG_DIR" modal run modal_gpu_validation.py
   colocation.
 - `ReaperSandbox` runs spawns serially by default; `pdeathsig="shim"` fans
   them out.
-- Single-winner handoff exists (`export_artifact`); multi-winner merge does
-  not.
+- Winner selection is single-winner (`export_artifact` hands off one leaf;
+  the harness keeps one branch per round); multi-winner merge does not exist,
+  and the harness's string/`generate()` lineage path is untested against a
+  live SGLang engine.
 
 ## Why agentfork vs. alternatives
 
