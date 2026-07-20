@@ -81,11 +81,13 @@ shared setup + N × (fork + branch work)
 
 where fork is milliseconds per child (28–145 ms, KV under 1.3% of that), so it
 pays off when setup is expensive relative to per-branch work, and less with few
-branches or when most work happens after the fork. One caveat on the KV half:
-stock radix caches (SGLang, vLLM) already share the prefix uncontended, so
-**pinning wins only under cache pressure — exactly when `U > C − P`** (`U`
-unrelated tokens between children, cache capacity `C`, shared prefix `P`);
-below that the advantage is ~1.0×. Derivation and token-exact validation:
+branches or when most work happens after the fork.
+
+One caveat on the KV half: stock radix caches (SGLang, vLLM) already share
+the prefix uncontended, so **pinning wins only under cache pressure —
+exactly when `U > C − P`** (`U` unrelated tokens between children, cache
+capacity `C`, shared prefix `P`); below that the advantage is ~1.0×.
+Derivation and token-exact validation:
 [report/PRESSURE.md](report/PRESSURE.md).
 
 ## Quickstart
