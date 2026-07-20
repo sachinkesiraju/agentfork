@@ -35,15 +35,11 @@ protocols:
   per-branch networking, and the jailer.
 - **`SGLangKVBackend`** (in-process) and **`SGLangHTTPBackend`** (over HTTP)
   fork the KV cache inside a patched SGLang engine. That request path was
-  measured live on an A10G, and `SGLangHTTPBackend` has now been driven against
-  a **live HTTP server** (`demo/sglang_tree_server.py`, backed by the real
-  patched `TreeRadixCache` + KV pool + auth) — auth, `/tree_cache` lifecycle,
-  `/tree_generate` cached-token reuse, and error paths — with the transformer
-  forward stubbed since this box has no GPU. `demo/integrated_demo.py` then runs
-  one `ForkOrchestrator` over that live backend **and** a real sandbox
-  (Firecracker microVMs, or `ReaperSandbox`) under a single branch id. See
-  [report/integrated_run.md](report/integrated_run.md) and
-  [report/RESULTS.md](report/RESULTS.md).
+  measured live on an A10G; the HTTP client is validated against a live
+  server (`demo/sglang_tree_server.py` — real patched cache and auth, model
+  forward stubbed on CPU), and `demo/integrated_demo.py` runs it together
+  with a real sandbox under one orchestrator (see
+  [report/RESULTS.md](report/RESULTS.md)).
 
 Use it for:
 
