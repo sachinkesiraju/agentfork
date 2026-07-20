@@ -96,34 +96,9 @@ pip install -e ".[dev]"
 tools/setup_sglang.sh   # patches SGLang for the KV backend; prints launch commands
 ```
 
-The lifecycle is `create_parent` / `fork` / `kill_losers` over two production
-backends: a Firecracker microVM per branch (`FirecrackerSandbox`, see
-`demo/fc_demo.py`) and a shared KV cache in a patched SGLang engine. With the
-server up, fork candidates from a shared prompt and keep the winner, with
-inference (`generate`) as the data path:
-
-```python
-from agentfork import ForkOrchestrator, SGLangHTTPBackend
-
-kv = SGLangHTTPBackend(
-    "https://sglang.example.internal", admin_api_key="admin-secret")
-with ForkOrchestrator(kv=kv, registry_path="branches.json") as orch:
-    orch.create_parent("parent")
-    orch.generate("parent", "Shared context", {"max_new_tokens": 4})
-
-    children = orch.fork("parent", n=3)  # three candidates from one prompt
-    for child in children:
-        orch.generate(child.branch_id, "Shared context\nCandidate:",
-                      {"max_new_tokens": 64}, reserve_tokens=64)
-
-    orch.kill_losers(children[0].branch_id)  # keep the winner, drop the rest
-```
-
-The example above wires the lifecycle by hand. `agentfork.harness.TreeAgent`
-drives the whole loop — prepare shared context, fan out N candidates that each
-**strictly extend** it (a `PrefixViolation` is raised before any branch is
-forked otherwise), score them, keep the winner, re-fork it to verify — and
-runs on the CPU reference cache with no GPU:
+Prepare a shared context, fan out N candidates that each extend it, keep the
+winner, and kill the losers. `TreeAgent` drives that loop over the CPU
+reference cache, so it runs with no GPU:
 
 ```python
 from agentfork.harness import Round, TreeAgent
@@ -139,9 +114,9 @@ with ForkOrchestrator(kv=TreeKVCache(), sandbox=NullSandbox()) as orch:
     winner = agent.solve("root", SHARED, [round1])  # keeps only the winner
 ```
 
-The LLM that proposes candidates is a pluggable seam (`agentfork.harness.LLM`,
-with Anthropic and OpenAI-compatible adapters). `demo/tree_agent_demo.py` runs
-this end to end against a real model — it plants a bug, fixes it from N
+Each continuation must strictly extend the shared prefix (a `PrefixViolation`
+is raised before any branch is forked otherwise). `demo/tree_agent_demo.py`
+runs this against a real LLM end to end — it plants a bug, fixes it from N
 candidates, then re-forks the winner against a fuller suite:
 
 ```bash
