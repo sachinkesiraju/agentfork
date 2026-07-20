@@ -228,8 +228,9 @@ SGLANG_DIR="$SGLANG_DIR" modal run modal_gpu_validation.py
 ## Limitations
 
 - SGLang is measured on only one A10G/0.6B; scale, tensor parallelism, and
-  multi-tenant pressure need a GPU fleet (a live-server test exists but is
-  unrun here).
+  multi-tenant pressure need a GPU fleet. The live HTTP server path is
+  validated (real patched cache, auth, lifecycle), but with the transformer
+  forward stubbed — a real GPU forward over HTTP remains unrun.
 - Firecracker is single-host: moving migration bundles between hosts is the
   deployer's job, and cleanup is retried, not atomic.
 - Nothing is validated at production GPU scale or with GPU-plus-microVM
@@ -258,7 +259,7 @@ kill frees the VM and GPU cache together, so nothing leaks.
 | [forkd](https://github.com/deeplethe/forkd) | Forks microVMs from a shared snapshot, copy-on-write | A branch ID that also owns and reclaims the LLM KV cache |
 | [SGLang](https://github.com/sgl-project/sglang) RadixAttention, [vLLM](https://github.com/vllm-project/vllm) APC | Automatically reuses KV for requests sharing a prefix | Explicit agent-tree ownership, branch policy, and sandbox coordination |
 | [LMCache](https://github.com/LMCache/LMCache), [Mooncake](https://github.com/kvcache-ai/Mooncake), [Dynamo](https://github.com/ai-dynamo/dynamo) | Moves and tiers KV cache across memory and workers | Branch identity and sandbox coordination on top of that movement |
-| **agentfork** | Forks a sandbox and its KV cache under one branch ID, and reclaims both on kill | Live HTTP/OpenAI validation, multi-worker routing, and hosting it as a service |
+| **agentfork** | Forks a sandbox and its KV cache under one branch ID, and reclaims both on kill | GPU forward over HTTP, multi-worker routing, and hosting it as a service |
 
 ## License
 
