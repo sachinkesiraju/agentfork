@@ -97,7 +97,12 @@ prefill-token compute ratio is `1 + m·P/(P + N·S)` (misses `m = N` sustained,
 `agentfork/bench/cost_model.py` and the simulator in
 `agentfork/bench/pressure_bench.py` (validated to the token against the
 `TreeKVCache` reference and a stock leaf-LRU radix) reproduce the sustained ≫
-burst ≫ uncontended ordering of the GPU VGE rows below.
+burst ≫ uncontended ordering of the GPU VGE rows below. A live A10 sweep
+(`modal_pressure_sweep.py`, `C = 32768`, `P = 2402`, so `U* = 30366`) confirms
+the boundary directly: stock's measured parent hit rate is 1.00 at `U ∈ {0,
+24k}` (below `U*`) and 0.00 at `U ∈ {48k, 96k}` (above), while the pin holds
+1.00 throughout; wall-clock VGE rises from ~1.0× to 1.22–1.29× across the line
+(see [`report/PRESSURE.md`](PRESSURE.md)).
 
 ## Workload-shape census (de-risk track)
 

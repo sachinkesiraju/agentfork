@@ -175,17 +175,31 @@ cache's hit rates and prefill charges exactly. It does not predict absolute
 wall-clock VGE, which depends on the prefill/decode time split of the specific
 model and GPU.
 
-## GPU validation status
+## GPU validation (live A10)
 
-Skipped: no Modal credentials are available in this environment (`modal` is not
-installed, there is no `~/.modal.toml`, and no `MODAL_*` environment variables
-are set). No GPU numbers are fabricated. To run the live sweep on a patched
-A10G engine, apply patches `0001`–`0003` to an SGLang checkout and run
-`SGLANG_DIR=/path/to/sglang python3 -m modal run modal_gpu_validation.py`
-(see `modal_gpu_validation.py`, whose `apply_cache_pressure`/`ENGINE_CHILDREN`
-knobs implement the sustained pattern at `P≈2.4k, N∈{10,12}`). Record the
-measured VGE at each `U ∈ {0, 24k, 48k, 96k}` beside the model's prediction
-here when Modal is reachable.
+The sweep was run on a live patched SGLang engine (`main@40517b593` + patches
+`0001`–`0003`, Qwen3-0.6B) on a Modal **NVIDIA A10**, capping the KV pool to
+`C = 32768` so the boundary `U* = C − P` lands inside the swept range. Measured
+`P = 2402` tokens, so `U* = 30366`. At each `U` the sustained pattern injects
+`U` unrelated prefill tokens (unique, chunked) before every one of `N = 10`
+children, for both stock RadixAttention and the tree-pinned backend. Reproduce
+with `SGLANG_DIR=/path/to/sglang python3 -m modal run modal_pressure_sweep.py`.
+
+| U | U vs U*=30366 | model: pinning wins | stock parent hit rate | pinned parent hit rate | measured VGE (stock/pin wall-clock) |
+|---|---|---|---|---|---|
+| 0 | below | no | 1.00 | 1.00 | 0.99× |
+| 24,000 | below | no | 1.00 | 1.00 | 1.01× |
+| 48,000 | above | yes | 0.00 | 1.00 | 1.22× |
+| 96,000 | above | yes | 0.00 | 1.00 | 1.29× |
+
+The measured hit-rate flip is exactly what the model predicts: stock keeps the
+prefix while `U ≤ U*` (hit rate 1.00, VGE ≈ 1.0) and loses it once `U > U*`
+(hit rate 0.00), while the pin holds the prefix at every `U` (1.00). The
+transition straddles `U* = 30366` — the model's break-even — between the 24k
+(kept) and 48k (evicted) points. As predicted in the reconciliation above, the
+wall-clock VGE (1.22–1.29× above the line) is far below the ~10.7× prefill-token
+ratio because decode time, unaffected by prefix residency, dominates the small
+model's per-request wall clock. Raw run: Modal app `agentfork-pressure-sweep`.
 
 ## Assumptions and limits (honest)
 

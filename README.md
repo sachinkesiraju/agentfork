@@ -229,6 +229,7 @@ python demo/fc_demo.py --fc ./firecracker --kernel vmlinux --rootfs rootfs.ext4 
 # GPU validation (requires Modal and the patched SGLang checkout):
 pip install modal
 SGLANG_DIR="$SGLANG_DIR" modal run modal_gpu_validation.py
+SGLANG_DIR="$SGLANG_DIR" modal run modal_pressure_sweep.py  # U > C-P break-even sweep
 ```
 
 ## Limitations
@@ -241,8 +242,9 @@ SGLANG_DIR="$SGLANG_DIR" modal run modal_gpu_validation.py
 - Nothing is validated at production GPU scale or with GPU-plus-microVM
   colocation.
 - The `U > C − P` break-even is validated to the token against the reference
-  caches; the GPU sweep of the same boundary is unrun (instructions in
-  [report/PRESSURE.md](report/PRESSURE.md)).
+  caches and on a live A10 (stock parent hit rate flips 1.00→0.00 across
+  `U* = C − P`; sweep in [report/PRESSURE.md](report/PRESSURE.md)), but only at
+  one model/GPU and one capacity.
 - `ReaperSandbox` runs spawns serially by default; `pdeathsig="shim"` fans
   them out.
 - Single-winner handoff exists (`export_artifact`); multi-winner merge does
