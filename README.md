@@ -148,38 +148,20 @@ winner = agent.solve("root", SHARED, [round1])  # returns the winning branch
 orch.close()
 ```
 
-Each continuation must strictly extend its parent's committed prefix; a
-violation raises `PrefixViolation` **before** any branch is forked, so a bad
-prompt never leaks a branch. The harness tracks each branch's committed
-token/text prefix itself (mirroring `SGLangKVBackend`'s length tracking) and
-supports both token-list continuations (via `extend()`, the `TreeKVCache`
-path) and string continuations (via `generate()`, the `external_data_path`
-SGLang path); a string handed to a token backend is UTF-8 encoded. A branch
-whose work fails is recorded as a failed result and dropped at selection
-without poisoning its siblings; `kill_losers` keeps the winner and its ancestor
-chain, so the next round forks the winner.
-
-The LLM is a seam (`agentfork.harness.LLM`): `FakeLLM` is a deterministic fake
-for tests, and `AnthropicLLM` / `OpenAICompatLLM` call real models over stdlib
-`urllib`. `demo/tree_agent_demo.py` runs the whole thing against a real model —
-it plants a bug in a tiny Python project, asks for N candidate fixes from one
-shared context, applies each in its branch's workdir, runs the project's test
-as the cheap check, kills the failures, then re-forks the winner against a
-fuller edge-case suite:
+A continuation that does not strictly extend its parent's committed prefix
+raises `PrefixViolation` before any branch is forked — the same invariant the
+SGLang patch enforces engine-side — and a branch whose work fails is dropped
+at selection without poisoning its siblings. The LLM is a pluggable seam
+(`agentfork.harness.LLM`, with Anthropic and OpenAI-compatible adapters);
+`demo/tree_agent_demo.py` runs the loop against a real model — N candidate
+bug fixes from one shared context, cheap checks kill the failures, the winner
+is re-forked against a fuller suite (no GPU needed: it uses the CPU reference
+cache):
 
 ```bash
 export ANTHROPIC_API_KEY=...          # or: --provider together (TOGETHER_API_KEY)
 python demo/tree_agent_demo.py
 ```
-
-Honest scope: this runs on plain Linux with no GPU using `NullSandbox` +
-`TreeKVCache`, so the "sandbox" is the harness's own per-branch host workdir,
-and the KV cache is the CPU reference model — the loop and the committed-prefix
-invariant are real, but the token counts are the reference cache's accounting,
-not a GPU's. The string/`generate()` lineage path is exercised by the token
-path's logic but has not been run against a live SGLang engine here. Winner
-selection is single-winner (`kill_losers` keeps one leaf); there is no
-multi-winner merge.
 
 ## How it works
 
