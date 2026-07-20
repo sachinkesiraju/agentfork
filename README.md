@@ -84,7 +84,11 @@ pays off when setup is expensive relative to per-branch work, and less with few
 branches or when most work happens after the fork. One caveat on the KV half:
 a stock radix cache (SGLang, vLLM) already shares the prefix when nothing is
 competing for it, so against stock the KV saving shows up only under cache
-pressure — exactly when `U > C − P` (see below).
+pressure, and the boundary is exact. With a shared prefix of `P` tokens, a
+cache of `C` tokens, and `U` unrelated tokens interleaved between children,
+**pinning wins exactly when `U > C − P`** — below that, stock RadixAttention
+keeps the prefix anyway and the advantage is ~1.0×. Derivation and token-exact
+validation against the reference caches: [report/PRESSURE.md](report/PRESSURE.md).
 
 ## Quickstart
 
@@ -189,13 +193,6 @@ the checks that fail or remain untested.
 | Kill a losing branch (CPU reference path) | 0.53 ms median, 1.46 ms worst case, over 100 kills. |
 | Forked children reach the network (Firecracker) | Two children each loaded example.com over their own isolated network; teardown left no leftover routes. |
 | Children generate faster under cache pressure (A10G, vs stock SGLang) | When background traffic evicts the shared prefix from stock but not from agentfork, children run 1.5–1.6× faster across two synthetic runs. Partner validation still pending. |
-
-The KV pin only pays off under cache pressure, and the boundary is exact:
-with a shared prefix of `P` tokens, a cache of `C` tokens, and `U` unrelated
-tokens interleaved between children, **pinning wins exactly when
-`U > C − P`** — below that, stock RadixAttention keeps the prefix anyway and
-the advantage is ~1.0×. Derivation and token-exact validation against the
-reference caches: [report/PRESSURE.md](report/PRESSURE.md).
 
 Grounding: forking a whole branch, its sandbox microVM plus its KV cache,
 runs 28–145 ms per child, and the KV cache is under 1.3% of that. That puts
