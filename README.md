@@ -79,12 +79,19 @@ N × (shared setup + branch work)
 to
 
 ```
-shared setup + sum(branch work)
+shared setup + N × (fork + branch work)
 ```
 
-Forking pays off when setup is expensive, branches are short, and most of them
-are killed early. It pays off less when there are few branches or when most of
-the work happens after the fork.
+where fork is milliseconds per child (28–145 ms, KV under 1.3% of that), so it
+pays off when setup is expensive relative to per-branch work, and less with few
+branches or when most work happens after the fork.
+
+One caveat on the KV half: stock radix caches (SGLang, vLLM) already share
+the prefix uncontended, so **pinning wins only under cache pressure —
+exactly when `U > C − P`** (`U` unrelated tokens between children, cache
+capacity `C`, shared prefix `P`); below that the advantage is ~1.0×.
+Derivation and token-exact validation:
+[report/PRESSURE.md](report/PRESSURE.md).
 
 ## Quickstart
 
@@ -210,6 +217,8 @@ python demo/demo.py
 python -m agentfork.bench.kill_bench --cycles 100
 python -m agentfork.bench.crash_bench --cycles 50 --children 5
 python -m agentfork.bench.cost_model --children 10 --prefix 32000 --suffix 2000
+python -m agentfork.bench.cost_model --pressure --prefix 2400 --capacity 32768 --interleaved 96000
+python -m agentfork.bench.pressure_bench --prefix 2400 --children 10 --capacity 32768
 
 # Direct SGLang cache validation:
 export SGLANG_DIR=/path/to/sglang
@@ -228,6 +237,7 @@ python demo/fc_demo.py --fc ./firecracker --kernel vmlinux --rootfs rootfs.ext4 
 # GPU validation (requires Modal and the patched SGLang checkout):
 pip install modal
 SGLANG_DIR="$SGLANG_DIR" modal run modal_gpu_validation.py
+SGLANG_DIR="$SGLANG_DIR" modal run modal_pressure_sweep.py  # U > C-P break-even sweep
 ```
 
 ## Limitations
