@@ -192,6 +192,14 @@ here when Modal is reachable.
 - **Prefill-token proxy, not wall-clock.** Compute ratio counts prefill tokens;
   it deliberately excludes decode, batching, attention-kernel scaling, and
   memory bandwidth. Absolute VGE is smaller (see above).
+- **A child request must fit in cache: `P + S ≤ C`.** `PressureScenario`
+  enforces this. When `P + S > C`, a child's own suffix insertion evicts the
+  parent it just matched, so residency degenerates into radix split/eviction
+  minutiae and the clean `U* = C − P` boundary no longer holds — a regime where
+  no single request fits the cache, out of scope for prefix caching. On the
+  whole `P + S ≤ C` domain the model matches the reference caches exactly
+  (6,629 randomized configs spanning `S` from 0 up to the `P + S ≤ C` limit,
+  `U` up to `3C`, and the exact `U*`/`U*+1` boundary).
 - **Uniform per-gap pressure, single parent.** The model assumes one shared
   prefix and either uniform per-child pressure (sustained) or a single leading
   burst. Multi-parent contention, variable gaps, and partial-prefix reuse are

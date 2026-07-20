@@ -107,12 +107,16 @@ def model(s: Scenario) -> dict:
 #
 #   the parent survives a gap iff  P + U <= C   <=>   U <= C - P
 #
-# The suffix ``S`` drops out: it is evicted before the parent, so it never
-# counts against the parent's survival. The break-even is exactly
-# ``U* = C - P`` (the cache headroom above the pinned prefix), verified to the
-# token against the reference caches in test_pressure_bench.py. The fanout N
-# does not move this on/off boundary, but it scales the aggregate advantage:
-# every missed child re-prefills P tokens.
+# The suffix ``S`` drops out: it is a leaf and is evicted before the parent,
+# so it never counts against the parent's survival. This holds whenever a
+# child request fits in the cache, ``P + S <= C`` (enforced by
+# ``PressureScenario``); if ``P + S > C`` the child's own suffix insertion
+# evicts the parent it just matched and no clean boundary exists -- that
+# degenerate regime (no request fits) is out of scope. On the ``P + S <= C``
+# domain the break-even is exactly ``U* = C - P`` (the cache headroom above the
+# pinned prefix), verified to the token against the reference caches in
+# test_pressure_bench.py. The fanout N does not move this on/off boundary, but
+# it scales the aggregate advantage: every missed child re-prefills P tokens.
 #
 # Two pressure patterns are modeled:
 #   * "sustained": U unrelated tokens before *every* child (the GPU sustained
@@ -156,8 +160,17 @@ class PressureScenario:
             raise ValueError("capacity_tokens must be positive")
         if self.prefix_tokens + self.suffix_tokens == 0:
             raise ValueError("prefix_tokens and suffix_tokens cannot both be zero")
-        if self.prefix_tokens > self.capacity_tokens:
-            raise ValueError("prefix_tokens must fit in capacity_tokens")
+        # A single child request (prefix + suffix) must fit in the cache. If it
+        # does not, the child's own suffix insertion evicts the parent it just
+        # matched, so residency depends on radix split/eviction minutiae rather
+        # than the clean U-vs-headroom boundary this model derives. That regime
+        # is degenerate for prefix caching (no request fits) and out of scope;
+        # the model is exact on the whole P + S <= C domain (verified to the
+        # token against the reference caches in test_pressure_bench.py).
+        if self.prefix_tokens + self.suffix_tokens > self.capacity_tokens:
+            raise ValueError(
+                "a child request (prefix_tokens + suffix_tokens) must fit in "
+                "capacity_tokens")
         if self.pattern not in ("sustained", "burst"):
             raise ValueError("pattern must be 'sustained' or 'burst'")
 

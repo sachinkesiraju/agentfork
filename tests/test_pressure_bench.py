@@ -48,6 +48,11 @@ _SHAPES = [
     (800, 6, 16, 8192, "sustained"),
     (4096, 4, 64, 16384, "sustained"),
     (4096, 4, 64, 16384, "burst"),
+    # large suffixes, still within the P + S <= C domain: confirms the suffix
+    # is evicted before the parent and does not move the U* = C - P boundary.
+    (2000, 5, 2000, 8192, "sustained"),
+    (2048, 3, 2048, 4096, "sustained"),
+    (2048, 3, 2048, 4096, "burst"),
 ]
 
 _U_FRACS = [0.0, 0.1, 0.25, 0.5, 0.75, 0.95, 1.0, 1.5, 2.0]
@@ -84,6 +89,21 @@ def test_break_even_boundary_is_exact_against_reference():
     above = compare(PressureScenario(
         prefix_tokens=p, n_children=n, suffix_tokens=s,
         interleaved_tokens=ustar + 1, capacity_tokens=c))
+    assert above["measured"]["stock_hit_rate"] == 0.0
+
+
+def test_large_suffix_does_not_shift_break_even():
+    # even with a suffix as large as the prefix (still P + S <= C), the boundary
+    # stays U* = C - P: the suffix is a leaf, evicted before the parent.
+    p, s, c, n = 2000, 2000, 8192, 6
+    ustar = break_even_u(p, c)  # 6192, independent of S
+    at = compare(PressureScenario(
+        prefix_tokens=p, n_children=n, suffix_tokens=s,
+        interleaved_tokens=ustar, capacity_tokens=c))
+    above = compare(PressureScenario(
+        prefix_tokens=p, n_children=n, suffix_tokens=s,
+        interleaved_tokens=ustar + 1, capacity_tokens=c))
+    assert at["measured"]["stock_hit_rate"] == 1.0
     assert above["measured"]["stock_hit_rate"] == 0.0
 
 

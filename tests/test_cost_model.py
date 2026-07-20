@@ -131,6 +131,7 @@ def test_stock_parent_hits_matches_pressure_model():
         {"prefix_tokens": 1, "capacity_tokens": 0},        # capacity must be > 0
         {"prefix_tokens": -1, "capacity_tokens": 10},      # negative tokens
         {"prefix_tokens": 20, "capacity_tokens": 10},      # prefix > capacity
+        {"prefix_tokens": 8, "suffix_tokens": 8, "capacity_tokens": 10},  # P+S > C
         {"prefix_tokens": 0, "suffix_tokens": 0, "capacity_tokens": 10},
         {"prefix_tokens": 1, "capacity_tokens": 10, "interleaved_tokens": -1},
         {"prefix_tokens": 1, "capacity_tokens": 10, "n_children": 0},
