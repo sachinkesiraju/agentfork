@@ -119,49 +119,20 @@ with ForkOrchestrator(kv=kv, registry_path="branches.json") as orch:
     orch.kill_losers(children[0].branch_id)  # keep the winner, drop the rest
 ```
 
-Run `pytest -q` to execute the test suite.
-
-## Running an agent tree
-
-`ForkOrchestrator` forks and kills branches, but it forks *state*, not an
-*agent*: it never decides what runs on a branch or which branch to keep.
-`agentfork.harness` is that layer. `TreeAgent` owns an orchestrator and drives
-the golden-path loop: prepare a shared context on a root branch, fan out N
-candidate branches whose continuations each **strictly extend** the shared
-committed prefix, run per-branch work, score each branch with a pluggable
-evaluator, keep the winner and kill the losers, then (optionally) fork the
-winner again for a verification round.
-
-```python
-from agentfork.harness import Round, TreeAgent
-from agentfork.kv.tree_cache import TreeKVCache
-from agentfork.orchestrator import ForkOrchestrator, NullSandbox
-
-orch = ForkOrchestrator(kv=TreeKVCache(), sandbox=NullSandbox())
-agent = TreeAgent(orch)
-
-round1 = Round(
-    continuations=[SHARED + " fix A", SHARED + " fix B", SHARED + " fix C"],
-    work=lambda branch_id, prefix: run_candidate(branch_id, prefix),
-    evaluator=lambda result: 1.0 if result.output["passed"] else 0.0)
-winner = agent.solve("root", SHARED, [round1])  # returns the winning branch
-orch.close()
-```
-
-A continuation that does not strictly extend its parent's committed prefix
-raises `PrefixViolation` before any branch is forked — the same invariant the
-SGLang patch enforces engine-side — and a branch whose work fails is dropped
-at selection without poisoning its siblings. The LLM is a pluggable seam
-(`agentfork.harness.LLM`, with Anthropic and OpenAI-compatible adapters);
-`demo/tree_agent_demo.py` runs the loop against a real model — N candidate
-bug fixes from one shared context, cheap checks kill the failures, the winner
-is re-forked against a fuller suite (no GPU needed: it uses the CPU reference
-cache):
+The example above wires the lifecycle by hand. `agentfork.harness.TreeAgent`
+drives the whole loop for you — prepare shared context, fan out N candidates
+that each **strictly extend** it (a `PrefixViolation` is raised before any
+branch is forked otherwise), score them, keep the winner, and re-fork it to
+verify — over a pluggable LLM seam. `demo/tree_agent_demo.py` runs it against a
+real model with no GPU (CPU reference cache): it fixes a planted bug from N
+candidate fixes and re-forks the winner against a fuller suite.
 
 ```bash
 export ANTHROPIC_API_KEY=...          # or: --provider together (TOGETHER_API_KEY)
 python demo/tree_agent_demo.py
 ```
+
+Run `pytest -q` to execute the test suite.
 
 ## How it works
 
