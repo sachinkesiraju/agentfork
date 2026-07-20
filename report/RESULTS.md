@@ -86,6 +86,19 @@ against that baseline is explicit ownership, pinning, branch policy, telemetry,
 and reclaim. Those lifecycle benefits have not been converted into a measured
 end-to-end cost advantage.
 
+**Cache-pressure dimension.** The uncontended parity above assumes the shared
+prefix is resident when each child runs. Under memory pressure that assumption
+breaks: stock LRU evicts the prefix, agentfork's pin holds it. The break-even
+is quantified in [`report/PRESSURE.md`](PRESSURE.md): pinning pays off exactly
+when interleaved unrelated traffic per gap exceeds the cache headroom above the
+pinned prefix, **`U > C − P`** (equivalently `U/C > 1 − P/C`); the resulting
+prefill-token compute ratio is `1 + m·P/(P + N·S)` (misses `m = N` sustained,
+`m = 1` for a single burst). The `pressure_model` in
+`agentfork/bench/cost_model.py` and the simulator in
+`agentfork/bench/pressure_bench.py` (validated to the token against the
+`TreeKVCache` reference and a stock leaf-LRU radix) reproduce the sustained ≫
+burst ≫ uncontended ordering of the GPU VGE rows below.
+
 ## Workload-shape census (de-risk track)
 
 This recorded census used 31 private Devin sessions visible to the requesting

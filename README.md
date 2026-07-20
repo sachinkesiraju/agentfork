@@ -187,6 +187,19 @@ the checks that fail or remain untested.
 | Forked children reach the network (Firecracker) | Two children each loaded example.com over their own isolated network; teardown left no leftover routes. |
 | Children generate faster under cache pressure (A10G, vs stock SGLang) | When background traffic evicts the shared prefix from stock but not from agentfork, children run 1.5–1.6× faster across two synthetic runs. Partner validation still pending. |
 
+The KV pin only pays off under cache pressure, and we can say exactly when.
+Model unrelated traffic `U` interleaved between children, a shared prefix of
+`P` tokens, and a cache of `C` tokens: stock LRU keeps the prefix while
+`U ≤ C − P` and evicts it once `U > C − P`, whereas agentfork pins it
+regardless. So **pinning wins exactly when `U > C − P`** (equivalently
+`U/C > 1 − P/C`); below that line the advantage is ~1.0× because stock
+RadixAttention already shares the prefix. The magnitude above the line is a
+prefill-token compute ratio of `1 + m·P/(P + N·S)`, where `m` children miss
+(`m = N` under sustained pressure, `m = 1` for a single burst). This boundary
+is derived and validated to the token against the reference caches in
+[report/PRESSURE.md](report/PRESSURE.md)
+(`python -m agentfork.bench.pressure_bench`).
+
 Grounding: forking a whole branch, its sandbox microVM plus its KV cache,
 runs 28–145 ms per child, and the KV cache is under 1.3% of that. That puts
 it in the same class as managed providers that fork only the sandbox
@@ -202,6 +215,8 @@ python demo/demo.py
 python -m agentfork.bench.kill_bench --cycles 100
 python -m agentfork.bench.crash_bench --cycles 50 --children 5
 python -m agentfork.bench.cost_model --children 10 --prefix 32000 --suffix 2000
+python -m agentfork.bench.cost_model --pressure --prefix 2400 --capacity 32768 --interleaved 96000
+python -m agentfork.bench.pressure_bench --prefix 2400 --children 10 --capacity 32768
 
 # Direct SGLang cache validation:
 export SGLANG_DIR=/path/to/sglang
