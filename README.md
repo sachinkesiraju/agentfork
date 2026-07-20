@@ -234,9 +234,9 @@ SGLANG_DIR="$SGLANG_DIR" modal run modal_pressure_sweep.py  # U > C-P break-even
 
 ## Limitations
 
-- SGLang is measured on only one A10G/0.6B; scale, tensor parallelism, and
-  multi-tenant pressure need a GPU fleet (a live-server test exists but is
-  unrun here).
+- SGLang is measured on only one A10/0.6B; the live-engine cache-pressure sweep
+  ran there (see the break-even bullet below), but scale, tensor parallelism,
+  and production multi-tenant load still need a GPU fleet and are unrun here.
 - Firecracker is single-host: moving migration bundles between hosts is the
   deployer's job, and cleanup is retried, not atomic.
 - Nothing is validated at production GPU scale or with GPU-plus-microVM
