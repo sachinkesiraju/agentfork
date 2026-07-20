@@ -238,10 +238,17 @@ SGLANG_DIR="$SGLANG_DIR" modal run modal_gpu_validation.py
 
 ## Why agentfork vs. alternatives
 
-Other projects each branch one piece of this: a sandbox fork, an inference
-session, shared-prefix caching, or moving KV caches between tiers. agentfork
-gives one identity to both the sandbox and the KV branch, so a single ID
-covers ownership and cleanup on both sides.
+Every branch in an agent tree has two halves: a sandbox where the agent works
+and a KV cache that holds its context. The two must fork and be freed together,
+or a child's environment and its memory fall out of sync. Existing tools branch
+only one half, leaving you to pair each VM with its cache and reclaim both by
+hand, with two places a branch can leak.
+
+agentfork gives both halves one branch ID. A child comes up warm on both sides
+at once (28–145 ms, the KV fork under 1.3% of that), so it thinks and acts
+right away instead of stalling on a cold VM or re-prefilling the shared prompt.
+That prompt is prefilled once and reused by reference across children, and a
+kill frees the VM and GPU cache together, so nothing leaks.
 
 | Project | What it does | What's missing |
 |---|---|---|
