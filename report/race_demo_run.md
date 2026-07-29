@@ -68,55 +68,59 @@ not generation latency.
 P=8192  C=24576  U=17408  U*=C-P=16384   U > U*  -> the neighbor evicts an unpinned prefix
 N=10 candidates, 3 verification forks; neighbor metered between candidates
 
-STOCK                                                              | AGENTFORK
+STOCK                                                              | AGENTFORK                                                         
 ------------------------------------------------------------------ | ------------------------------------------------------------------
-server http://127.0.0.1:42033                                      | server http://127.0.0.1:36141
-shared context: 8192 tok charged (P=8192)                          | shared context: 8192 tok charged (P=8192)
+server http://127.0.0.1:42541                                      | server http://127.0.0.1:47931                                     
+shared context: 8192 tok charged (P=8192)                          | shared context: 8192 tok charged (P=8192)                         
 KV [#################################...............]  16912/24576 | KV [################################################]  24528/24576
-                                                                   |
-fix     1/10 [=.........] MISS cached=0      charged=8476   fail   | fix     1/10 [=.........] HIT  cached=8192   charged=284    fail
-fix     2/10 [==........] MISS cached=0      charged=8476   PASS   | fix     2/10 [==........] HIT  cached=8254   charged=222    PASS
-fix     3/10 [===.......] MISS cached=0      charged=8476   fail   | fix     3/10 [===.......] HIT  cached=8257   charged=219    fail
-fix     4/10 [====......] MISS cached=0      charged=8476   fail   | fix     4/10 [====......] HIT  cached=8257   charged=219    fail
-fix     5/10 [=====.....] MISS cached=0      charged=8476   fail   | fix     5/10 [=====.....] HIT  cached=8253   charged=223    fail
-fix     6/10 [======....] MISS cached=0      charged=8476   fail   | fix     6/10 [======....] HIT  cached=8253   charged=223    fail
-fix     7/10 [=======...] MISS cached=0      charged=8476   fail   | fix     7/10 [=======...] HIT  cached=8253   charged=223    fail
-fix     8/10 [========..] MISS cached=0      charged=8476   fail   | fix     8/10 [========..] HIT  cached=8261   charged=215    fail
-fix     9/10 [=========.] MISS cached=0      charged=8476   fail   | fix     9/10 [=========.] HIT  cached=8255   charged=221    fail
-fix    10/10 [==========] MISS cached=0      charged=8476   fail   | fix    10/10 [==========] HIT  cached=8253   charged=223    fail
-verify  1/3 [===.......] MISS cached=0      charged=8760   PASS    | verify  1/3 [===.......] HIT  cached=8476   charged=284    PASS
-verify  2/3 [=======...] MISS cached=0      charged=8760   PASS    | verify  2/3 [=======...] HIT  cached=8515   charged=245    PASS
-verify  3/3 [==========] MISS cached=0      charged=8760   PASS    | verify  3/3 [==========] HIT  cached=8515   charged=245    PASS
-                                                                   |
-killed 9 losers: KV freed 16506 tok (pool -16627)                  | killed 9 losers: KV freed 1988 tok (pool -1988)
-hit 0%  prefill 119232 tok  4s  VERIFIED                           | hit 100%  prefill 11238 tok  3s  VERIFIED
+ | 
+fix     1/10 [=.........] MISS cached=0      charged=8476   fail   | fix     1/10 [=.........] HIT  cached=8192   charged=284    fail  
+fix     2/10 [==........] MISS cached=0      charged=8476   PASS   | fix     2/10 [==........] HIT  cached=8254   charged=222    PASS  
+fix     3/10 [===.......] MISS cached=0      charged=8476   fail   | fix     3/10 [===.......] HIT  cached=8257   charged=219    fail  
+fix     4/10 [====......] MISS cached=0      charged=8476   fail   | fix     4/10 [====......] HIT  cached=8257   charged=219    fail  
+fix     5/10 [=====.....] MISS cached=0      charged=8476   fail   | fix     5/10 [=====.....] HIT  cached=8253   charged=223    fail  
+fix     6/10 [======....] MISS cached=0      charged=8476   fail   | fix     6/10 [======....] HIT  cached=8253   charged=223    fail  
+fix     7/10 [=======...] MISS cached=0      charged=8476   fail   | fix     7/10 [=======...] HIT  cached=8253   charged=223    fail  
+fix     8/10 [========..] MISS cached=0      charged=8476   fail   | fix     8/10 [========..] HIT  cached=8261   charged=215    fail  
+fix     9/10 [=========.] MISS cached=0      charged=8476   fail   | fix     9/10 [=========.] HIT  cached=8255   charged=221    fail  
+fix    10/10 [==========] MISS cached=0      charged=8476   fail   | fix    10/10 [==========] HIT  cached=8253   charged=223    fail  
+verify  1/3 [===.......] MISS cached=0      charged=8760   PASS    | verify  1/3 [===.......] HIT  cached=8476   charged=284    PASS   
+verify  2/3 [=======...] MISS cached=0      charged=8760   PASS    | verify  2/3 [=======...] HIT  cached=8515   charged=245    PASS   
+verify  3/3 [==========] MISS cached=0      charged=8760   PASS    | verify  3/3 [==========] HIT  cached=8515   charged=245    PASS   
+ | 
+killed 9 losers: KV freed 16506 tok (pool -16627)                  | killed 9 losers: KV freed 1988 tok (pool -1988)                   
+hit 0%  prefill 119232 tok  VERIFIED                               | hit 100%  prefill 11238 tok  VERIFIED
 ```
 
 ## Scoreboard (same run)
 
 ```text
-metric                                        STOCK           AGENTFORK
------------------------------------------------------------------------
-parent-prefix hit rate                           0%                100%
-prefill tokens charged (real)               119,232              11,238
-peak KV pool used                            16,912              24,528
-KV released when losers died                 16,506               1,988
-KV still pinned after the kills                   0               8,760
-sandbox setup (s, total)                       0.39                0.03
-wall clock to verified fix (s)*                 3.6                 3.2
-verified winner                     stock/root/2/11  agentfork/root/2/11
-neighbor requests served                        221                 221
-neighbor requests deferred                        0                   0
+metric                                             STOCK           AGENTFORK
+----------------------------------------------------------------------------
+parent-prefix hit rate                                0%                100%
+prefill tokens charged (real)                    119,232              11,238
+peak KV pool used                                 16,912              24,528
+KV released when losers died                      16,506               1,988
+KV still pinned after the kills                        0               8,760
+sandbox setup (s, total)                            0.38                0.05
+wall clock (s)* -- not a speed claim                 3.6                 4.7
+verified winner                          stock/root/2/11  agentfork/root/2/11
+neighbor requests served                             221                 221
+neighbor requests deferred                             0                   0
 
-* wall clock includes stubbed generation, so it is a secondary metric on CPU;
-  the headline numbers are prefill tokens charged and the parent-prefix hit rate.
+* the forward pass is stubbed, so wall clock here is mostly HTTP, pytest and process spawning:
+  the gap between the arms is noise, not a speedup. The headline numbers are prefill tokens
+  charged and the parent-prefix hit rate, which the cache measures for real.
 Note: the stock arm also releases KV when its branches die -- but those were ordinary
 evictable pages that the neighbour had already been recycling; it had nothing pinned to
 protect, which is exactly why its shared prefix did not survive to the next candidate.
 ```
 
 **10.6x fewer prefill tokens charged** (119,232 -> 11,238) for the same work,
-same server, same neighbour, and the same verified fix.
+same server, same neighbour, and the same verified fix. Note the wall clock in
+this capture: the agentfork arm was *slower* (4.7 s vs 3.6 s). With the forward
+pass stubbed there is no generation time for a cache hit to save, so that
+column is noise -- which is exactly why it is not the headline.
 
 ## `--no-ui` log (same defaults, separate run)
 
@@ -192,11 +196,11 @@ rate 1.0. Pinning only wins where the model says it wins.
 ## Tests
 
 ```text
-$ PYTHONPATH=~/sglang/python:. .venv/bin/python -m pytest -q tests/test_race_demo.py
+$ PYTHONPATH=~/sglang/python .venv/bin/python -m pytest -q tests/test_race_demo.py
 ........                                                                 [100%]
 8 passed in 30.84s
 
-$ PYTHONPATH=~/sglang/python:. .venv/bin/pytest -q
+$ PYTHONPATH=~/sglang/python .venv/bin/pytest -q
 238 passed, 2 skipped in 46.77s
 
 $ .venv/bin/ruff check agentfork demo tests
@@ -206,8 +210,21 @@ All checks passed!
 Without the patched SGLang checkout on `PYTHONPATH` the race-demo tests skip
 (they need the real cache); the rest of the suite is unaffected.
 
+## Reproducibility
+
+Three consecutive `--no-ui` runs gave bit-identical hit rates and prefill
+charges (`1.0 / 0.0`, `11,238 / 119,232`); only wall clock and sandbox setup
+times varied. The candidates come from the deterministic `FakeLLM` and the
+neighbour is metered, so the cache measurements are stable.
+
 ## Caveats
 
+* The dashboard wants a 135-column terminal; it shrinks its panels to fit
+  narrower ones (dropping the progress bar and `cached=` column) and prints a
+  warning below 83 columns. `--no-ui` is always safe.
+* Wall clock is noise here, and this capture shows it: the agentfork arm took
+  *longer* (4.7 s vs 3.6 s) while charging 10.6x fewer prefill tokens. With a
+  stubbed forward pass there is no generation time for a cache hit to save.
 * On this 2-vCPU box the whole race takes ~8 s rather than the ~60-90 s a
   human-paced demo wants: with a stubbed forward pass there is no generation
   time to spend. Scale it with `--children`, `--prefix-tokens` and

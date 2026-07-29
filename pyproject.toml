@@ -10,6 +10,9 @@ dev = ["pytest==8.3.5", "ruff==0.11.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# demo/ is importable from the repo root: tests/test_race_demo.py drives
+# demo/race_demo.py, and without this it would silently skip instead of run.
+pythonpath = ["."]
 
 [build-system]
 requires = ["setuptools>=64.0", "wheel"]

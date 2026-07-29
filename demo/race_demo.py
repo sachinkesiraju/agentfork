@@ -747,11 +747,15 @@ class LogUI:
 class DashboardUI(LogUI):
     """Split-screen ANSI dashboard (stdlib only, no curses screen setup)."""
 
-    WIDTH = 66
+    FULL_WIDTH = 66   # what a panel wants
+    MIN_WIDTH = 40    # below this a panel cannot hold a child row
 
     def __init__(self, args):
         super().__init__()
         self.args = args
+        cols = shutil.get_terminal_size((2 * self.FULL_WIDTH + 3, 40)).columns
+        self.WIDTH = max(self.MIN_WIDTH, min(self.FULL_WIDTH, (cols - 3) // 2))
+        self.narrow = cols < 2 * self.MIN_WIDTH + 3
         self.lock = threading.Lock()
         self.state = {"stock": self._blank("stock"),
                       "agentfork": self._blank("agentfork")}
@@ -794,6 +798,10 @@ class DashboardUI(LogUI):
         right += [" " * self.WIDTH] * (height - len(right))
         out = ["\033[H\033[J", BOLD + "== agentfork split-screen race ==" + RESET]
         out += [DIM + line + RESET for line in HEADER.splitlines()]
+        if self.narrow:
+            out.append(YELLOW + "terminal is narrow: the split screen wants "
+                       f"{2 * self.FULL_WIDTH + 3} columns. Widen it, or use "
+                       "--no-ui." + RESET)
         out += self.header_lines
         out.append("")
         for a, b in zip(left, right):
@@ -830,11 +838,14 @@ class DashboardUI(LogUI):
             self._redraw()
 
     def child(self, name, label, idx, rec: ChildRecord, total) -> None:
-        bar = self._bar((idx + 1) / total, 10, "=")
-        row = (f"{label[:6]:<6} {idx + 1:>2}/{total} [{bar}] "
-               f"{'HIT ' if rec.parent_hit else 'MISS'} "
+        hit = "HIT " if rec.parent_hit else "MISS"
+        check = "PASS" if rec.check_passed else "fail"
+        head = f"{label[:6]:<6} {idx + 1:>2}/{total} "
+        row = (f"{head}[{self._bar((idx + 1) / total, 10, '=')}] {hit} "
                f"cached={rec.cached_tokens:<6} charged={rec.charged_tokens:<6} "
-               f"{'PASS' if rec.check_passed else 'fail'}")
+               f"{check}")
+        if len(row) > self.WIDTH:  # narrow terminal: drop the bar and cached
+            row = f"{head}{hit} charged={rec.charged_tokens:<6} {check}"
         with self.lock:
             self.state[name]["rows"].append(
                 (row, GREEN if rec.parent_hit else RED))
@@ -854,7 +865,7 @@ class DashboardUI(LogUI):
         with self.lock:
             self.state[arm.name]["summary"] = (
                 f"hit {arm.parent_hit_rate * 100:.0f}%  prefill "
-                f"{arm.prefill_charged} tok  {arm.wall_clock_s:.0f}s  "
+                f"{arm.prefill_charged} tok  "
                 f"{'VERIFIED' if arm.verified else 'UNVERIFIED'}")
             self.state[arm.name]["kv"] = (arm.peak_kv_used,
                                           self.args.capacity_tokens)
@@ -886,7 +897,7 @@ def scoreboard(stock: ArmResult, agentfork: ArmResult) -> str:
         ("sandbox setup (s, total)",
          f"{stock.sandbox_setup_s + stock.template_setup_s:.2f}",
          f"{agentfork.sandbox_setup_s + agentfork.template_setup_s:.2f}"),
-        ("wall clock to verified fix (s)*", f"{stock.wall_clock_s:.1f}",
+        ("wall clock (s)* -- not a speed claim", f"{stock.wall_clock_s:.1f}",
          f"{agentfork.wall_clock_s:.1f}"),
         ("verified winner",
          f"{stock.winner if stock.verified else 'none'}",
@@ -901,10 +912,12 @@ def scoreboard(stock: ArmResult, agentfork: ArmResult) -> str:
            "-" * (width + 40)]
     out += [f"{k:<{width}}  {a:>18}  {b:>18}" for k, a, b in rows]
     out.append("")
-    out.append("* wall clock includes stubbed generation, so it is a "
-               "secondary metric on CPU;")
-    out.append("  the headline numbers are prefill tokens charged and the "
-               "parent-prefix hit rate.")
+    out.append("* the forward pass is stubbed, so wall clock here is mostly "
+               "HTTP, pytest and process spawning:")
+    out.append("  the gap between the arms is noise, not a speedup. The "
+               "headline numbers are prefill tokens")
+    out.append("  charged and the parent-prefix hit rate, which the cache "
+               "measures for real.")
     out.append("Note: the stock arm also releases KV when its branches die -- "
                "but those were ordinary")
     out.append("evictable pages that the neighbour had already been "
