@@ -246,3 +246,19 @@ neighbour's traffic, not a simulated miss; below the break-even both arms keep
 the prefix (asserted in `tests/test_race_demo.py`). Wall clock is secondary
 here because generation is stubbed. Full capture, caveats and the
 machine-readable summary: [race_demo_run.md](race_demo_run.md).
+
+### The same race on a real GPU with real weights (A10, Qwen3-0.6B)
+
+`modal_race_demo.py` reruns it against a live `sgl.Engine` on an NVIDIA A10 at
+`C = 49,152`, `P = 12,725`, `U = 37,327 > U* = 36,427`. Here generation time is
+a real measurement:
+
+| metric | stock | agentfork |
+|---|---|---|
+| parent-prefix hit rate | 0% | 100% |
+| prefill tokens charged | 43,142 | 158 |
+| generation time, 13 branches | 8.67 s | 6.55 s (**1.32x**) |
+| verified winning fix | yes | yes |
+
+Detail, caveats and the raw JSON: [race_demo_run.md](race_demo_run.md),
+[gpu_race_run.json](gpu_race_run.json).

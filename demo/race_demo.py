@@ -77,6 +77,8 @@ BOLD, DIM, GREEN, RED, YELLOW, CYAN, RESET = (
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SERVER = os.path.join(REPO, "demo", "sglang_tree_server.py")
+if REPO not in sys.path:  # run as a script from anywhere
+    sys.path.insert(0, REPO)
 
 FIX_MARKER = "\n### CANDIDATE clamp.py ###\n"
 VERIFY_MARKER = "\n### VERIFICATION ROUND ###\n"
@@ -882,8 +884,9 @@ class DashboardUI(LogUI):
 # ---------------------------------------------------------------------------
 
 
-def scoreboard(stock: ArmResult, agentfork: ArmResult) -> str:
-    rows = [
+def scoreboard_rows(stock: ArmResult,
+                    agentfork: ArmResult) -> list[tuple[str, str, str]]:
+    return [
         ("parent-prefix hit rate", f"{stock.parent_hit_rate * 100:.0f}%",
          f"{agentfork.parent_hit_rate * 100:.0f}%"),
         ("prefill tokens charged (real)", f"{stock.prefill_charged:,}",
@@ -907,6 +910,21 @@ def scoreboard(stock: ArmResult, agentfork: ArmResult) -> str:
         ("neighbor requests deferred", f"{stock.neighbor_deferred:,}",
          f"{agentfork.neighbor_deferred:,}"),
     ]
+
+
+SCOREBOARD_NOTES = """\
+* the forward pass is stubbed, so wall clock here is mostly HTTP, pytest and \
+process spawning: the gap between the arms is noise, not a speedup. The \
+headline numbers are prefill tokens charged and the parent-prefix hit rate, \
+which the cache measures for real.
+Note: the stock arm also releases KV when its branches die -- but those were \
+ordinary evictable pages that the neighbour had already been recycling; it had \
+nothing pinned to protect, which is exactly why its shared prefix did not \
+survive to the next candidate."""
+
+
+def scoreboard(stock: ArmResult, agentfork: ArmResult) -> str:
+    rows = scoreboard_rows(stock, agentfork)
     width = max(len(r[0]) for r in rows)
     out = [f"{'metric':<{width}}  {'STOCK':>18}  {'AGENTFORK':>18}",
            "-" * (width + 40)]
@@ -1007,6 +1025,13 @@ def parse_args(argv=None):
                    help="candidate source; 'fake' is deterministic + offline")
     p.add_argument("--no-ui", action="store_true",
                    help="plain sequential log plus a JSON summary")
+    p.add_argument("--web", nargs="?", type=int, const=8765, default=None,
+                   metavar="PORT",
+                   help="serve the same race as a live browser dashboard "
+                        "(default port 8765) instead of drawing it in the "
+                        "terminal")
+    p.add_argument("--no-open", action="store_true",
+                   help="with --web, do not open a browser automatically")
     p.add_argument("--json-out", default=None,
                    help="also write the JSON summary to this path")
     p.add_argument("--admin-api-key", default="race-demo-admin-key")
@@ -1020,7 +1045,14 @@ def parse_args(argv=None):
 
 def main(argv=None) -> int:
     args = parse_args(argv)
-    ui = LogUI() if args.no_ui else DashboardUI(args)
+    if args.web is not None:
+        from demo.race_web import WebUI
+        ui = WebUI(args, LogUI(), port=args.web,
+                   open_browser=not args.no_open)
+    elif args.no_ui:
+        ui = LogUI()
+    else:
+        ui = DashboardUI(args)
     race = Race(args, ui)
     ui.banner(race, args)
     try:
@@ -1032,6 +1064,15 @@ def main(argv=None) -> int:
     summary = summary_json(args, race, stock, agentfork)
     print()
     print(scoreboard(stock, agentfork), flush=True)
+    if args.web is not None:
+        ui.scoreboard(scoreboard_rows(stock, agentfork), SCOREBOARD_NOTES)
+        ui.finish()
+        print(f"\nrace finished; dashboard still served at {ui.url} "
+              "(Ctrl-C to exit)", flush=True)
+        try:
+            threading.Event().wait()
+        except KeyboardInterrupt:
+            pass
     if args.json_out:
         with open(args.json_out, "w") as f:
             json.dump(summary, f, indent=2)

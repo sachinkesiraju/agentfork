@@ -236,3 +236,72 @@ neighbour is metered, so the cache measurements are stable.
   directions.
 * `charged`/`cached` counts are byte-level tokens: the demo server tokenizes
   UTF-8 bytes because there is no tokenizer to load without weights.
+
+## Browser dashboard (`--web`)
+
+```bash
+PYTHONPATH=$HOME/sglang/python python3 demo/race_demo.py --web        # port 8765
+```
+
+Same race, same events, rendered in a browser instead of the terminal: a
+stdlib `ThreadingHTTPServer` serves one self-contained HTML page and streams
+the race over server-sent events (`demo/race_web.py`), so there is no build
+step and no new dependency. Live KV bars per arm, a HIT/MISS row per candidate
+with its cached/charged tokens, the kill event when the losers die, and the
+scoreboard at the end. A browser that connects late gets the whole race
+replayed, and the server stays up after the race so the result stays readable.
+
+![browser dashboard](race_demo_web.png)
+
+---
+
+# Real GPU, real weights: the same race on an A10 (Modal)
+
+Everything above runs on CPU with the forward pass stubbed. `modal_race_demo.py`
+runs the same race against a real `sgl.Engine` serving **Qwen3-0.6B on an
+NVIDIA A10**, so prefill, decode and wall clock are model measurements rather
+than HTTP overhead.
+
+```bash
+SGLANG_DIR=/path/to/patched/sglang python3 -m modal run modal_race_demo.py
+```
+
+Captured 2026-07-29 (full JSON: [gpu_race_run.json](gpu_race_run.json)):
+
+```
+GPU NVIDIA A10   model Qwen/Qwen3-0.6B
+C = 49,152   P = 12,725 (measured with the real tokenizer)
+U* = C - P = 36,427      U = 37,327 injected between every candidate
+```
+
+| metric | stock | agentfork |
+|---|---|---|
+| parent-prefix hit rate | 0% | 100% |
+| prefill tokens charged | 43,142 | 158 |
+| generation time, 13 branches (real decode) | 8.67 s | 6.55 s |
+| median per-candidate latency | 0.63 s | 0.50 s |
+| KV reclaimed by killing 9 losers | n/a | 399 tok (their suffixes; the parent stays pinned) |
+| verified winning fix | yes | yes |
+
+**273x fewer prefill tokens and a real 1.32x end-to-end generation speedup** --
+the CPU demo could only measure the first of those. Per-candidate detail shows
+what the stock arm is actually doing: it is not missing entirely, it is
+*partially* re-prefilling, because the neighbour keeps trimming the shared
+prefix from the tail (`child-0` cached 8,192 of 12,758 tokens, `child-1` only
+6,144, `child-2` 10,240 -- never the whole prefix). The agentfork children
+cached 12,729-12,749 of the same prompts and were charged 9-29 tokens each.
+
+Honest notes:
+
+* The *patch* each branch proposes is still the deterministic candidate list,
+  because Qwen3-0.6B does not reliably write a correct fix; the model genuinely
+  generates on each branch's prompt, and the script separately checks what it
+  wrote and reports it as `model_generated_fix_passed` (0/13 in this run, 1/13
+  in an earlier smaller run -- reported, never folded into the race result).
+* The speedup depends on `P` relative to decode length: with `MAX_NEW = 32`
+  most of each request is prefill, which is exactly the regime a fan-out
+  workload lives in. A shorter context shrinks it -- an earlier run at
+  `P = 1,385` measured 1.04x while still showing 118x fewer prefill tokens.
+* The agentfork arm's parent prefill is slower (3.23 s vs 0.59 s) because it
+  also commits and pins the branch; it is paid once and amortised over 13
+  children.
