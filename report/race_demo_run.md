@@ -40,10 +40,10 @@ box, so the sandbox is `ReaperSandbox`. No Firecracker output is reported.
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 tools/setup_sglang.sh ~/sglang
 
-# live split-screen dashboard
+# the demo: live browser dashboard on http://127.0.0.1:8765
 PYTHONPATH=~/sglang/python .venv/bin/python demo/race_demo.py
 
-# plain log + machine-readable JSON summary (what tests and CI use)
+# headless: plain log + machine-readable JSON summary (tests and CI use this)
 PYTHONPATH=~/sglang/python .venv/bin/python demo/race_demo.py --no-ui
 ```
 
@@ -54,43 +54,24 @@ tokens metered so that `U = 17408` tokens land between consecutive candidates.
 `agentfork/bench/cost_model.py` predicts the stock prefix cannot survive and
 the pinned one must.
 
-## UI mode: final frame
+## Browser dashboard (the demo)
 
-Captured from a real terminal (ANSI colour stripped); the bars, hit/miss flags
-and KV meter update live as the race runs.
-
-```text
-== agentfork split-screen race ==
-10 fixes, 1 inference server, and someone else is using it too.
-CPU-only: KV pool, tree cache, eviction, pinning, auth, sandboxes and candidate checks are REAL;
-the transformer forward pass is STUBBED (no GPU/weights), so read prefill tokens and hit rate,
-not generation latency.
-P=8192  C=24576  U=17408  U*=C-P=16384   U > U*  -> the neighbor evicts an unpinned prefix
-N=10 candidates, 3 verification forks; neighbor metered between candidates
-
-STOCK                                                              | AGENTFORK                                                         
------------------------------------------------------------------- | ------------------------------------------------------------------
-server http://127.0.0.1:42541                                      | server http://127.0.0.1:47931                                     
-shared context: 8192 tok charged (P=8192)                          | shared context: 8192 tok charged (P=8192)                         
-KV [#################################...............]  16912/24576 | KV [################################################]  24528/24576
- | 
-fix     1/10 [=.........] MISS cached=0      charged=8476   fail   | fix     1/10 [=.........] HIT  cached=8192   charged=284    fail  
-fix     2/10 [==........] MISS cached=0      charged=8476   PASS   | fix     2/10 [==........] HIT  cached=8254   charged=222    PASS  
-fix     3/10 [===.......] MISS cached=0      charged=8476   fail   | fix     3/10 [===.......] HIT  cached=8257   charged=219    fail  
-fix     4/10 [====......] MISS cached=0      charged=8476   fail   | fix     4/10 [====......] HIT  cached=8257   charged=219    fail  
-fix     5/10 [=====.....] MISS cached=0      charged=8476   fail   | fix     5/10 [=====.....] HIT  cached=8253   charged=223    fail  
-fix     6/10 [======....] MISS cached=0      charged=8476   fail   | fix     6/10 [======....] HIT  cached=8253   charged=223    fail  
-fix     7/10 [=======...] MISS cached=0      charged=8476   fail   | fix     7/10 [=======...] HIT  cached=8253   charged=223    fail  
-fix     8/10 [========..] MISS cached=0      charged=8476   fail   | fix     8/10 [========..] HIT  cached=8261   charged=215    fail  
-fix     9/10 [=========.] MISS cached=0      charged=8476   fail   | fix     9/10 [=========.] HIT  cached=8255   charged=221    fail  
-fix    10/10 [==========] MISS cached=0      charged=8476   fail   | fix    10/10 [==========] HIT  cached=8253   charged=223    fail  
-verify  1/3 [===.......] MISS cached=0      charged=8760   PASS    | verify  1/3 [===.......] HIT  cached=8476   charged=284    PASS   
-verify  2/3 [=======...] MISS cached=0      charged=8760   PASS    | verify  2/3 [=======...] HIT  cached=8515   charged=245    PASS   
-verify  3/3 [==========] MISS cached=0      charged=8760   PASS    | verify  3/3 [==========] HIT  cached=8515   charged=245    PASS   
- | 
-killed 9 losers: KV freed 16506 tok (pool -16627)                  | killed 9 losers: KV freed 1988 tok (pool -1988)                   
-hit 0%  prefill 119232 tok  VERIFIED                               | hit 100%  prefill 11238 tok  VERIFIED
+```bash
+PYTHONPATH=$HOME/sglang/python python3 demo/race_demo.py    # http://127.0.0.1:8765
 ```
+
+The race renders itself in the browser: a stdlib `ThreadingHTTPServer` serves one self-contained HTML page and streams
+the race over server-sent events (`demo/race_web.py`), so there is no build
+step and no new dependency. Each arm draws its **branch tree live** in the same
+visual language as `docs/img/lifecycle.svg`: the parent node holds the shared
+prefix, children fan out from it as they complete (green = hit that prefix,
+red = had to re-prefill, dot = passed its check), losers grey out with dashed
+edges when they are killed, and the verification forks hang off the surviving
+winner. Below it: live KV bars per arm, a HIT/MISS row per candidate with its
+cached/charged tokens, the kill event, and the scoreboard at the end. A browser that connects late gets the whole race
+replayed, and the server stays up after the race so the result stays readable.
+
+![browser dashboard](race_demo_web.png)
 
 ## Scoreboard (same run)
 
@@ -219,9 +200,8 @@ neighbour is metered, so the cache measurements are stable.
 
 ## Caveats
 
-* The dashboard wants a 135-column terminal; it shrinks its panels to fit
-  narrower ones (dropping the progress bar and `cached=` column) and prints a
-  warning below 83 columns. `--no-ui` is always safe.
+* The dashboard is the only UI: there is no terminal renderer. `--no-ui` is
+  the headless path (log + JSON) and is what CI runs; it needs no browser.
 * Wall clock is noise here, and this capture shows it: the agentfork arm took
   *longer* (4.7 s vs 3.6 s) while charging 10.6x fewer prefill tokens. With a
   stubbed forward pass there is no generation time for a cache hit to save.
@@ -236,26 +216,6 @@ neighbour is metered, so the cache measurements are stable.
   directions.
 * `charged`/`cached` counts are byte-level tokens: the demo server tokenizes
   UTF-8 bytes because there is no tokenizer to load without weights.
-
-## Browser dashboard (`--web`)
-
-```bash
-PYTHONPATH=$HOME/sglang/python python3 demo/race_demo.py --web        # port 8765
-```
-
-Same race, same events, rendered in a browser instead of the terminal: a
-stdlib `ThreadingHTTPServer` serves one self-contained HTML page and streams
-the race over server-sent events (`demo/race_web.py`), so there is no build
-step and no new dependency. Each arm draws its **branch tree live** in the same
-visual language as `docs/img/lifecycle.svg`: the parent node holds the shared
-prefix, children fan out from it as they complete (green = hit that prefix,
-red = had to re-prefill, dot = passed its check), losers grey out with dashed
-edges when they are killed, and the verification forks hang off the surviving
-winner. Below it: live KV bars per arm, a HIT/MISS row per candidate with its
-cached/charged tokens, the kill event, and the scoreboard at the end. A browser that connects late gets the whole race
-replayed, and the server stays up after the race so the result stays readable.
-
-![browser dashboard](race_demo_web.png)
 
 ---
 

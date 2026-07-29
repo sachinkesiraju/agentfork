@@ -1,4 +1,4 @@
-"""Split-screen race: 10 candidate fixes, one inference server, a noisy neighbor.
+"""Browser race demo: 10 candidate fixes, one inference server, a noisy neighbor.
 
 Two arms solve the *same* task against the *same* live tree-cache server, one
 after the other, while an unrelated tenant streams traffic through that server
@@ -34,11 +34,15 @@ therefore **prefill tokens charged** and **parent-prefix hit rate**, which are
 the cache's own measurements; wall-clock is reported as a secondary number and
 must not be read as model speed.
 
+The race renders itself as a live browser dashboard (``demo/race_web.py``):
+branch trees per arm, KV bars, per-candidate HIT/MISS, and the scoreboard.
+
 Run (needs the patched SGLang checkout on PYTHONPATH -- tools/setup_sglang.sh):
 
+    # opens http://127.0.0.1:8765 and streams the race into it
     PYTHONPATH=/path/to/sglang/python .venv/bin/python demo/race_demo.py
 
-    # plain sequential log + machine-readable JSON summary (CI/tests use this)
+    # headless: sequential log + machine-readable JSON summary (CI/tests)
     PYTHONPATH=/path/to/sglang/python .venv/bin/python demo/race_demo.py --no-ui
 
 ``--provider together|anthropic`` swaps the deterministic ``FakeLLM`` for a
@@ -70,10 +74,6 @@ from agentfork.bench.cost_model import (
     pressure_model,
 )
 from agentfork.harness import BranchResult, FakeLLM, TreeAgent
-
-BOLD, DIM, GREEN, RED, YELLOW, CYAN, RESET = (
-    "\033[1m", "\033[2m", "\033[32m", "\033[31m", "\033[33m", "\033[36m",
-    "\033[0m")
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SERVER = os.path.join(REPO, "demo", "sglang_tree_server.py")
@@ -746,139 +746,6 @@ class LogUI:
         self.say("")
 
 
-class DashboardUI(LogUI):
-    """Split-screen ANSI dashboard (stdlib only, no curses screen setup)."""
-
-    FULL_WIDTH = 66   # what a panel wants
-    MIN_WIDTH = 40    # below this a panel cannot hold a child row
-
-    def __init__(self, args):
-        super().__init__()
-        self.args = args
-        cols = shutil.get_terminal_size((2 * self.FULL_WIDTH + 3, 40)).columns
-        self.WIDTH = max(self.MIN_WIDTH, min(self.FULL_WIDTH, (cols - 3) // 2))
-        self.narrow = cols < 2 * self.MIN_WIDTH + 3
-        self.lock = threading.Lock()
-        self.state = {"stock": self._blank("stock"),
-                      "agentfork": self._blank("agentfork")}
-        self.header_lines: list[str] = []
-        self.active = None
-
-    def _blank(self, name) -> dict:
-        return {"name": name, "url": "", "parent": "", "rows": [], "kills": "",
-                "summary": "", "kv": (0, self.args.capacity_tokens)}
-
-    # -- rendering ---------------------------------------------------------
-
-    @staticmethod
-    def _bar(frac: float, width: int, ch: str = "#") -> str:
-        filled = max(0, min(width, int(round(frac * width))))
-        return ch * filled + "." * (width - filled)
-
-    def _panel(self, st: dict) -> list[str]:
-        w = self.WIDTH
-        used, cap = st["kv"]
-        lines = [f"{st['name'].upper():<{w}}", "-" * w]
-        lines.append(f"server {st['url']}"[:w].ljust(w))
-        lines.append(st["parent"][:w].ljust(w))
-        lines.append(f"KV [{self._bar(used / cap if cap else 0, w - 18)}] "
-                     f"{used:>6}/{cap}"[:w].ljust(w))
-        lines.append("")
-        keep = self.args.children + self.args.verify_children
-        for text, color in st["rows"][-keep:]:
-            lines.append(color + text[:w].ljust(w) + RESET)
-        lines.append("")
-        lines.append(st["kills"][:w].ljust(w))
-        lines.append(st["summary"][:w].ljust(w))
-        return lines
-
-    def _redraw(self) -> None:
-        left = self._panel(self.state["stock"])
-        right = self._panel(self.state["agentfork"])
-        height = max(len(left), len(right))
-        left += [" " * self.WIDTH] * (height - len(left))
-        right += [" " * self.WIDTH] * (height - len(right))
-        out = ["\033[H\033[J", BOLD + "== agentfork split-screen race ==" + RESET]
-        out += [DIM + line + RESET for line in HEADER.splitlines()]
-        if self.narrow:
-            out.append(YELLOW + "terminal is narrow: the split screen wants "
-                       f"{2 * self.FULL_WIDTH + 3} columns. Widen it, or use "
-                       "--no-ui." + RESET)
-        out += self.header_lines
-        out.append("")
-        for a, b in zip(left, right):
-            out.append(f"{a} | {b}")
-        print("\n".join(out), flush=True)
-
-    # -- LogUI surface -----------------------------------------------------
-
-    def banner(self, race: Race, args) -> None:
-        ustar = break_even_u(race.prefix_tokens, args.capacity_tokens)
-        u = args.noise_request_tokens * args.noise_requests_per_gap
-        verdict = ("U > U*  -> the neighbor evicts an unpinned prefix"
-                   if u > ustar else "U <= U* -> no eviction expected")
-        self.header_lines = [
-            f"P={race.prefix_tokens}  C={args.capacity_tokens}  U={u}  "
-            f"U*=C-P={ustar}   {verdict}",
-            f"N={args.children} candidates, {args.verify_children} "
-            f"verification forks; neighbor metered between candidates",
-        ]
-        with self.lock:
-            self._redraw()
-
-    def arm_start(self, name, url) -> None:
-        with self.lock:
-            self.active = name
-            self.state[name]["url"] = url
-            self._redraw()
-
-    def parent(self, name, prefix_tokens, charged) -> None:
-        with self.lock:
-            self.state[name]["parent"] = (
-                f"shared context: {charged} tok charged (P={prefix_tokens})")
-            self.state[name]["kv"] = (charged, self.args.capacity_tokens)
-            self._redraw()
-
-    def child(self, name, label, idx, rec: ChildRecord, total) -> None:
-        hit = "HIT " if rec.parent_hit else "MISS"
-        check = "PASS" if rec.check_passed else "fail"
-        head = f"{label[:6]:<6} {idx + 1:>2}/{total} "
-        row = (f"{head}[{self._bar((idx + 1) / total, 10, '=')}] {hit} "
-               f"cached={rec.cached_tokens:<6} charged={rec.charged_tokens:<6} "
-               f"{check}")
-        if len(row) > self.WIDTH:  # narrow terminal: drop the bar and cached
-            row = f"{head}{hit} charged={rec.charged_tokens:<6} {check}"
-        with self.lock:
-            self.state[name]["rows"].append(
-                (row, GREEN if rec.parent_hit else RED))
-            self._redraw()
-
-    def kills(self, name, n, freed, pool_delta) -> None:
-        with self.lock:
-            self.state[name]["kills"] = (
-                f"killed {n} losers: KV freed {freed} tok "
-                f"(pool -{pool_delta})")
-            self._redraw()
-
-    def event(self, name, kind, detail="") -> None:
-        pass
-
-    def arm_done(self, arm: ArmResult) -> None:
-        with self.lock:
-            self.state[arm.name]["summary"] = (
-                f"hit {arm.parent_hit_rate * 100:.0f}%  prefill "
-                f"{arm.prefill_charged} tok  "
-                f"{'VERIFIED' if arm.verified else 'UNVERIFIED'}")
-            self.state[arm.name]["kv"] = (arm.peak_kv_used,
-                                          self.args.capacity_tokens)
-            self._redraw()
-
-    def kv(self, name, used) -> None:
-        with self.lock:
-            self.state[name]["kv"] = (used, self.args.capacity_tokens)
-            self._redraw()
-
-
 # ---------------------------------------------------------------------------
 # scoreboard + JSON summary
 # ---------------------------------------------------------------------------
@@ -1023,15 +890,13 @@ def parse_args(argv=None):
     p.add_argument("--provider", choices=["fake", "anthropic", "together"],
                    default="fake",
                    help="candidate source; 'fake' is deterministic + offline")
-    p.add_argument("--no-ui", action="store_true",
-                   help="plain sequential log plus a JSON summary")
-    p.add_argument("--web", nargs="?", type=int, const=8765, default=None,
-                   metavar="PORT",
-                   help="serve the same race as a live browser dashboard "
-                        "(default port 8765) instead of drawing it in the "
-                        "terminal")
+    p.add_argument("--port", type=int, default=8765,
+                   help="port for the browser dashboard")
     p.add_argument("--no-open", action="store_true",
-                   help="with --web, do not open a browser automatically")
+                   help="do not open a browser automatically")
+    p.add_argument("--no-ui", action="store_true",
+                   help="headless: no dashboard, plain sequential log plus a "
+                        "JSON summary (what tests and CI read)")
     p.add_argument("--json-out", default=None,
                    help="also write the JSON summary to this path")
     p.add_argument("--admin-api-key", default="race-demo-admin-key")
@@ -1045,14 +910,12 @@ def parse_args(argv=None):
 
 def main(argv=None) -> int:
     args = parse_args(argv)
-    if args.web is not None:
-        from demo.race_web import WebUI
-        ui = WebUI(args, LogUI(), port=args.web,
-                   open_browser=not args.no_open)
-    elif args.no_ui:
+    if args.no_ui:
         ui = LogUI()
     else:
-        ui = DashboardUI(args)
+        from demo.race_web import WebUI
+        ui = WebUI(args, LogUI(), port=args.port,
+                   open_browser=not args.no_open)
     race = Race(args, ui)
     ui.banner(race, args)
     try:
@@ -1064,7 +927,7 @@ def main(argv=None) -> int:
     summary = summary_json(args, race, stock, agentfork)
     print()
     print(scoreboard(stock, agentfork), flush=True)
-    if args.web is not None:
+    if not args.no_ui:
         ui.scoreboard(scoreboard_rows(stock, agentfork), SCOREBOARD_NOTES)
         ui.finish()
         print(f"\nrace finished; dashboard still served at {ui.url} "

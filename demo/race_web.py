@@ -1,13 +1,14 @@
-"""Browser dashboard for the split-screen race (``race_demo.py --web``).
+"""Browser dashboard for the race demo: this is how the race is watched.
 
-Same race, same events, same JSON -- rendered in a browser instead of a
-terminal. A stdlib ``ThreadingHTTPServer`` serves one self-contained HTML page
+``race_demo.py`` streams its events here by default; ``--no-ui`` skips it and
+prints the JSON summary instead. A stdlib ``ThreadingHTTPServer`` serves one
+self-contained HTML page
 and streams the race as server-sent events, so there is no build step, no
 framework, and no new dependency: the page is a few hundred bytes of HTML and
 an ``EventSource``.
 
-The UI object satisfies the same interface as ``LogUI``/``DashboardUI`` -- the
-race does not know which one it is talking to.
+The UI object satisfies the same interface as ``LogUI`` -- the race does not
+know which one it is talking to.
 """
 
 from __future__ import annotations
