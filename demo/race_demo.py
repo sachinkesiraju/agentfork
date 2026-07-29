@@ -4,6 +4,13 @@ Two arms solve the *same* task against the *same* live tree-cache server, one
 after the other, while an unrelated tenant streams traffic through that server
 the whole time:
 
+The tree is not flat: the root holds the shared repo context, a handful of
+*approach* branches commit their own reasoning under it, the candidates fork
+off those approaches, and the verification round forks off the winning leaf.
+So a candidate can hit the root context and still be charged for the approach
+above it -- the demo reports the root hit rate and the full-lineage (subtree)
+hit rate separately, because only the second one says the subtree survived.
+
   STOCK      no pinning, no branches. The shared repo context is prefilled
              once and left in the cache like any other prefix; each candidate
              is an ordinary request that hopes the prefix is still resident,
@@ -82,6 +89,25 @@ if REPO not in sys.path:  # run as a script from anywhere
 
 FIX_MARKER = "\n### CANDIDATE clamp.py ###\n"
 VERIFY_MARKER = "\n### VERIFICATION ROUND ###\n"
+APPROACH_MARKER = "\n### APPROACH ###\n"
+
+# Level 1 of the tree: distinct strategies the agent commits to *before* it
+# writes any code. Each one is real KV -- a few hundred tokens of reasoning
+# that its own candidates inherit and that its siblings must not be charged
+# for. This is what makes a subtree hit different from a root hit: a leaf
+# under "boundary-first" reuses the shared repo context *and* that approach's
+# reasoning, none of which it pays for.
+APPROACHES = [
+    ("boundary-first",
+     "# plan: reason about the inclusive boundaries first, then write the "
+     "comparison so lo/hi are both respected.\n"),
+    ("test-driven",
+     "# plan: read the failing assertions, derive the contract from them, "
+     "then write the smallest expression that satisfies it.\n"),
+    ("rewrite",
+     "# plan: ignore the existing body and re-derive clamp from its "
+     "docstring.\n"),
+]
 
 BUGGY = '''\
 def clamp(x, lo, hi):
@@ -440,7 +466,12 @@ class ChildRecord:
     branch_id: str
     cached_tokens: int = 0
     charged_tokens: int = 0
-    parent_hit: bool = False
+    parent_hit: bool = False        # reused the shared root context
+    subtree_hit: bool = False       # ... and its own parent branch's tokens
+    hit_level: str = "miss"         # "subtree" | "root" | "miss"
+    depth: int = 1
+    parent_branch: str = ""
+    title: str = ""                 # short human label (an approach's name)
     sandbox_setup_s: float = 0.0
     check_passed: bool = False
     error: str | None = None
@@ -449,6 +480,7 @@ class ChildRecord:
 @dataclass
 class ArmResult:
     name: str
+    approaches: list[ChildRecord] = field(default_factory=list)
     children: list[ChildRecord] = field(default_factory=list)
     verify_children: list[ChildRecord] = field(default_factory=list)
     round1_winner: str | None = None
@@ -472,14 +504,27 @@ class ArmResult:
         return sum(c.parent_hit for c in self.children) / len(self.children)
 
     @property
+    def subtree_hit_rate(self) -> float:
+        """Leaves that reused their *own* approach branch, not just the root.
+
+        A leaf can hit the shared repo context and still be charged for its
+        approach's reasoning if that subtree was evicted; only this rate says
+        the whole lineage survived."""
+        if not self.children:
+            return 0.0
+        return sum(c.subtree_hit for c in self.children) / len(self.children)
+
+    @property
     def prefill_charged(self) -> int:
         return (self.parent_prefill_charged
+                + sum(c.charged_tokens for c in self.approaches)
                 + sum(c.charged_tokens for c in self.children)
                 + sum(c.charged_tokens for c in self.verify_children))
 
     def to_dict(self) -> dict:
         d = asdict(self)
         d["parent_hit_rate"] = round(self.parent_hit_rate, 4)
+        d["subtree_hit_rate"] = round(self.subtree_hit_rate, 4)
         d["prefill_tokens_charged"] = self.prefill_charged
         return d
 
@@ -520,13 +565,44 @@ class Race:
             head += "\n"
         return head
 
+    def _plans(self) -> list[tuple[str, str]]:
+        return [APPROACHES[i % len(APPROACHES)]
+                for i in range(self.args.approaches)]
+
+    def _plan_text(self, name: str, body: str) -> str:
+        """An approach's own committed reasoning, padded to ``A`` tokens."""
+        head = f"# approach: {name}\n{body}"
+        line = f"# {name}: reasoning that only this subtree inherits\n"
+        while len(head) + len(line) <= self.args.approach_tokens:
+            head += line
+        pad = self.args.approach_tokens - len(head)
+        if pad > 1:
+            head += "#" * (pad - 1) + "\n"
+        elif pad == 1:
+            head += "\n"
+        return head
+
+    @staticmethod
+    def _bucket(candidates: list[str],
+                n_buckets: int) -> list[list[tuple[int, str]]]:
+        """Spread the candidates over the approach subtrees, round-robin."""
+        buckets: list[list[tuple[int, str]]] = [[] for _ in range(n_buckets)]
+        for i, candidate in enumerate(candidates):
+            buckets[i % n_buckets].append((i, candidate))
+        return buckets
+
     # -- shared plumbing ---------------------------------------------------
 
     def _round(self, arm: ArmResult, agent: TreeAgent, backend, server,
                parent_id: str, continuations: list[str],
                tests: dict[str, str], template: str | None,
                records: list[ChildRecord], neighbor: NoisyNeighbor,
-               label: str) -> BranchResult:
+               label: str, *, depth: int = 1, base_tokens: int | None = None,
+               check: bool = True,
+               index_base: int = 0, total: int | None = None,
+               workspace_out: dict[str, str] | None = None,
+               gap_first: bool = False, titles: list[str] | None = None,
+               ) -> list[BranchResult]:
         """One fan-out round: fork every candidate off ``parent_id``, then
         commit and check them one at a time with a full gap of neighbor
         traffic between consecutive candidates -- the reuse distance the
@@ -538,12 +614,18 @@ class Race:
         next's.
         """
         setup_s: dict[str, float] = {}
-        total = len(continuations)
+        n_here = len(continuations)
+        total = n_here if total is None else total
+        base_tokens = (self.prefix_tokens if base_tokens is None
+                       else base_tokens)
         done = {"n": 0}
 
         def work(branch_id: str, prefix: str) -> dict:
-            candidate = prefix.split(FIX_MARKER, 1)[1].split(VERIFY_MARKER, 1)[0]
-            code = extract_code(candidate)
+            code = ""
+            if check:
+                candidate = (prefix.split(FIX_MARKER, 1)[1]
+                             .split(VERIFY_MARKER, 1)[0])
+                code = extract_code(candidate)
             workdir = os.path.join(
                 self.root, f"{arm.name}-{branch_id.replace('/', '_')}")
             if template is None:
@@ -552,16 +634,21 @@ class Race:
                     workdir, dict(PROJECT_FILES, **tests))
             else:
                 setup_s[branch_id] = warm_workspace(template, workdir)
-            passed = run_check(workdir, code, tests)
+            if workspace_out is not None:
+                workspace_out[branch_id] = workdir
+            # an approach branch has committed a plan, not a patch: there is
+            # nothing to test yet, so it just prepares the workspace its own
+            # candidates will inherit.
+            passed = run_check(workdir, code, tests) if check else True
             used = server.pool_stats()["used"]
             arm.peak_kv_used = max(arm.peak_kv_used, used)
             self.ui.kv(arm.name, used)
             done["n"] += 1
-            if done["n"] < total:
-                neighbor.gap()  # unrelated traffic between candidates
+            neighbor.gap()  # unrelated traffic between consecutive branches
             return {"passed": passed, "code": code, "workdir": workdir}
 
-        neighbor.gap()  # ... and before the first one
+        if gap_first:
+            neighbor.gap()  # pressure before the very first branch, too
         results = agent.fan_out(parent_id, continuations, work,
                                 lambda r: 1.0 if r.output["passed"] else 0.0)
         for idx, result in enumerate(results):
@@ -573,12 +660,20 @@ class Race:
                 sandbox_setup_s=setup_s.get(result.branch_id, 0.0),
                 check_passed=bool(result.error is None
                                   and result.output["passed"]),
+                depth=depth,
+                parent_branch=parent_id,
+                title=(titles[idx] if titles else ""),
                 error=(None if result.error is None
                        else f"{type(result.error).__name__}: {result.error}"))
             record.parent_hit = record.cached_tokens >= self.prefix_tokens
+            # the branch reused everything its parent had committed -- the
+            # shared context *and* the lineage above it
+            record.subtree_hit = record.cached_tokens >= base_tokens
+            record.hit_level = ("subtree" if record.subtree_hit else
+                                ("root" if record.parent_hit else "miss"))
             records.append(record)
-            self.ui.child(arm.name, label, idx, record, total)
-        return agent.select_winner(results)
+            self.ui.child(arm.name, label, index_base + idx, record, total)
+        return results
 
     # -- arms --------------------------------------------------------------
 
@@ -597,6 +692,7 @@ class Race:
         sandbox = ReaperSandbox(["/bin/sh", "-c", "exec sleep 3600"])
         registry = os.path.join(self.root, f"{name}-registry.json")
         template = None
+        approach_templates: dict[str, str] = {}
         self.ui.arm_start(name, server.url)
         neighbor.start()
         t0 = time.perf_counter()
@@ -618,12 +714,48 @@ class Race:
                 self.ui.parent(name, self.prefix_tokens,
                                arm.parent_prefill_charged)
 
-                round1 = [self.context + FIX_MARKER + self._suffix(c, i)
-                          for i, c in enumerate(self.candidates)]
-                winner = self._round(
-                    arm, agent, backend, server, root_id, round1,
-                    {"test_clamp.py": BASIC_TEST}, template,
-                    arm.children, neighbor, "fix")
+                # ---- level 1: divergent approaches off the root -------
+                plans = self._plans()
+                approach_conts = [
+                    self.context + APPROACH_MARKER
+                    + self._plan_text(name, body) for name, body in plans]
+                approach_results = self._round(
+                    arm, agent, backend, server, root_id, approach_conts,
+                    {}, template, arm.approaches, neighbor, "approach",
+                    depth=1, gap_first=True, check=False,
+                    titles=[name for name, _ in plans],
+                    workspace_out=(None if stock else approach_templates))
+                live = [r for r in approach_results if r.error is None]
+                if not live:
+                    raise RuntimeError("every approach branch failed")
+
+                # ---- level 2: candidates forked off each approach -----
+                # A leaf inherits its approach's plan as well as the shared
+                # context, so its cache hit is against the whole lineage.
+                buckets = self._bucket(self.candidates, len(live))
+                leaf_results: list[BranchResult] = []
+                leaf_parent: dict[str, str] = {}
+                idx = 0
+                for approach, bucket in zip(live, buckets):
+                    if not bucket:
+                        continue
+                    plan_prefix = agent.committed_prefix(approach.branch_id)
+                    leaf_conts = [
+                        plan_prefix + FIX_MARKER + self._suffix(c, i)
+                        for i, c in bucket]
+                    round_results = self._round(
+                        arm, agent, backend, server, approach.branch_id,
+                        leaf_conts, {"test_clamp.py": BASIC_TEST},
+                        (approach_templates.get(approach.branch_id)
+                         if not stock else None),
+                        arm.children, neighbor, "fix",
+                        depth=2, base_tokens=len(plan_prefix.encode()),
+                        index_base=idx, total=len(self.candidates))
+                    leaf_results += round_results
+                    for r in round_results:
+                        leaf_parent[r.branch_id] = approach.branch_id
+                    idx += len(bucket)
+                winner = agent.select_winner(leaf_results)
                 arm.winner = arm.round1_winner = winner.branch_id
 
                 before = server.pool_stats()["used"]
@@ -639,10 +771,14 @@ class Race:
                 verify = [winner_text + VERIFY_MARKER
                           + self._suffix(f"audit pass {i}\n", i)
                           for i in range(args.verify_children)]
-                verified = self._round(
+                verified = agent.select_winner(self._round(
                     arm, agent, backend, server, winner.branch_id, verify,
                     {"test_clamp.py": BASIC_TEST, "test_edge.py": EDGE_TEST},
-                    template, arm.verify_children, neighbor, "verify")
+                    (approach_templates.get(leaf_parent[winner.branch_id],
+                                            template)
+                     if not stock else None),
+                    arm.verify_children, neighbor, "verify",
+                    depth=3, base_tokens=len(winner.prefix.encode())))
                 agent.kill_losers(verified.branch_id)
                 arm.winner = verified.branch_id
                 arm.verified = bool(verified.output["passed"])
@@ -656,7 +792,8 @@ class Race:
             arm.neighbor_deferred = neighbor.deferred
             server.stop()
         arm.sandbox_setup_s = sum(
-            c.sandbox_setup_s for c in arm.children + arm.verify_children)
+            c.sandbox_setup_s
+            for c in arm.approaches + arm.children + arm.verify_children)
         self.ui.arm_done(arm)
         return arm
 
@@ -678,7 +815,8 @@ def build_llm(provider: str):
 # ---------------------------------------------------------------------------
 
 HEADER = (
-    "10 fixes, 1 inference server, and someone else is using it too.\n"
+    "10 fixes over 3 approach branches, 1 inference server, and someone else "
+    "is using it too.\n"
     "CPU-only: KV pool, tree cache, eviction, pinning, auth, sandboxes and "
     "candidate checks are REAL;\nthe transformer forward pass is STUBBED "
     "(no GPU/weights), so read prefill tokens and hit rate,\nnot generation "
@@ -707,8 +845,12 @@ class LogUI:
                  f"{args.noise_request_tokens})")
         self.say(f"U* = C - P (break-even) = {ustar} tokens  -> "
                  f"{'U > U*: stock loses the prefix' if u > ustar else 'U <= U*: stock keeps the prefix'}")
-        self.say(f"N (candidates)         = {args.children}, "
+        self.say(f"N (candidates)         = {args.children} spread over "
+                 f"{args.approaches} approach branches of "
+                 f"{args.approach_tokens} tokens each, "
                  f"verification forks = {args.verify_children}")
+        self.say("tree: root context -> approach -> candidate -> "
+                 "verification (a leaf's hit is against its whole lineage)")
         self.say("")
 
     def arm_start(self, name: str, url: str) -> None:
@@ -721,8 +863,9 @@ class LogUI:
     def child(self, name, label, idx, rec: ChildRecord, total) -> None:
         status = "PASS" if rec.check_passed else ("ERR" if rec.error else "fail")
         self.say(f"[{name}/{label} {idx + 1}/{total}] {rec.branch_id}: "
-                 f"cached={rec.cached_tokens} charged={rec.charged_tokens} "
-                 f"parent_hit={rec.parent_hit} "
+                 f"depth={rec.depth} cached={rec.cached_tokens} "
+                 f"charged={rec.charged_tokens} "
+                 f"cache={rec.hit_level} "
                  f"sandbox_setup={rec.sandbox_setup_s * 1e3:.0f}ms "
                  f"check={status}")
 
@@ -754,8 +897,11 @@ class LogUI:
 def scoreboard_rows(stock: ArmResult,
                     agentfork: ArmResult) -> list[tuple[str, str, str]]:
     return [
-        ("parent-prefix hit rate", f"{stock.parent_hit_rate * 100:.0f}%",
+        ("root-context hit rate", f"{stock.parent_hit_rate * 100:.0f}%",
          f"{agentfork.parent_hit_rate * 100:.0f}%"),
+        ("full-lineage (subtree) hit rate",
+         f"{stock.subtree_hit_rate * 100:.0f}%",
+         f"{agentfork.subtree_hit_rate * 100:.0f}%"),
         ("prefill tokens charged (real)", f"{stock.prefill_charged:,}",
          f"{agentfork.prefill_charged:,}"),
         ("peak KV pool used", f"{stock.peak_kv_used:,}",
@@ -830,6 +976,8 @@ def summary_json(args, race: Race, stock: ArmResult,
     return {
         "config": {
             "children": args.children,
+            "approaches": args.approaches,
+            "approach_tokens": args.approach_tokens,
             "verify_children": args.verify_children,
             "prefix_tokens": race.prefix_tokens,
             "suffix_tokens": args.suffix_tokens,
@@ -847,6 +995,8 @@ def summary_json(args, race: Race, stock: ArmResult,
         "claims": {
             "agentfork_parent_hit_rate": round(agentfork.parent_hit_rate, 4),
             "stock_parent_hit_rate": round(stock.parent_hit_rate, 4),
+            "agentfork_subtree_hit_rate": round(agentfork.subtree_hit_rate, 4),
+            "stock_subtree_hit_rate": round(stock.subtree_hit_rate, 4),
             "agentfork_prefill_charged": agentfork.prefill_charged,
             "stock_prefill_charged": stock.prefill_charged,
             "agentfork_verified": agentfork.verified,
@@ -873,6 +1023,13 @@ def parse_args(argv=None):
         formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--children", type=int, default=10,
                    help="candidate fixes per fan-out (N)")
+    p.add_argument("--approaches", type=int, default=3,
+                   help="divergent approach branches forked off the root (M); "
+                        "candidates are spread over them, so the tree is "
+                        "root -> approach -> candidate -> verification")
+    p.add_argument("--approach-tokens", type=int, default=None,
+                   help="tokens of reasoning each approach commits (A); "
+                        "default max(2*S, P//8)")
     p.add_argument("--verify-children", type=int, default=3,
                    help="re-forks of the winner in the verification round")
     p.add_argument("--prefix-tokens", type=int, default=8192,
@@ -901,6 +1058,9 @@ def parse_args(argv=None):
                    help="also write the JSON summary to this path")
     p.add_argument("--admin-api-key", default="race-demo-admin-key")
     args = p.parse_args(argv)
+    if args.approach_tokens is None:
+        args.approach_tokens = max(2 * args.suffix_tokens,
+                                   args.prefix_tokens // 8)
     if args.noise_requests_per_gap is None:
         headroom = max(0, args.capacity_tokens - args.prefix_tokens)
         args.noise_requests_per_gap = (

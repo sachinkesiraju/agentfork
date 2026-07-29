@@ -24,6 +24,7 @@ class FakeInner:
 class FakeArm:
     name = "agentfork"
     parent_hit_rate = 1.0
+    subtree_hit_rate = 1.0
     prefill_charged = 11238
     verified = True
 

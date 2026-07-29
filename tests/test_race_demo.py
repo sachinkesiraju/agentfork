@@ -61,6 +61,14 @@ def above() -> dict:
 
 
 @pytest.fixture(scope="module")
+def roomy() -> dict:
+    """Low pressure *and* enough capacity for every approach subtree at once:
+    the only configuration in which the stock arm keeps whole lineages."""
+    return run_demo(**{"--noise-requests-per-gap": "1",
+                       "--capacity-tokens": "6144"})
+
+
+@pytest.fixture(scope="module")
 def below() -> dict:
     """Pressure at or below the break-even: one small neighbour request per
     gap, well inside the cache headroom."""
@@ -124,6 +132,31 @@ def test_killing_losers_reclaims_their_kv(above):
             == claims["agentfork_expected_pinned_after_kills"])
 
 
+def test_tree_is_multi_level_and_leaves_hit_their_own_subtree(above):
+    """The tree is root -> approach -> candidate -> verification, and an
+    agentfork leaf reuses its *whole lineage*, not just the root context:
+    the approach's committed reasoning is cached for it too."""
+    for name in ("stock", "agentfork"):
+        arm = above["arms"][name]
+        approach_ids = {a["branch_id"] for a in arm["approaches"]}
+        assert len(approach_ids) == above["config"]["approaches"], name
+        assert all(a["depth"] == 1 for a in arm["approaches"]), name
+        # every candidate hangs off an approach branch, not off the root
+        assert all(c["depth"] == 2 for c in arm["children"]), name
+        assert {c["parent_branch"] for c in arm["children"]} <= approach_ids
+        assert all(c["depth"] == 3 for c in arm["verify_children"]), name
+
+    agentfork = above["arms"]["agentfork"]
+    assert agentfork["subtree_hit_rate"] == 1.0
+    assert all(c["hit_level"] == "subtree" for c in agentfork["children"])
+    # a leaf's cached tokens exceed the shared context: the extra is its
+    # approach's own reasoning, inherited rather than re-prefilled
+    assert all(c["cached_tokens"] > above["config"]["prefix_tokens"]
+               for c in agentfork["children"])
+    # the stock arm cannot even keep the root context, let alone a subtree
+    assert above["arms"]["stock"]["subtree_hit_rate"] == 0.0
+
+
 def test_below_break_even_both_arms_keep_the_prefix(below):
     """The boundary, not the branding: with U <= C - P the stock cache keeps
     the shared prefix too, and the two arms tie on hit rate."""
@@ -131,6 +164,28 @@ def test_below_break_even_both_arms_keep_the_prefix(below):
     assert cfg["interleaved_tokens_u"] <= cfg["break_even_u"]
     assert below["arms"]["stock"]["parent_hit_rate"] == 1.0
     assert below["arms"]["agentfork"]["parent_hit_rate"] == 1.0
+
+
+def test_below_break_even_the_stock_arm_still_loses_subtrees(below):
+    """A sharper boundary than `U* = C - P`, which only covers the root.
+
+    Keeping a *whole lineage* unpinned also needs room for every sibling
+    subtree's reasoning at once; when it does not fit, the cache's LRU drops
+    the older approaches even though the shared root context survives. So the
+    stock arm can hit the root on every candidate and still be charged for the
+    approach above it -- while the pinned lineage is immune."""
+    stock = below["arms"]["stock"]
+    assert stock["parent_hit_rate"] == 1.0
+    assert stock["subtree_hit_rate"] < 1.0
+    assert any(c["hit_level"] == "root" for c in stock["children"])
+    assert below["arms"]["agentfork"]["subtree_hit_rate"] == 1.0
+
+
+def test_with_capacity_for_every_subtree_the_stock_arm_ties(roomy):
+    """... and it is capacity, not framing: give the stock cache room for all
+    three approach subtrees and it keeps whole lineages too."""
+    assert roomy["arms"]["stock"]["subtree_hit_rate"] == 1.0
+    assert roomy["arms"]["agentfork"]["subtree_hit_rate"] == 1.0
 
 
 def test_output_is_labelled_as_stubbed_generation(above):

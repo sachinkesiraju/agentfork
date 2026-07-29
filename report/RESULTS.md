@@ -230,20 +230,28 @@ The captured run predates expansion of the patch test file from 7 to 17 tests.
 
 `demo/race_demo.py` runs both arms against the same live tree-cache HTTP
 server -- a fresh server per arm, with an unrelated tenant streaming traffic
-through it between candidates at `U = 17408` tokens per gap against a
-break-even of `U* = C - P = 16384`. Recorded 2026-07-29 on the 2 vCPU CPU box
-(no GPU, no `/dev/kvm`; `ReaperSandbox`, transformer forward stubbed):
+through it between branches at `U = 17408` tokens per gap against a
+break-even of `U* = C - P = 16384`. The tree is four levels deep (root context
+-> 3 approach branches with their own committed reasoning -> 10 candidates ->
+3 verification forks), so a leaf can reuse its whole lineage rather than just
+the root. Recorded 2026-07-29 on the 2 vCPU CPU box (no GPU, no `/dev/kvm`;
+`ReaperSandbox`, transformer forward stubbed):
 
 | metric | stock | agentfork |
 |---|---|---|
-| parent-prefix hit rate | 0% | 100% |
-| prefill tokens charged (real) | 119,232 | 11,238 |
-| KV still pinned after killing 9 losers | 0 | 8,760 (= the winner's own committed prefix, exactly) |
+| root-context hit rate | 0% | 100% |
+| full-lineage (subtree) hit rate | 0% | 100% |
+| prefill tokens charged (real) | 160,480 | 14,433 |
+| KV still pinned after killing 11 losers | 0 | 9,802 (= the winner's own committed prefix, exactly) |
 | verified winning fix | yes | yes |
 
 The eviction is the real cache's LRU running out of real pool slots under the
 neighbour's traffic, not a simulated miss; below the break-even both arms keep
-the prefix (asserted in `tests/test_race_demo.py`). Wall clock is secondary
+the root prefix (asserted in `tests/test_race_demo.py`). The depth adds a
+sharper boundary: `U* = C - P` only protects the *root*, so below it the stock
+arm keeps the shared context on every candidate and still loses subtrees
+(root hit `1.0`, full-lineage hit `0.33`) unless the pool also has room for
+every sibling subtree at once. Pinning is `1.0` in every regime. Wall clock is secondary
 here because generation is stubbed. Full capture, caveats and the
 machine-readable summary: [race_demo_run.md](race_demo_run.md).
 

@@ -47,7 +47,7 @@ PAGE = """<!doctype html>
            color:var(--blue); }
  #arm-stock h2 { color:var(--mute); }
  .arm .url { color:var(--mute); font-size:12px; margin-bottom:12px; }
- .tree { width:100%; height:210px; display:block; margin-bottom:6px; }
+ .tree { width:100%; height:290px; display:block; margin-bottom:6px; }
  .kv { height:22px; background:#eef2f7; border-radius:5px; overflow:hidden;
        position:relative; margin-bottom:4px; border:1px solid var(--line); }
  .kv i { display:block; height:100%; width:0; background:#bfdbfe;
@@ -62,7 +62,8 @@ PAGE = """<!doctype html>
  td.bar { width:78px; }
  .p { display:block; height:7px; background:#eef2f7; border-radius:4px; }
  .p i { display:block; height:100%; background:#c7b2f5; border-radius:4px; }
- .hit { color:var(--green); font-weight:600; }
+ .hit, .subtree { color:var(--green); font-weight:600; }
+ .root { color:var(--amber); font-weight:600; }
  .miss { color:var(--red); font-weight:600; }
  .pass { color:var(--green); font-weight:600; }
 .fail { color:var(--mute); }
@@ -71,6 +72,7 @@ PAGE = """<!doctype html>
           margin-bottom:12px; }
 .legend b { font-weight:600; }
 .legend .g { color:var(--green); } .legend .r { color:var(--red); }
+.legend .a { color:var(--amber); }
  .ev { margin-top:10px; color:var(--amber); font-size:12.5px; }
  .done { margin-top:6px; font-size:13px; }
  #score { margin-top:24px; padding:14px 16px; max-width:820px; }
@@ -88,12 +90,12 @@ PAGE = """<!doctype html>
 <div class="math card" id="math"></div>
 <div class="arms">
   <div class="arm card" id="arm-stock"><h2>STOCK</h2><div class="url"></div>
-    <svg class="tree" viewBox="0 0 460 210" preserveAspectRatio="xMidYMid meet"></svg>
+    <svg class="tree" viewBox="0 0 460 290" preserveAspectRatio="xMidYMid meet"></svg>
     <div class="legend"></div>
     <div class="kv"><i></i><b></b></div><div class="kvlabel"></div>
     <table></table><div class="ev"></div><div class="done"></div></div>
   <div class="arm card" id="arm-agentfork"><h2>AGENTFORK</h2><div class="url"></div>
-    <svg class="tree" viewBox="0 0 460 210" preserveAspectRatio="xMidYMid meet"></svg>
+    <svg class="tree" viewBox="0 0 460 290" preserveAspectRatio="xMidYMid meet"></svg>
     <div class="legend"></div>
     <div class="kv"><i></i><b></b></div><div class="kvlabel"></div>
     <table></table><div class="ev"></div><div class="done"></div></div>
@@ -108,14 +110,24 @@ const esc = s => String(s).replace(/[&<>]/g, c =>
 const SVG = "http://www.w3.org/2000/svg";
 
 // ---- live branch tree (same visual language as docs/img/lifecycle.svg) ----
-// Parent holds the shared prefix; children fan out from it. A child is green
-// when it hit that prefix, red when it had to re-prefill. Losers grey out and
-// their edge goes dashed when they are killed; the winner keeps its
-// verification forks.
+// The tree is root context -> approach -> candidate -> verification, so a node
+// inherits everything its whole lineage committed, not just the root prefix:
+//   green  HIT   the branch reused its parent's full prefix (root + lineage)
+//   amber  ROOT  it kept the shared root context but had to re-prefill the
+//                approach reasoning above it -- a partial subtree hit
+//   red    MISS  nothing was left; it re-prefilled from scratch
+// Killed losers grey out with dashed edges; the surviving lineage stays lit.
 const trees = {
-  stock: {parent: null, children: [], verify: [], killed: false, winner: null},
-  agentfork: {parent: null, children: [], verify: [], killed: false, winner: null},
+  stock: {root: null, nodes: [], byId: {}, killed: false},
+  agentfork: {root: null, nodes: [], byId: {}, killed: false},
 };
+
+const LEVEL_Y = {1: 108, 2: 186, 3: 258};
+const FILL = {subtree: "#f0fdf4", root: "#fffbeb", miss: "#fef2f2"};
+const STROKE = {subtree: "#bbf7d0", root: "#fde68a", miss: "#fecaca"};
+const EDGE = {subtree: "#86efac", root: "#fcd34d", miss: "#fecaca"};
+const INK = {subtree: "#16a34a", root: "#b45309", miss: "#dc2626"};
+const TAG = {subtree: "HIT", root: "ROOT", miss: "MISS"};
 
 function el(tag, attrs, text) {
   const n = document.createElementNS(SVG, tag);
@@ -124,77 +136,110 @@ function el(tag, attrs, text) {
   return n;
 }
 
+// A node is dead once the kills happened and it is not on the winning lineage.
+function alive(t, n) {
+  if (!t.killed) return true;
+  for (let cur = n; cur; cur = t.byId[cur.parent]) if (!cur.passed) return false;
+  return true;
+}
+
+function layout(t, W) {
+  // deepest level first: spread it evenly, then centre each parent over its
+  // own children so the subtree structure is what you actually see.
+  const depths = [3, 2, 1];
+  const x = {};
+  for (const d of depths) {
+    const row = t.nodes.filter(n => n.depth === d);
+    if (!row.length) continue;
+    const placed = row.filter(n => x[n.id] === undefined);
+    // siblings sit together: half a slot of air between subtrees, so the
+    // grouping under each approach is visible and not just implied by edges
+    const parents = [];
+    for (const n of placed) if (!parents.includes(n.parent)) parents.push(n.parent);
+    const gap = 0.5 * (parents.length - 1);
+    const step = Math.min(46, (W - 44) / Math.max(placed.length + gap, 8));
+    const span = step * (placed.length + gap);
+    // verification forks hang under their own parent; a full fan-out is centred
+    const anchor = placed.length && x[placed[0].parent] !== undefined
+      ? x[placed[0].parent] : W / 2;
+    const start = d === 3
+      ? Math.max(24, Math.min(W - 24 - span, anchor - span / 2))
+      : 22 + (W - 44 - span) / 2;
+    let slot = 0, prev = null;
+    for (const n of placed) {
+      if (prev !== null && n.parent !== prev) slot += 0.5;
+      x[n.id] = start + step * slot + step / 2;
+      prev = n.parent;
+      slot += 1;
+    }
+    // ... and every parent recentres over the children it actually has
+    for (const n of t.nodes.filter(m => m.depth === d - 1)) {
+      const kids = t.nodes.filter(m => m.parent === n.id).map(m => x[m.id])
+        .filter(v => v !== undefined);
+      if (kids.length) x[n.id] = kids.reduce((a, b) => a + b, 0) / kids.length;
+    }
+  }
+  return {x: x, step: Math.min(46, (W - 44) / 8)};
+}
+
 function drawTree(name) {
   const t = trees[name], svg = $(".tree", arm(name));
   svg.textContent = "";
-  const W = 460, PX = 60, PY = 34, CY = 112, VY = 182;
-  if (t.parent === null) {
+  const W = 460, RY = 34;
+  if (t.root === null) {
     svg.appendChild(el("text", {x: 14, y: 22, fill: "#94a3b8",
       "font-size": 12}, "waiting for the shared context..."));
     return;
   }
-  // parent
-  const pw = 150, px = PX - 12;
-  svg.appendChild(el("rect", {x: px, y: PY - 20, width: pw, height: 40, rx: 10,
+  const {x} = layout(t, W);
+  // root: the shared repo context every branch inherits
+  const rw = 168, rx = (W - rw) / 2;
+  svg.appendChild(el("rect", {x: rx, y: RY - 20, width: rw, height: 40, rx: 10,
     fill: "#eff6ff", stroke: "#bfdbfe"}));
-  svg.appendChild(el("text", {x: px + 12, y: PY - 4, "font-size": 10,
-    "font-weight": 600, fill: "#2563eb"}, "PARENT"));
-  svg.appendChild(el("text", {x: px + 12, y: PY + 12, "font-size": 11,
+  svg.appendChild(el("text", {x: rx + 12, y: RY - 4, "font-size": 10,
+    "font-weight": 600, fill: "#2563eb"}, "ROOT CONTEXT"));
+  svg.appendChild(el("text", {x: rx + 12, y: RY + 12, "font-size": 11,
     fill: "#0f172a", "font-family": "ui-monospace,Menlo,monospace"},
-    t.parent.charged.toLocaleString() + " tok prefix"));
-  const anchorX = px + pw / 2, anchorY = PY + 20;
+    t.root.charged.toLocaleString() + " tok shared prefix"));
+  const rootAt = {x: W / 2, y: RY + 20};
 
-  const rows = [[t.children, CY, false], [t.verify, VY, true]];
-  for (const [nodes, y, underWinner] of rows) {
-    if (!nodes.length) continue;
-    const step = Math.min(40, (W - 40) / Math.max(nodes.length, 10));
-    const bw = Math.max(20, step - 8);
-    // verification forks hang under the winner, not under the whole fan-out
-    const startX = underWinner
-      ? Math.max(20, Math.min(W - 20 - step * nodes.length,
-                              winnerX(t, W) - step * nodes.length / 2))
-      : 20 + (W - 40 - step * nodes.length) / 2;
-    nodes.forEach((c, i) => {
-      const x = startX + i * step, cx = x + bw / 2;
-      const dead = t.killed && !c.passed;
-      const from = y === VY ? {x: winnerX(t, W), y: CY + 14} :
-                              {x: anchorX, y: anchorY};
-      svg.appendChild(el("path", {
-        d: `M${from.x},${from.y} C${from.x},${from.y + 24} ${cx},${y - 36} ${cx},${y - 14}`,
-        fill: "none", "stroke-width": 1.4,
-        stroke: dead ? "#cbd5e1" : (c.hit ? "#86efac" : "#fecaca"),
-        "stroke-dasharray": dead ? "3 3" : "none"}));
-      svg.appendChild(el("rect", {x: x, y: y - 14, width: bw, height: 28,
-        rx: 8, fill: dead ? "#f1f5f9" : (c.hit ? "#f0fdf4" : "#fef2f2"),
-        stroke: dead ? "#e2e8f0" : (c.hit ? "#bbf7d0" : "#fecaca")}));
-      svg.appendChild(el("text", {x: cx, y: y + 1, "text-anchor": "middle",
-        "font-size": 10, "font-weight": 600,
-        fill: dead ? "#94a3b8" : (c.hit ? "#16a34a" : "#dc2626")},
-        c.hit ? "HIT" : "MISS"));
-      svg.appendChild(el("text", {x: cx, y: y + 11, "text-anchor": "middle",
-        "font-size": 8, fill: dead ? "#cbd5e1" : "#64748b"},
-        "+" + c.charged));
-      if (c.passed) {
-        svg.appendChild(el("circle", {cx: x + bw - 4, cy: y - 14, r: 4,
-          fill: "#16a34a"}));
-      }
-    });
+  for (const n of t.nodes) {
+    const cx = x[n.id], y = LEVEL_Y[n.depth];
+    if (cx === undefined) continue;
+    const dead = !alive(t, n);
+    const lvl = dead ? "dead" : n.hit;
+    const from = t.byId[n.parent]
+      ? {x: x[n.parent], y: LEVEL_Y[t.byId[n.parent].depth] + 14} : rootAt;
+    svg.appendChild(el("path", {
+      d: `M${from.x},${from.y} C${from.x},${from.y + 26} ${cx},${y - 34} ${cx},${y - 14}`,
+      fill: "none", "stroke-width": n.depth === 1 ? 1.8 : 1.4,
+      stroke: dead ? "#cbd5e1" : EDGE[n.hit],
+      "stroke-dasharray": dead ? "3 3" : "none"}));
+    const bw = n.depth === 1 ? 76 : 38;
+    svg.appendChild(el("rect", {x: cx - bw / 2, y: y - 14, width: bw,
+      height: 28, rx: 8,
+      fill: dead ? "#f1f5f9" : FILL[n.hit],
+      stroke: dead ? "#e2e8f0" : STROKE[n.hit]}));
+    svg.appendChild(el("text", {x: cx, y: y - 1, "text-anchor": "middle",
+      "font-size": n.depth === 1 ? 9 : 10, "font-weight": 600,
+      fill: dead ? "#94a3b8" : INK[n.hit]},
+      n.depth === 1 ? n.plan : TAG[n.hit]));
+    svg.appendChild(el("text", {x: cx, y: y + 10, "text-anchor": "middle",
+      "font-size": 8, fill: dead ? "#cbd5e1" : "#64748b"},
+      (n.depth === 1 ? TAG[n.hit] + " " : "") + "+" + n.charged));
+    if (n.passed && n.depth > 1) {
+      svg.appendChild(el("circle", {cx: cx + bw / 2 - 4, cy: y - 14, r: 4,
+        fill: dead ? "#cbd5e1" : "#16a34a"}));
+    }
+    if (lvl === "dead") { /* dead nodes keep their shape, greyed */ }
   }
   const label = t.killed
-    ? (t.verify.length ? "winner re-forked for verification"
-                       : "9 losers killed, winner survives")
+    ? (t.nodes.some(n => n.depth === 3)
+        ? "losing subtrees reaped; winner re-forked to verify"
+        : "losing candidates and their approach subtrees reaped")
     : "fan-out in progress";
   svg.appendChild(el("text", {x: W - 14, y: 16, "text-anchor": "end",
     "font-size": 10, fill: "#94a3b8"}, label));
-}
-
-function winnerX(t, W) {
-  const i = t.children.findIndex(c => c.passed);
-  if (i < 0) return W / 2;
-  const step = Math.min(40, (W - 40) / Math.max(t.children.length, 10));
-  const bw = Math.max(20, step - 8);
-  const startX = 20 + (W - 40 - step * t.children.length) / 2;
-  return startX + i * step + bw / 2;
 }
 
 function kv(name, used, cap) {
@@ -216,16 +261,21 @@ const handlers = {
       "<b>U</b> <span>neighbour per gap</span> " + d.U + " &nbsp; " +
       "<b>U*</b> <span>= C - P</span> " + d.Ustar +
       "<br><span class='warn'>" + w + "</span><br>" +
-      "<span>" + d.N + " candidates, " + d.verify +
-      " verification forks; the neighbour is metered between candidates</span>";
+      "<span>" + d.N + " candidates over " + d.approaches +
+      " approach branches of " + d.approach_tokens + " tok, " + d.verify +
+      " verification forks; the neighbour is metered between branches</span>";
     document.querySelectorAll(".legend").forEach(n => n.innerHTML =
-      "<b>cache</b> <span class='g'>HIT</span> = this branch reused the " +
-      "shared prefix already in the KV cache &nbsp;\u00b7&nbsp; " +
-      "<span class='r'>MISS</span> = it was evicted, so the branch paid to " +
-      "re-prefill it (<b>+n</b> = tokens charged)<br>" +
+      "tree: <b>root context</b> \u2192 <b>approach</b> (its own committed " +
+      "reasoning, L1) \u2192 <b>candidate</b> (L2) \u2192 " +
+      "<b>verification</b> (L3)<br>" +
+      "<b>cache</b> <span class='g'>HIT</span> = reused its parent's whole " +
+      "lineage &nbsp;\u00b7&nbsp; <span class='a'>ROOT</span> = kept the " +
+      "shared context but re-prefilled the approach above it " +
+      "&nbsp;\u00b7&nbsp; <span class='r'>MISS</span> = re-prefilled " +
+      "everything (<b>+n</b> = tokens charged)<br>" +
       "<b>tests</b> <span class='g'>PASS</span>/FAIL = did that candidate's " +
       "patch pass its pytest check (green dot on the node) &nbsp;\u00b7&nbsp; " +
-      "grey + dashed = branch killed as a loser");
+      "grey + dashed = branch killed, whole subtree reaped");
     drawTree("stock"); drawTree("agentfork");
   },
   arm_start(d) { $(".url", arm(d.name)).textContent = d.url; },
@@ -233,22 +283,26 @@ const handlers = {
     $(".url", arm(d.name)).textContent +=
       "  \u00b7  shared context: " + d.charged + " tok charged (P=" + d.P + ")";
     kv(d.name, d.charged, d.capacity);
-    trees[d.name].parent = {charged: d.charged};
+    trees[d.name].root = {charged: d.charged};
     drawTree(d.name);
   },
   child(d) {
-    const node = {hit: d.parent_hit, charged: d.charged, passed: d.passed};
-    (d.label === "verify" ? trees[d.name].verify : trees[d.name].children)
-      .push(node);
+    const t = trees[d.name];
+    const node = {id: d.branch_id, parent: d.parent_branch, depth: d.depth,
+                  hit: d.hit_level, charged: d.charged, passed: d.passed,
+                  plan: d.plan || ""};
+    t.nodes.push(node);
+    t.byId[node.id] = node;
     drawTree(d.name);
     const row = document.createElement("tr");
     row.innerHTML =
-      "<td class='n'>" + esc(d.label) + " " + (d.idx + 1) + "/" + d.total + "</td>" +
+      "<td class='n'>" + esc(d.label) + " " + (d.idx + 1) + "/" + d.total +
+        "<span class='lbl'> L" + d.depth + "</span></td>" +
       "<td class='bar'><span class='p'><i style='width:" +
         (100 * (d.idx + 1) / d.total) + "%'></i></span></td>" +
-      "<td class='" + (d.parent_hit ? "hit" : "miss") + "'>" +
+      "<td class='" + d.hit_level + "'>" +
         "<span class='lbl'>cache </span>" +
-        (d.parent_hit ? "HIT" : "MISS") + "</td>" +
+        ({subtree: "HIT", root: "ROOT", miss: "MISS"}[d.hit_level]) + "</td>" +
       "<td class='n num'>cached " + d.cached.toLocaleString() + "</td>" +
       "<td class='num'>charged " + d.charged.toLocaleString() + "</td>" +
       "<td class='" + (d.passed ? "pass" : "fail") + "'>" +
@@ -266,8 +320,11 @@ const handlers = {
   },
   arm_done(d) {
     $(".done", arm(d.name)).innerHTML =
-      "<span class='" + (d.hit_rate >= 1 ? "hit" : "miss") + "'>hit " +
-      Math.round(100 * d.hit_rate) + "%</span> &nbsp; prefill " +
+      "<span class='" + (d.hit_rate >= 1 ? "hit" : "miss") + "'>root hit " +
+      Math.round(100 * d.hit_rate) + "%</span> &nbsp; " +
+      "<span class='" + (d.subtree_rate >= 1 ? "hit" : "miss") +
+      "'>lineage hit " + Math.round(100 * d.subtree_rate) + "%</span>" +
+      " &nbsp; prefill " +
       d.prefill.toLocaleString() + " tok &nbsp; " +
       (d.verified ? "<span class='pass'>VERIFIED</span>" : "UNVERIFIED");
   },
@@ -389,7 +446,9 @@ class WebUI:
         self._emit(kind="banner", header=HEADER, P=race.prefix_tokens,
                    C=args.capacity_tokens, U=u, Ustar=ustar,
                    regime="above" if u > ustar else "at_or_below",
-                   N=args.children, verify=args.verify_children)
+                   N=args.children, verify=args.verify_children,
+                   approaches=args.approaches,
+                   approach_tokens=args.approach_tokens)
 
     def arm_start(self, name, url) -> None:
         self.inner.arm_start(name, url)
@@ -403,6 +462,9 @@ class WebUI:
     def child(self, name, label, idx, rec, total) -> None:
         self.inner.child(name, label, idx, rec, total)
         self._emit(kind="child", name=name, label=label, idx=idx, total=total,
+                   branch_id=rec.branch_id, parent_branch=rec.parent_branch,
+                   depth=rec.depth, hit_level=rec.hit_level,
+                   plan=rec.title or rec.branch_id.rsplit("/", 1)[-1],
                    parent_hit=rec.parent_hit, cached=rec.cached_tokens,
                    charged=rec.charged_tokens, passed=rec.check_passed)
 
@@ -420,6 +482,7 @@ class WebUI:
     def arm_done(self, arm) -> None:
         self.inner.arm_done(arm)
         self._emit(kind="arm_done", name=arm.name, hit_rate=arm.parent_hit_rate,
+                   subtree_rate=arm.subtree_hit_rate,
                    prefill=arm.prefill_charged, verified=arm.verified)
 
     def scoreboard(self, rows, notes: str) -> None:
