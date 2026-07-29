@@ -246,9 +246,13 @@ PYTHONPATH=$HOME/sglang/python python3 demo/race_demo.py --web        # port 876
 Same race, same events, rendered in a browser instead of the terminal: a
 stdlib `ThreadingHTTPServer` serves one self-contained HTML page and streams
 the race over server-sent events (`demo/race_web.py`), so there is no build
-step and no new dependency. Live KV bars per arm, a HIT/MISS row per candidate
-with its cached/charged tokens, the kill event when the losers die, and the
-scoreboard at the end. A browser that connects late gets the whole race
+step and no new dependency. Each arm draws its **branch tree live** in the same
+visual language as `docs/img/lifecycle.svg`: the parent node holds the shared
+prefix, children fan out from it as they complete (green = hit that prefix,
+red = had to re-prefill, dot = passed its check), losers grey out with dashed
+edges when they are killed, and the verification forks hang off the surviving
+winner. Below it: live KV bars per arm, a HIT/MISS row per candidate with its
+cached/charged tokens, the kill event, and the scoreboard at the end. A browser that connects late gets the whole race
 replayed, and the server stays up after the race so the result stays readable.
 
 ![browser dashboard](race_demo_web.png)
