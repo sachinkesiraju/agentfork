@@ -64,7 +64,13 @@ PAGE = """<!doctype html>
  .p i { display:block; height:100%; background:#c7b2f5; border-radius:4px; }
  .hit { color:var(--green); font-weight:600; }
  .miss { color:var(--red); font-weight:600; }
- .pass { color:var(--green); } .fail { color:var(--mute); }
+ .pass { color:var(--green); font-weight:600; }
+.fail { color:var(--mute); }
+.lbl { color:var(--mute); font-weight:400; }
+.legend { color:var(--mute); font-size:11.5px; line-height:1.5;
+          margin-bottom:12px; }
+.legend b { font-weight:600; }
+.legend .g { color:var(--green); } .legend .r { color:var(--red); }
  .ev { margin-top:10px; color:var(--amber); font-size:12.5px; }
  .done { margin-top:6px; font-size:13px; }
  #score { margin-top:24px; padding:14px 16px; max-width:820px; }
@@ -83,10 +89,12 @@ PAGE = """<!doctype html>
 <div class="arms">
   <div class="arm card" id="arm-stock"><h2>STOCK</h2><div class="url"></div>
     <svg class="tree" viewBox="0 0 460 210" preserveAspectRatio="xMidYMid meet"></svg>
+    <div class="legend"></div>
     <div class="kv"><i></i><b></b></div><div class="kvlabel"></div>
     <table></table><div class="ev"></div><div class="done"></div></div>
   <div class="arm card" id="arm-agentfork"><h2>AGENTFORK</h2><div class="url"></div>
-    <svg class="tree" viewBox="0 0 460 190" preserveAspectRatio="xMidYMid meet"></svg>
+    <svg class="tree" viewBox="0 0 460 210" preserveAspectRatio="xMidYMid meet"></svg>
+    <div class="legend"></div>
     <div class="kv"><i></i><b></b></div><div class="kvlabel"></div>
     <table></table><div class="ev"></div><div class="done"></div></div>
 </div>
@@ -210,6 +218,14 @@ const handlers = {
       "<br><span class='warn'>" + w + "</span><br>" +
       "<span>" + d.N + " candidates, " + d.verify +
       " verification forks; the neighbour is metered between candidates</span>";
+    document.querySelectorAll(".legend").forEach(n => n.innerHTML =
+      "<b>cache</b> <span class='g'>HIT</span> = this branch reused the " +
+      "shared prefix already in the KV cache &nbsp;\u00b7&nbsp; " +
+      "<span class='r'>MISS</span> = it was evicted, so the branch paid to " +
+      "re-prefill it (<b>+n</b> = tokens charged)<br>" +
+      "<b>tests</b> <span class='g'>PASS</span>/FAIL = did that candidate's " +
+      "patch pass its pytest check (green dot on the node) &nbsp;\u00b7&nbsp; " +
+      "grey + dashed = branch killed as a loser");
     drawTree("stock"); drawTree("agentfork");
   },
   arm_start(d) { $(".url", arm(d.name)).textContent = d.url; },
@@ -231,11 +247,13 @@ const handlers = {
       "<td class='bar'><span class='p'><i style='width:" +
         (100 * (d.idx + 1) / d.total) + "%'></i></span></td>" +
       "<td class='" + (d.parent_hit ? "hit" : "miss") + "'>" +
+        "<span class='lbl'>cache </span>" +
         (d.parent_hit ? "HIT" : "MISS") + "</td>" +
       "<td class='n num'>cached " + d.cached.toLocaleString() + "</td>" +
       "<td class='num'>charged " + d.charged.toLocaleString() + "</td>" +
       "<td class='" + (d.passed ? "pass" : "fail") + "'>" +
-        (d.passed ? "PASS" : "fail") + "</td>";
+        "<span class='lbl'>tests </span>" +
+        (d.passed ? "PASS" : "FAIL") + "</td>";
     $("table", arm(d.name)).appendChild(row);
   },
   kv(d) { kv(d.name, d.used, d.capacity); },
