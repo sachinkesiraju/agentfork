@@ -1,7 +1,7 @@
-"""Browser race demo: 10 candidate fixes, one inference server, a noisy neighbor.
+"""Browser race demo: 10 candidate fixes, one inference server per arm, a noisy neighbor.
 
-Two arms solve the *same* task against the *same* live tree-cache server, one
-after the other, while an unrelated tenant streams traffic through that server
+Two arms solve the *same* task against *identical* fresh tree-cache servers,
+side by side, while an unrelated tenant streams traffic through each server
 the whole time:
 
 The tree is not flat: the root holds the shared repo context, a handful of
@@ -59,6 +59,7 @@ real model through the existing adapters; the demo does not require it.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import math
 import os
@@ -815,8 +816,8 @@ def build_llm(provider: str):
 # ---------------------------------------------------------------------------
 
 HEADER = (
-    "10 fixes over 3 approach branches, 1 inference server, and someone else "
-    "is using it too.\n"
+    "10 fixes over 3 approach branches, 2 simultaneous arms, and a noisy "
+    "neighbour on each server.\n"
     "CPU-only: KV pool, tree cache, eviction, pinning, auth, sandboxes and "
     "candidate checks are REAL;\nthe transformer forward pass is STUBBED "
     "(no GPU/weights), so read prefill tokens and hit rate,\nnot generation "
@@ -1084,8 +1085,20 @@ def main(argv=None) -> int:
     if not args.no_ui:
         ui.wait_for_start(autostart=args.autostart)
     try:
-        stock = race.run_arm("stock")
-        agentfork = race.run_arm("agentfork")
+        if args.no_ui:
+            # headless: sequential for a clean log and deterministic CI output
+            stock = race.run_arm("stock")
+            agentfork = race.run_arm("agentfork")
+        else:
+            # dashboard: run the two arms side by side so the race is visible
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as exc:
+                futures = {
+                    exc.submit(race.run_arm, name): name
+                    for name in ("stock", "agentfork")
+                }
+                arms = {name: future.result()
+                        for future, name in futures.items()}
+            stock, agentfork = arms["stock"], arms["agentfork"]
     finally:
         race.close()
 

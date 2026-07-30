@@ -95,7 +95,7 @@ PAGE = """<!doctype html>
  .ticker .ch { flex: none; font-family: ui-monospace,Menlo,monospace; }
  .ev { color: var(--amber); font-size: 10.5px; margin-top: 1px; }
  .done { font-size: 10.5px; margin-top: 1px; }
- #score { flex: none; max-height: 180px; padding: 5px 10px; overflow: hidden; }
+ #score { flex: none; max-height: 150px; padding: 5px 10px; overflow-y: auto; overflow-x: hidden; }
  #score.hidden { display: none; }
  #score table { width: 100%; border-collapse: collapse; font-size: 9.5px;
                 line-height: 1.25; }
@@ -119,19 +119,19 @@ PAGE = """<!doctype html>
  .ticker-row { animation: pop .35s ease-out both; }
 </style></head><body>
 <div class="top">
-<h1>agentfork: 10 fixes, 1 inference server, and someone else is using it too</h1>
-<div class="intro">Two identical agents race to fix the same bug by trying
-<b>10 candidate patches at once</b> on one shared LLM server, while an
-unrelated tenant hammers that server's KV cache. <b>STOCK</b> (left) just
-hopes its context survives in the cache; <b>AGENTFORK</b> (right) pins its
-branch tree so it cannot be evicted. Same bug, same server, same noise.</div>
+<h1>agentfork: 10 fixes, 2 simultaneous arms, and someone else is using it too</h1>
+<div class="intro">Two identical agents race side by side to fix the same bug
+by trying <b>10 candidate patches at once</b>. Each arm runs on its own fresh
+LLM server while an unrelated tenant hammers that server's KV cache.
+<b>STOCK</b> (left) just hopes its context survives; <b>AGENTFORK</b> (right)
+pins its branch tree so it cannot be evicted. Same bug, same load, same noise.</div>
 <div class="sub" id="header"></div>
 <div class="math card" id="math"></div>
 <div id="gate" class="card">
   <button id="startbtn">&#9654;&nbsp; Start the race</button>
-  <div class="gatehint">Both arms will run the same fan-out against their own
-  fresh server while the noisy neighbour streams through it. Watch the trees
-  grow: every branch animates in as the cache resolves it.</div>
+  <div class="gatehint">Both arms race side by side against identical fresh
+  servers, each under the same noisy-neighbour load. Watch the trees grow:
+  every branch animates in as the cache resolves it.</div>
 </div>
 <div class="status" id="status">Press Start to begin the race.</div>
 </div>
