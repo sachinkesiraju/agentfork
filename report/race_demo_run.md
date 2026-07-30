@@ -316,7 +316,7 @@ than HTTP overhead.
 SGLANG_DIR=/path/to/patched/sglang python3 -m modal run modal_race_demo.py
 ```
 
-Captured 2026-07-29 (full JSON: [gpu_race_run.json](gpu_race_run.json)):
+Captured 2026-07-29:
 
 ```
 GPU NVIDIA A10   model Qwen/Qwen3-0.6B

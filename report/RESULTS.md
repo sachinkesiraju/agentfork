@@ -268,5 +268,4 @@ a real measurement:
 | generation time, 13 branches | 8.67 s | 6.55 s (**1.32x**) |
 | verified winning fix | yes | yes |
 
-Detail, caveats and the raw JSON: [race_demo_run.md](race_demo_run.md),
-[gpu_race_run.json](gpu_race_run.json).
+Detail and caveats: [race_demo_run.md](race_demo_run.md).
