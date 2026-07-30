@@ -54,7 +54,7 @@ import torch
 from sglang.srt.managers.io_struct import TreeCacheOpReqInput
 from sglang.srt.managers.tree_cache_lifecycle import TreeCacheLifecycle
 from sglang.srt.mem_cache.allocator.token import TokenToKVPoolAllocator
-from sglang.srt.mem_cache.base_prefix_cache import MatchPrefixParams
+from sglang.srt.mem_cache.base_prefix_cache import EvictParams, MatchPrefixParams
 from sglang.srt.mem_cache.cache_init_params import CacheInitParams
 from sglang.srt.mem_cache.memory_pool import MHATokenToKVPool
 from sglang.srt.mem_cache.radix_cache import RadixKey
@@ -62,6 +62,9 @@ from sglang.srt.mem_cache.tree_radix_cache import TreeRadixCache
 from sglang.srt.utils.auth import AuthLevel, decide_request_auth
 
 # Llama-1B-like KV shape, matching patches/real_pool_validation.py.
+# POOL_TOKENS is the default token capacity C of the pool; --pool-tokens
+# shrinks it so a demo can drive the real cache into genuine LRU eviction
+# without allocating a large CPU tensor.
 POOL_TOKENS = 65536
 KV_SHAPE = dict(head_num=8, head_dim=64, layer_num=16)
 
@@ -93,16 +96,17 @@ class TreeCacheServer:
     """
 
     def __init__(self, *, admin_api_key: str | None, api_key: str | None,
-                 quota_tokens: int | None):
+                 quota_tokens: int | None, pool_tokens: int = POOL_TOKENS):
         self.admin_api_key = admin_api_key
         self.api_key = api_key
+        self.pool_tokens = pool_tokens
         self._lock = threading.Lock()
 
         self.kvcache = MHATokenToKVPool(
-            size=POOL_TOKENS, page_size=1, dtype=torch.float16,
+            size=pool_tokens, page_size=1, dtype=torch.float16,
             device="cpu", enable_memory_saver=False, **KV_SHAPE)
         self.alloc = TokenToKVPoolAllocator(
-            size=POOL_TOKENS, dtype=torch.float16, device="cpu",
+            size=pool_tokens, dtype=torch.float16, device="cpu",
             kvcache=self.kvcache, need_sort=False)
         params = CacheInitParams(
             disable=False, req_to_token_pool=None,
@@ -112,7 +116,7 @@ class TreeCacheServer:
         self.baseline_available = self.alloc.available_size()
 
     def used(self) -> int:
-        return POOL_TOKENS - self.alloc.available_size()
+        return self.pool_tokens - self.alloc.available_size()
 
     # -- auth --------------------------------------------------------------
 
@@ -227,7 +231,7 @@ class TreeCacheServer:
         if charged < 0:
             raise ValueError(f"branch {branch_id}: negative charge")
         if charged:
-            new_slots = self.alloc.alloc(charged)
+            new_slots = self._alloc_with_eviction(charged)
             if new_slots is None:
                 raise MemoryError(f"KV pool exhausted allocating {charged} slots")
             full_value = torch.cat([resident, new_slots])
@@ -235,6 +239,21 @@ class TreeCacheServer:
             full_value = resident
         hit = cache.extend_tree(branch_id, suffix, value=full_value)
         return hit, charged, len(token_ids)
+
+    def _alloc_with_eviction(self, num_tokens: int):
+        """Allocate KV slots, evicting through the real cache when short.
+
+        The scheduler does the same thing before a prefill: ask the allocator,
+        and if the pool cannot satisfy the request, evict from the radix cache
+        and retry. Eviction is the cache's own LRU (``RadixCache.evict``),
+        which skips nodes pinned by a live branch's ``lock_ref`` -- so an
+        agentfork-pinned prefix survives pressure that drops an unpinned one.
+        """
+        slots = self.alloc.alloc(num_tokens)
+        if slots is not None:
+            return slots
+        self.cache.evict(EvictParams(num_tokens=num_tokens))
+        return self.alloc.alloc(num_tokens)
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -265,11 +284,13 @@ class _Handler(BaseHTTPRequestHandler):
             # KV slots return to baseline after kills. Read-only, no secrets.
             app = self.app
             self._send(200, {
-                "pool_tokens": POOL_TOKENS,
+                "pool_tokens": app.pool_tokens,
                 "used": app.used(),
                 "available": app.alloc.available_size(),
                 "baseline_available": app.baseline_available,
                 "live_branches": app.cache.live_branches(),
+                "evictable": app.cache.evictable_size(),
+                "protected": app.cache.protected_size(),
             })
             return
         self._send(404, {"error": "not found"})
@@ -309,9 +330,10 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 def build_server(host: str, port: int, *, admin_api_key: str | None,
-                 api_key: str | None, quota_tokens: int | None):
+                 api_key: str | None, quota_tokens: int | None,
+                 pool_tokens: int = POOL_TOKENS):
     app = TreeCacheServer(admin_api_key=admin_api_key, api_key=api_key,
-                          quota_tokens=quota_tokens)
+                          quota_tokens=quota_tokens, pool_tokens=pool_tokens)
     httpd = ThreadingHTTPServer((host, port), _Handler)
     httpd.app = app  # type: ignore[attr-defined]
     return httpd, app
@@ -325,12 +347,15 @@ def main() -> int:
     parser.add_argument("--api-key", default=None)
     parser.add_argument("--quota-tokens", type=int, default=None,
                         help="per-tree HBM quota (TreeRadixCache quota)")
+    parser.add_argument("--pool-tokens", type=int, default=POOL_TOKENS,
+                        help="KV pool token capacity C")
     args = parser.parse_args()
 
     httpd, app = build_server(
         args.host, args.port, admin_api_key=args.admin_api_key,
-        api_key=args.api_key, quota_tokens=args.quota_tokens)
-    pool_gib = POOL_TOKENS * (2 * KV_SHAPE["layer_num"] * KV_SHAPE["head_num"]
+        api_key=args.api_key, quota_tokens=args.quota_tokens,
+        pool_tokens=args.pool_tokens)
+    pool_gib = app.pool_tokens * (2 * KV_SHAPE["layer_num"] * KV_SHAPE["head_num"]
                               * KV_SHAPE["head_dim"] * 2) / 2**30
     print(f"live tree-cache server on http://{args.host}:{args.port} "
           f"(real {pool_gib:.2f} GiB CPU KV pool, "

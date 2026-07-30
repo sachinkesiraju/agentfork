@@ -225,3 +225,150 @@ The captured run predates expansion of the patch test file from 7 to 17 tests.
   "telemetry_10k": {"live_branches": 10001, "charged_tokens": 32000, "pinned_tokens": 32000, "saved_tokens": 320000000}
 }
 ```
+
+## Split-screen race demo (stock vs agentfork under cache pressure)
+
+`demo/race_demo.py` -- *10 fixes, 1 inference server, and someone else is
+using it too.* Two arms solve the same planted bug against the same live
+tree-cache HTTP server, one after the other, each against a freshly started
+server so neither inherits the other's cache. An unrelated tenant streams
+traffic through that server between candidates, metered so exactly
+`U = 17,408` tokens land between consecutive branches against a break-even of
+`U* = C - P = 16,384` (`P = 8,192`, `C = 24,576`).
+
+What is real on this CPU box vs stubbed:
+
+| real | stubbed |
+| --- | --- |
+| KV pool + allocator (`MHATokenToKVPool`, `TokenToKVPoolAllocator`) | the generated text |
+| `TreeRadixCache`: prefix matching, charge accounting, `lock_ref` pinning, LRU eviction | generation latency |
+| branch lifecycle (`create`/`fork`/`kill`/`demote`) over HTTP with admin auth | |
+| the noisy neighbour's requests (real prefills through the same pool) | |
+| sandboxes (`ReaperSandbox`, real subprocesses) and candidate checks (real `pytest` runs) | |
+
+So the headline numbers are **prefill tokens charged** and the **hit rates**,
+which are the cache's own measurements; wall clock mostly measures HTTP,
+`pytest` and process spawning and is not a speed claim. `/dev/kvm` was not
+available, so the sandbox is `ReaperSandbox`; no Firecracker output is
+reported. `charged`/`cached` counts are byte-level tokens (no tokenizer
+without weights).
+
+The tree is four levels deep, which is the point:
+
+```text
+root context (P=8192, shared)
+  +- approach "boundary-first"  (A=1024 tokens of its own committed reasoning)
+  |    +- candidate  (S=256) ... x4     <- inherits root *and* this approach
+  +- approach "test-driven"
+  |    +- candidate  (S) ... x3
+  |         +- verification fork x3   <- inherits the whole winning lineage
+  +- approach "rewrite"
+       +- candidate  (S) ... x3
+```
+
+A leaf can reuse just the shared root context (`cache ROOT`) or *everything
+its lineage committed* including its approach's reasoning (`cache HIT`, the
+full-lineage/subtree hit); the demo reports both rates.
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+tools/setup_sglang.sh ~/sglang
+PYTHONPATH=~/sglang/python .venv/bin/python demo/race_demo.py           # browser dashboard, http://127.0.0.1:8765
+PYTHONPATH=~/sglang/python .venv/bin/python demo/race_demo.py --no-ui   # headless log + JSON summary (what CI runs)
+```
+
+The dashboard (`demo/race_web.py`, stdlib `ThreadingHTTPServer` + server-sent
+events, no build step) draws each arm's branch tree live: green `HIT` reused
+its parent's whole lineage, amber `ROOT` kept the shared context but
+re-prefilled its approach, red `MISS` re-prefilled from scratch; a green dot
+is a passing `pytest` check and killed subtrees fade to grey. Below the trees:
+live KV bars, one row per branch, the kill event and the final scoreboard.
+
+![browser dashboard](race_demo_web.png)
+
+### Captured scoreboard (2026-07-29, 2 vCPU box, repo at `73f7d53`)
+
+```text
+metric                                             STOCK           AGENTFORK
+----------------------------------------------------------------------------
+root-context hit rate                                 0%                100%
+full-lineage (subtree) hit rate                       0%                100%
+prefill tokens charged (real)                    160,480              14,433
+peak KV pool used                                 17,669              24,552
+KV released when losers died                           0               4,141
+KV still pinned after the kills                        0               9,802
+sandbox setup (s, total)                            0.48                0.03
+wall clock (s)* -- not a speed claim                 3.8                 3.3
+verified winner                        stock/root/2/8/14  agentfork/root/2/8/14
+neighbor requests served                             289                 289
+```
+
+**11.1x fewer prefill tokens charged** for the same work, same server, same
+neighbour and the same verified fix. `cache=subtree` is the interesting log
+line: an agentfork candidate at depth 2 is cached `9,234` tokens -- the
+`8,192`-token root context *plus* its approach's reasoning -- and charged only
+its own `284`, while every stock candidate is charged `9,518` because the
+neighbour evicted its whole lineage. After the 9,802-token winner lineage is
+re-forked for verification, the pinned KV equals it exactly
+(`agentfork_pinned_after_kills = agentfork_expected_pinned_after_kills =
+9,802` in the JSON summary the `--no-ui` run emits between
+`===RACE_DEMO_JSON_BEGIN===`/`END===`, which `tests/test_race_demo.py`
+asserts against).
+
+Measured vs the cost model's prediction for the same `(P, N, S, U, C)`: the
+hit rates -- the thing the break-even math predicts -- match exactly
+(stock `0.0`, pinned `1.0`); the measured prefill charges are higher than the
+model's flat-fan-out count because the run also pays the parent prefill, the
+approach branches and the verification round.
+
+### Boundary checks
+
+Below the break-even (`U <= C - P`) both arms keep the root prefix -- stock
+and agentfork both measure hit rate `1.0`, asserted in
+`tests/test_race_demo.py`. Pinning only wins where the model says it wins.
+But `U* = C - P` only covers the *root*: below it the stock arm keeps the
+shared context on every candidate and *still* loses subtrees (root hit `1.0`,
+full-lineage hit `0.33`) unless the pool also has room for every sibling
+subtree at once; give it that room and stock ties at `1.0`. The pinned arm is
+`1.0` in every regime, because `lock_ref` does not care how much room is left.
+
+Three consecutive `--no-ui` runs gave bit-identical hit rates and prefill
+charges; only wall clock and sandbox setup varied (deterministic `FakeLLM`
+candidates, metered neighbour).
+
+### The same race on a real GPU with real weights (A10, Qwen3-0.6B)
+
+`modal_race_demo.py` reruns it against a real `sgl.Engine` on an NVIDIA A10
+(`SGLANG_DIR=/path/to/patched/sglang python3 -m modal run modal_race_demo.py`),
+so prefill, decode and wall clock are model measurements. Captured 2026-07-29
+at `C = 49,152`, `P = 12,725` (real tokenizer), `U = 37,327 > U* = 36,427`:
+
+| metric | stock | agentfork |
+|---|---|---|
+| parent-prefix hit rate | 0% | 100% |
+| prefill tokens charged | 43,142 | 158 |
+| generation time, 13 branches (real decode) | 8.67 s | 6.55 s (**1.32x**) |
+| median per-candidate latency | 0.63 s | 0.50 s |
+| KV reclaimed by killing 9 losers | n/a | 399 tok (their suffixes; the parent stays pinned) |
+| verified winning fix | yes | yes |
+
+**273x fewer prefill tokens and a real 1.32x end-to-end generation speedup** --
+the CPU demo could only measure the first of those. The stock arm is not
+missing entirely, it is *partially* re-prefilling: the neighbour keeps
+trimming the shared prefix from the tail (children cached 6,144-10,240 of
+12,758 tokens, never the whole prefix) while agentfork children cached
+12,729-12,749 and were charged 9-29 tokens each.
+
+Honest notes on the GPU run:
+
+* The *patch* each branch proposes is still the deterministic candidate list,
+  because Qwen3-0.6B does not reliably write a correct fix; the model
+  genuinely generates on each branch's prompt and what it wrote is reported
+  separately as `model_generated_fix_passed` (0/13 here), never folded into
+  the race result.
+* The speedup depends on `P` relative to decode length: with `MAX_NEW = 32`
+  most of each request is prefill -- exactly the regime a fan-out workload
+  lives in. An earlier run at `P = 1,385` measured 1.04x while still showing
+  118x fewer prefill tokens.
+* The agentfork arm's parent prefill is slower (3.23 s vs 0.59 s) because it
+  also commits and pins the branch; paid once, amortised over 13 children.
