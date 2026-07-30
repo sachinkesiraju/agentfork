@@ -32,6 +32,15 @@ PAGE = """<!doctype html>
              Roboto,Inter,sans-serif; }
  code, .mono, td.num { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
  h1 { font-size:20px; margin:0 0 4px; letter-spacing:-.3px; }
+ .intro { font-size:13.5px; max-width:860px; margin:2px 0 10px;
+          line-height:1.6; }
+ .intro b { color:var(--blue); }
+ #now { position:sticky; top:0; z-index:10; margin:0 -28px 12px;
+        padding:9px 28px; background:#0f172a; color:#e2e8f0;
+        font-size:13px; }
+ #now b { color:#7dd3fc; letter-spacing:.06em; font-size:11px;
+          text-transform:uppercase; margin-right:8px; }
+ #now.hidden { display:none; }
  .sub { color:var(--mute); white-space:pre-wrap; margin-bottom:10px;
         font-size:12.5px; }
  .card { background:var(--panel); border:1px solid var(--line);
@@ -100,7 +109,14 @@ PAGE = """<!doctype html>
  .foot { color:var(--mute); margin-top:12px; white-space:pre-wrap;
          font-size:12px; max-width:860px; }
 </style></head><body>
+<div id="now" class="hidden"><b>now:</b> <span>&nbsp;</span></div>
 <h1>agentfork: 10 fixes, 1 inference server, and someone else is using it too</h1>
+<div class="intro">Two identical agents race to fix the same bug by trying
+<b>10 candidate patches at once</b> on one shared LLM server, while an
+unrelated tenant hammers that server's KV cache. <b>STOCK</b> (left) just
+hopes its context survives in the cache; <b>AGENTFORK</b> (right) pins its
+branch tree so it cannot be evicted. Green = reused for free, red = paid to
+re-compute. Same bug, same server, same noise -- watch the token bill.</div>
 <div class="sub" id="header"></div>
 <div class="math card" id="math"></div>
 <div id="gate" class="card">
@@ -129,6 +145,28 @@ const arm = n => $("#arm-" + n);
 const esc = s => String(s).replace(/[&<>]/g, c =>
   ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
 const SVG = "http://www.w3.org/2000/svg";
+
+// ---- narration + follow-the-action ------------------------------------
+// A sticky "now:" bar says what is happening in plain language, and the page
+// scrolls to keep the newest event on screen (stop scrolling manually and it
+// stops steering; press Start again after a reload to resume).
+let follow = true;
+addEventListener("wheel", () => { follow = false; }, {passive: true});
+addEventListener("touchmove", () => { follow = false; }, {passive: true});
+function now(text) {
+  const bar = $("#now");
+  bar.classList.remove("hidden");
+  $("span", bar).textContent = text;
+}
+function show(node) {
+  if (follow && node) node.scrollIntoView({block: "nearest", behavior: "smooth"});
+}
+const WHO = {stock: "STOCK", agentfork: "AGENTFORK"};
+const HITSAID = {
+  subtree: "reused its whole lineage from cache, paid only its own suffix",
+  root: "kept the shared context but re-paid its approach's reasoning",
+  miss: "found nothing in cache, re-prefilled the whole lineage",
+};
 
 // ---- live branch tree (same visual language as docs/img/lifecycle.svg) ----
 // The tree is root context -> approach -> candidate -> verification, so a node
@@ -314,6 +352,9 @@ const handlers = {
     kv(d.name, d.charged, d.capacity);
     trees[d.name].root = {charged: d.charged};
     drawTree(d.name);
+    now(WHO[d.name] + " prefilled the shared repo context: " +
+        d.charged.toLocaleString() + " tokens every branch will inherit");
+    show($(".tree", arm(d.name)));
   },
   child(d) {
     const t = trees[d.name];
@@ -339,6 +380,13 @@ const handlers = {
         "<span class='lbl'>tests </span>" +
         (d.passed ? "PASS" : "FAIL") + "</td>";
     $("table", arm(d.name)).appendChild(row);
+    const what = d.label === "approach" ? "approach branch"
+      : d.label === "verify" ? "verification fork" : "candidate";
+    now(WHO[d.name] + " " + what + " " + (d.idx + 1) + "/" + d.total + " " +
+        HITSAID[d.hit_level] + " (+" + d.charged.toLocaleString() + " tok)" +
+        (d.label !== "approach" ? (d.passed ? " -- tests pass"
+                                            : " -- tests fail") : ""));
+    show(row);
   },
   kv(d) { kv(d.name, d.used, d.capacity); },
   kills(d) {
@@ -347,6 +395,11 @@ const handlers = {
     $(".ev", arm(d.name)).textContent =
       "killed " + d.n + " losers: KV freed " + d.freed.toLocaleString() +
       " tok (pool " + (d.pool_delta > 0 ? "-" : "") + d.pool_delta.toLocaleString() + ")";
+    now(WHO[d.name] + " killed " + d.n + " losing branches" +
+        (d.freed > 0 ? ", reclaiming " + d.freed.toLocaleString() +
+                       " tokens of KV instantly" : "") +
+        "; only the winner survives to be verified");
+    show($(".ev", arm(d.name)));
   },
   arm_done(d) {
     $(".done", arm(d.name)).innerHTML =
@@ -357,18 +410,27 @@ const handlers = {
       " &nbsp; prefill " +
       d.prefill.toLocaleString() + " tok &nbsp; " +
       (d.verified ? "<span class='pass'>VERIFIED</span>" : "UNVERIFIED");
+    now(WHO[d.name] + " done: " + Math.round(100 * d.hit_rate) +
+        "% cache hits, " + d.prefill.toLocaleString() +
+        " prefill tokens paid, fix " +
+        (d.verified ? "verified" : "not verified"));
+    show($(".done", arm(d.name)));
   },
   scoreboard(d) {
     $("#score").innerHTML = "<table>" + d.rows.map(r =>
       "<tr><td class='k'>" + esc(r[0]) + "</td><td class='v'>" + esc(r[1]) +
       "</td><td class='v'>" + esc(r[2]) + "</td></tr>").join("") + "</table>";
     $("#foot").textContent = d.notes;
+    now("finished -- same verified fix, but compare the token bills " +
+        "in the scoreboard below");
+    show($("#score"));
   },
 };
 
 handlers.started = () => { $("#gate").classList.add("hidden"); };
 
 $("#startbtn").onclick = () => {
+  follow = true;
   $("#startbtn").disabled = true;
   $("#startbtn").textContent = "racing...";
   fetch("/start", {method: "POST"});
