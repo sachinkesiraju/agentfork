@@ -27,96 +27,104 @@ PAGE = """<!doctype html>
          --bg:#f8fafc; --panel:#ffffff; --blue:#2563eb; --green:#16a34a;
          --red:#dc2626; --amber:#b45309; }
  * { box-sizing: border-box; }
- body { margin:0; padding:28px; background:var(--bg); color:var(--ink);
-        font:14px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",
+ html, body { height: 100vh; margin: 0; overflow: hidden; }
+ body { display: flex; flex-direction: column; padding: 10px 12px; gap: 6px;
+        background: var(--bg); color: var(--ink);
+        font: 12px/1.4 ui-sans-serif,system-ui,-apple-system,"Segoe UI",
              Roboto,Inter,sans-serif; }
- code, .mono, td.num { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
- h1 { font-size:20px; margin:0 0 4px; letter-spacing:-.3px; }
- .intro { font-size:13.5px; max-width:860px; margin:2px 0 10px;
-          line-height:1.6; }
- .intro b { color:var(--blue); }
- #now { position:sticky; top:0; z-index:10; margin:0 -28px 12px;
-        padding:9px 28px; background:#0f172a; color:#e2e8f0;
-        font-size:13px; }
- #now b { color:#7dd3fc; letter-spacing:.06em; font-size:11px;
-          text-transform:uppercase; margin-right:8px; }
- #now.hidden { display:none; }
- .sub { color:var(--mute); white-space:pre-wrap; margin-bottom:10px;
-        font-size:12.5px; }
- .card { background:var(--panel); border:1px solid var(--line);
-         border-radius:12px; box-shadow:0 1px 2px rgba(15,23,42,.06); }
- .math { margin:14px 0 20px; padding:12px 14px; font-size:13px; }
- .math b { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
- .math span { color:var(--mute); }
- .warn { color:var(--amber); }
- #gate { margin:0 0 18px; padding:14px 16px; display:flex; gap:14px;
-         align-items:center; }
- #gate.hidden { display:none; }
- #startbtn { font:600 14px/1 ui-sans-serif,system-ui,sans-serif; cursor:pointer;
-             color:#fff; background:var(--blue); border:none; border-radius:8px;
-             padding:11px 18px; }
- #startbtn:hover { background:#1d4ed8; }
- #startbtn[disabled] { background:#93c5fd; cursor:default; }
- .gatehint { color:var(--mute); font-size:12.5px; max-width:640px; }
- @keyframes pop { from { opacity:0; transform:translateY(-10px); }
-                  to { opacity:1; transform:none; } }
- .tree g.pop { animation:pop .5s ease-out both; }
- @keyframes reap { from { opacity:1; } 40% { opacity:.15; } to { opacity:1; } }
- .tree g.reap { animation:reap .9s ease-out both; }
- tr.pop { animation:pop .4s ease-out both; }
- .arms { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
- @media (max-width:1000px) { .arms { grid-template-columns:1fr; } }
- .arm { padding:16px; }
- .arm h2 { font-size:14px; margin:0 0 2px; letter-spacing:.08em;
-           color:var(--blue); }
- #arm-stock h2 { color:var(--mute); }
- .arm .url { color:var(--mute); font-size:12px; margin-bottom:12px; }
- .tree { width:100%; height:290px; display:block; margin-bottom:6px; }
- .kv { height:22px; background:#eef2f7; border-radius:5px; overflow:hidden;
-       position:relative; margin-bottom:4px; border:1px solid var(--line); }
- .kv i { display:block; height:100%; width:0; background:#bfdbfe;
-         transition:width .2s; }
- .kv b { position:absolute; inset:0; text-align:center; font-weight:600;
-         font-size:11.5px; line-height:20px;
-         font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
- .kvlabel { color:var(--mute); font-size:12px; margin-bottom:12px; }
- table { width:100%; border-collapse:collapse; font-size:12.5px; }
- td { padding:2px 4px; white-space:nowrap; }
- td.n { color:var(--mute); width:1%; }
- td.bar { width:78px; }
- .p { display:block; height:7px; background:#eef2f7; border-radius:4px; }
- .p i { display:block; height:100%; background:#c7b2f5; border-radius:4px; }
- .hit, .subtree { color:var(--green); font-weight:600; }
- .root { color:var(--amber); font-weight:600; }
- .miss { color:var(--red); font-weight:600; }
- .pass { color:var(--green); font-weight:600; }
-.fail { color:var(--mute); }
-.lbl { color:var(--mute); font-weight:400; }
-.legend { color:var(--mute); font-size:11.5px; line-height:1.5;
-          margin-bottom:12px; }
-.legend b { font-weight:600; }
-.legend .g { color:var(--green); } .legend .r { color:var(--red); }
-.legend .a { color:var(--amber); }
- .ev { margin-top:10px; color:var(--amber); font-size:12.5px; }
- .done { margin-top:6px; font-size:13px; }
- #score { margin-top:24px; padding:14px 16px; max-width:820px; }
- #score td { border-top:1px solid var(--line); padding:5px 4px;
-             font-size:13px; }
- #score tr:first-child td { border-top:none; }
- #score td.k { color:var(--mute); }
- #score td.v { text-align:right;
-               font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
- .foot { color:var(--mute); margin-top:12px; white-space:pre-wrap;
-         font-size:12px; max-width:860px; }
+ code, .mono, td.num { font-family: ui-monospace,SFMono-Regular,Menlo,monospace; }
+ h1 { font-size: 16px; margin: 0 0 2px; letter-spacing: -.3px; }
+ .intro { font-size: 11.5px; max-width: 980px; color: #334155;
+          line-height: 1.45; margin-bottom: 4px; }
+ .intro b { color: var(--blue); }
+ .top { flex: none; }
+ .sub { color: var(--mute); white-space: pre-wrap; font-size: 10.5px;
+        margin-bottom: 3px; }
+ .status { font-size: 11px; color: #0f172a; min-height: 1.3em;
+           font-weight: 500; }
+ .card { background: var(--panel); border: 1px solid var(--line);
+         border-radius: 10px; box-shadow: 0 1px 2px rgba(15,23,42,.06); }
+ .math { padding: 6px 8px; font-size: 11px; }
+ .math b { font-family: ui-monospace,SFMono-Regular,Menlo,monospace; }
+ .math span { color: var(--mute); }
+ .warn { color: var(--amber); font-weight: 600; }
+ #gate { margin: 0 0 4px; padding: 6px 8px; display: flex; gap: 8px;
+         align-items: center; }
+ #gate.hidden { display: none; }
+ #startbtn { font: 600 12px/1 ui-sans-serif,system-ui,sans-serif;
+             cursor: pointer; color: #fff; background: var(--blue);
+             border: none; border-radius: 6px; padding: 8px 12px; }
+ #startbtn:hover { background: #1d4ed8; }
+ #startbtn[disabled] { background: #93c5fd; cursor: default; }
+ .gatehint { color: var(--mute); font-size: 10px; max-width: 640px; }
+ .arms { flex: 1 1 0; display: grid; grid-template-columns: 1fr 1fr;
+         grid-template-rows: minmax(0, 1fr);
+         gap: 10px; min-height: 0; overflow: hidden;
+         margin-bottom: 4px; }
+ @media (max-width: 1000px) { .arms { grid-template-columns: 1fr; } }
+ .arm { padding: 8px; display: flex; flex-direction: column;
+        gap: 4px; min-width: 0; min-height: 0; height: 100%; }
+ .arm h2 { font-size: 11px; margin: 0; letter-spacing: .08em;
+           color: var(--blue); }
+ #arm-stock h2 { color: var(--mute); }
+ .arm .url { color: var(--mute); font-size: 10px; margin-bottom: 1px; }
+ .tree-wrap { flex: 1 1 0; min-height: 50px; position: relative; }
+ .tree { position: absolute; inset: 0; width: 100%; height: 100%;
+         display: block; }
+ .legend { color: var(--mute); font-size: 9.5px; line-height: 1.35; }
+ .legend b { font-weight: 600; }
+ .legend .g { color: var(--green); } .legend .r { color: var(--red); }
+ .legend .a { color: var(--amber); }
+ .kv { height: 14px; background: #eef2f7; border-radius: 4px;
+       overflow: hidden; position: relative; border: 1px solid var(--line); }
+ .kv i { display: block; height: 100%; width: 0; background: #bfdbfe;
+         transition: width .2s; }
+ .kv b { position: absolute; inset: 0; text-align: center; font-weight: 600;
+         font-size: 9.5px; line-height: 12px;
+         font-family: ui-monospace,SFMono-Regular,Menlo,monospace; }
+ .kvlabel { color: var(--mute); font-size: 10px; }
+ .statbar { display: flex; flex-wrap: wrap; gap: 4px; font-size: 10px;
+            margin-top: 1px; }
+ .statbar span { background: #f1f5f9; padding: 1px 5px; border-radius: 4px; }
+ .ticker { height: 44px; overflow: hidden; flex: none;
+           border-top: 1px solid var(--line); padding-top: 2px; }
+ .ticker > div { font-size: 10.5px; padding: 1px 0;
+                 display: flex; gap: 8px; color: #334155; }
+ .ticker .n { color: var(--mute); flex: none; }
+ .ticker .hl { flex: none; font-weight: 600; }
+ .ticker .ch { flex: none; font-family: ui-monospace,Menlo,monospace; }
+ .ev { color: var(--amber); font-size: 10.5px; margin-top: 1px; }
+ .done { font-size: 10.5px; margin-top: 1px; }
+ #score { flex: none; max-height: 180px; padding: 5px 10px; overflow: hidden; }
+ #score.hidden { display: none; }
+ #score table { width: 100%; border-collapse: collapse; font-size: 9.5px;
+                line-height: 1.25; }
+ #score td { padding: 1px 3px; border-top: 1px solid var(--line); }
+ #score tr:first-child td { border-top: none; }
+ #score td.k { color: var(--mute); width: 48%; }
+ #score td.v { text-align: right; width: 26%;
+               font-family: ui-monospace,SFMono-Regular,Menlo,monospace; }
+ #score th { text-align: right; font-size: 9px; color: var(--mute);
+             padding: 0 3px 1px; font-weight: 600; }
+ #score th:first-child { text-align: left; }
+ .foot { color: var(--mute); font-size: 9px; line-height: 1.35;
+         max-width: 980px; }
+ .foot details { margin: 0; }
+ .foot summary { cursor: pointer; color: var(--blue); font-weight: 600; }
+ @keyframes pop { from { opacity: 0; transform: translateY(-6px); }
+                  to { opacity: 1; transform: none; } }
+ .tree g.pop { animation: pop .4s ease-out both; }
+ @keyframes reap { from { opacity: 1; } 40% { opacity: .12; } to { opacity: 1; } }
+ .tree g.reap { animation: reap .8s ease-out both; }
+ .ticker-row { animation: pop .35s ease-out both; }
 </style></head><body>
-<div id="now" class="hidden"><b>now:</b> <span>&nbsp;</span></div>
+<div class="top">
 <h1>agentfork: 10 fixes, 1 inference server, and someone else is using it too</h1>
 <div class="intro">Two identical agents race to fix the same bug by trying
 <b>10 candidate patches at once</b> on one shared LLM server, while an
 unrelated tenant hammers that server's KV cache. <b>STOCK</b> (left) just
 hopes its context survives in the cache; <b>AGENTFORK</b> (right) pins its
-branch tree so it cannot be evicted. Green = reused for free, red = paid to
-re-compute. Same bug, same server, same noise -- watch the token bill.</div>
+branch tree so it cannot be evicted. Same bug, same server, same noise.</div>
 <div class="sub" id="header"></div>
 <div class="math card" id="math"></div>
 <div id="gate" class="card">
@@ -125,19 +133,29 @@ re-compute. Same bug, same server, same noise -- watch the token bill.</div>
   fresh server while the noisy neighbour streams through it. Watch the trees
   grow: every branch animates in as the cache resolves it.</div>
 </div>
-<div class="arms">
-  <div class="arm card" id="arm-stock"><h2>STOCK</h2><div class="url"></div>
-    <svg class="tree" viewBox="0 0 460 290" preserveAspectRatio="xMidYMid meet"></svg>
-    <div class="legend"></div>
-    <div class="kv"><i></i><b></b></div><div class="kvlabel"></div>
-    <table></table><div class="ev"></div><div class="done"></div></div>
-  <div class="arm card" id="arm-agentfork"><h2>AGENTFORK</h2><div class="url"></div>
-    <svg class="tree" viewBox="0 0 460 290" preserveAspectRatio="xMidYMid meet"></svg>
-    <div class="legend"></div>
-    <div class="kv"><i></i><b></b></div><div class="kvlabel"></div>
-    <table></table><div class="ev"></div><div class="done"></div></div>
+<div class="status" id="status">Press Start to begin the race.</div>
 </div>
-<div id="score" class="card"></div>
+<div class="arms">
+  <div class="arm card" id="arm-stock">
+    <h2>STOCK</h2><div class="url"></div>
+    <div class="tree-wrap"><svg class="tree" viewBox="0 0 460 220" preserveAspectRatio="xMidYMid meet"></svg></div>
+    <div class="legend"></div>
+    <div class="kv"><i></i><b></b></div><div class="kvlabel">KV pool used</div>
+    <div class="statbar"><span>root hit 0%</span><span>lineage hit 0%</span><span>prefill 0</span></div>
+    <div class="ticker"></div>
+    <div class="ev"></div><div class="done"></div>
+  </div>
+  <div class="arm card" id="arm-agentfork">
+    <h2>AGENTFORK</h2><div class="url"></div>
+    <div class="tree-wrap"><svg class="tree" viewBox="0 0 460 220" preserveAspectRatio="xMidYMid meet"></svg></div>
+    <div class="legend"></div>
+    <div class="kv"><i></i><b></b></div><div class="kvlabel">KV pool used</div>
+    <div class="statbar"><span>root hit 0%</span><span>lineage hit 0%</span><span>prefill 0</span></div>
+    <div class="ticker"></div>
+    <div class="ev"></div><div class="done"></div>
+  </div>
+</div>
+<div id="score" class="card hidden"></div>
 <div class="foot" id="foot"></div>
 <script>
 const $ = (s, r) => (r || document).querySelector(s);
@@ -145,82 +163,48 @@ const arm = n => $("#arm-" + n);
 const esc = s => String(s).replace(/[&<>]/g, c =>
   ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
 const SVG = "http://www.w3.org/2000/svg";
-
-// ---- narration + follow-the-action ------------------------------------
-// A sticky "now:" bar says what is happening in plain language, and the page
-// scrolls to keep the newest event on screen (stop scrolling manually and it
-// stops steering; press Start again after a reload to resume).
-let follow = true;
-addEventListener("wheel", () => { follow = false; }, {passive: true});
-addEventListener("touchmove", () => { follow = false; }, {passive: true});
-function now(text) {
-  const bar = $("#now");
-  bar.classList.remove("hidden");
-  $("span", bar).textContent = text;
-}
-function show(node) {
-  if (follow && node) node.scrollIntoView({block: "nearest", behavior: "smooth"});
-}
+function status(text) { $("#status").textContent = text; }
 const WHO = {stock: "STOCK", agentfork: "AGENTFORK"};
 const HITSAID = {
-  subtree: "reused its whole lineage from cache, paid only its own suffix",
-  root: "kept the shared context but re-paid its approach's reasoning",
-  miss: "found nothing in cache, re-prefilled the whole lineage",
+  subtree: "reused its whole lineage, paid only the suffix",
+  root: "kept the shared context but re-paid its approach",
+  miss: "found nothing in cache, re-prefilled from scratch",
 };
-
-// ---- live branch tree (same visual language as docs/img/lifecycle.svg) ----
-// The tree is root context -> approach -> candidate -> verification, so a node
-// inherits everything its whole lineage committed, not just the root prefix:
-//   green  HIT   the branch reused its parent's full prefix (root + lineage)
-//   amber  ROOT  it kept the shared root context but had to re-prefill the
-//                approach reasoning above it -- a partial subtree hit
-//   red    MISS  nothing was left; it re-prefilled from scratch
-// Killed losers grey out with dashed edges; the surviving lineage stays lit.
 const trees = {
   stock: {root: null, nodes: [], byId: {}, killed: false,
           seen: new Set(), reaped: new Set()},
   agentfork: {root: null, nodes: [], byId: {}, killed: false,
               seen: new Set(), reaped: new Set()},
 };
-
-const LEVEL_Y = {1: 108, 2: 186, 3: 258};
+const LEVEL_Y = {1: 84, 2: 142, 3: 198};
 const FILL = {subtree: "#f0fdf4", root: "#fffbeb", miss: "#fef2f2"};
 const STROKE = {subtree: "#bbf7d0", root: "#fde68a", miss: "#fecaca"};
 const EDGE = {subtree: "#86efac", root: "#fcd34d", miss: "#fecaca"};
 const INK = {subtree: "#16a34a", root: "#b45309", miss: "#dc2626"};
 const TAG = {subtree: "HIT", root: "ROOT", miss: "MISS"};
-
 function el(tag, attrs, text) {
   const n = document.createElementNS(SVG, tag);
   for (const k in attrs) n.setAttribute(k, attrs[k]);
   if (text !== undefined) n.textContent = text;
   return n;
 }
-
-// A node is dead once the kills happened and it is not on the winning lineage.
 function alive(t, n) {
   if (!t.killed) return true;
   for (let cur = n; cur; cur = t.byId[cur.parent]) if (!cur.passed) return false;
   return true;
 }
-
 function layout(t, W) {
-  // deepest level first: spread it evenly, then centre each parent over its
-  // own children so the subtree structure is what you actually see.
   const depths = [3, 2, 1];
   const x = {};
   for (const d of depths) {
     const row = t.nodes.filter(n => n.depth === d);
     if (!row.length) continue;
     const placed = row.filter(n => x[n.id] === undefined);
-    // siblings sit together: half a slot of air between subtrees, so the
-    // grouping under each approach is visible and not just implied by edges
     const parents = [];
     for (const n of placed) if (!parents.includes(n.parent)) parents.push(n.parent);
     const gap = 0.5 * (parents.length - 1);
     const step = Math.min(46, (W - 44) / Math.max(placed.length + gap, 8));
     const span = step * (placed.length + gap);
-    // verification forks hang under their own parent; a full fan-out is centred
     const anchor = placed.length && x[placed[0].parent] !== undefined
       ? x[placed[0].parent] : W / 2;
     const start = d === 3
@@ -233,7 +217,6 @@ function layout(t, W) {
       prev = n.parent;
       slot += 1;
     }
-    // ... and every parent recentres over the children it actually has
     for (const n of t.nodes.filter(m => m.depth === d - 1)) {
       const kids = t.nodes.filter(m => m.parent === n.id).map(m => x[m.id])
         .filter(v => v !== undefined);
@@ -242,28 +225,25 @@ function layout(t, W) {
   }
   return {x: x, step: Math.min(46, (W - 44) / 8)};
 }
-
 function drawTree(name) {
   const t = trees[name], svg = $(".tree", arm(name));
   svg.textContent = "";
-  const W = 460, RY = 34;
+  const W = 460;
   if (t.root === null) {
-    svg.appendChild(el("text", {x: 14, y: 22, fill: "#94a3b8",
+    svg.appendChild(el("text", {x: 14, y: 20, fill: "#94a3b8",
       "font-size": 12}, "waiting for the shared context..."));
     return;
   }
   const {x} = layout(t, W);
-  // root: the shared repo context every branch inherits
-  const rw = 168, rx = (W - rw) / 2;
-  svg.appendChild(el("rect", {x: rx, y: RY - 20, width: rw, height: 40, rx: 10,
+  const rw = 168, rx = (W - rw) / 2, RY = 22;
+  svg.appendChild(el("rect", {x: rx, y: RY - 18, width: rw, height: 36, rx: 10,
     fill: "#eff6ff", stroke: "#bfdbfe"}));
   svg.appendChild(el("text", {x: rx + 12, y: RY - 4, "font-size": 10,
     "font-weight": 600, fill: "#2563eb"}, "ROOT CONTEXT"));
-  svg.appendChild(el("text", {x: rx + 12, y: RY + 12, "font-size": 11,
+  svg.appendChild(el("text", {x: rx + 12, y: RY + 10, "font-size": 11,
     fill: "#0f172a", "font-family": "ui-monospace,Menlo,monospace"},
     t.root.charged.toLocaleString() + " tok shared prefix"));
-  const rootAt = {x: W / 2, y: RY + 20};
-
+  const rootAt = {x: W / 2, y: RY + 18};
   for (const n of t.nodes) {
     const cx = x[n.id], y = LEVEL_Y[n.depth];
     if (cx === undefined) continue;
@@ -271,14 +251,12 @@ function drawTree(name) {
     const from = t.byId[n.parent]
       ? {x: x[n.parent], y: LEVEL_Y[t.byId[n.parent].depth] + 14} : rootAt;
     const g = el("g", {});
-    // the full redraw would restart CSS animations, so each node animates
-    // exactly once: a "pop" when it first appears, a "reap" when it dies
     if (!t.seen.has(n.id)) { g.setAttribute("class", "pop"); t.seen.add(n.id); }
     else if (dead && !t.reaped.has(n.id)) {
       g.setAttribute("class", "reap"); t.reaped.add(n.id);
     }
     g.appendChild(el("path", {
-      d: `M${from.x},${from.y} C${from.x},${from.y + 26} ${cx},${y - 34} ${cx},${y - 14}`,
+      d: `M${from.x},${from.y} C${from.x},${from.y + 24} ${cx},${y - 30} ${cx},${y - 14}`,
       fill: "none", "stroke-width": n.depth === 1 ? 1.8 : 1.4,
       stroke: dead ? "#cbd5e1" : EDGE[n.hit],
       "stroke-dasharray": dead ? "3 3" : "none"}));
@@ -305,56 +283,78 @@ function drawTree(name) {
         ? "losing subtrees reaped; winner re-forked to verify"
         : "losing candidates and their approach subtrees reaped")
     : "fan-out in progress";
-  svg.appendChild(el("text", {x: W - 14, y: 16, "text-anchor": "end",
+  svg.appendChild(el("text", {x: W - 14, y: 14, "text-anchor": "end",
     "font-size": 10, fill: "#94a3b8"}, label));
 }
-
 function kv(name, used, cap) {
   const a = arm(name), pct = cap ? Math.min(100, 100 * used / cap) : 0;
   $(".kv i", a).style.width = pct + "%";
   $(".kv b", a).textContent = used.toLocaleString() + " / " + cap.toLocaleString();
   $(".kvlabel", a).textContent = "KV pool used";
 }
-
+function updateStatbar(name, d) {
+  const a = arm(name);
+  const hit = Math.round(100 * (d ? d.hit_rate : 0));
+  const sub = Math.round(100 * (d ? d.subtree_rate : 0));
+  const pre = d ? d.prefill.toLocaleString() : "0";
+  $(".statbar", a).innerHTML =
+    "<span>root hit " + hit + "%</span>" +
+    "<span>lineage hit " + sub + "%</span>" +
+    "<span>prefill " + pre + " tok</span>" +
+    (d && d.verified ? "<span class='pass'>verified</span>" : "");
+}
+function tick(name, d) {
+  const ticker = $(".ticker", arm(name));
+  const row = document.createElement("div");
+  row.className = "ticker-row";
+  const tag = {subtree: "HIT", root: "ROOT", miss: "MISS"}[d.hit_level];
+  row.innerHTML =
+    "<span class='n'>" + esc(d.label) + " " + (d.idx + 1) + "/" + d.total + 
+      " L" + d.depth + "</span>" +
+    "<span class='hl " + d.hit_level + "'>cache " + tag + "</span>" +
+    "<span class='ch'>+" + d.charged.toLocaleString() + " tok</span>" +
+    "<span class='" + (d.passed ? "pass" : "fail") + "'>tests " +
+      (d.passed ? "PASS" : "FAIL") + "</span>";
+  ticker.appendChild(row);
+  while (ticker.children.length > 3) ticker.removeChild(ticker.firstChild);
+}
 const handlers = {
   banner(d) {
     $("#header").textContent = d.header;
     const w = d.regime === "above"
-      ? "U &gt; U*  &rarr; the neighbour evicts an unpinned prefix"
+      ? "U > U*  &rarr; the neighbour evicts an unpinned prefix"
       : "U &le; U*  &rarr; the prefix survives in both arms";
     $("#math").innerHTML =
       "<b>P</b> <span>shared prefix</span> " + d.P + " &nbsp; " +
       "<b>C</b> <span>KV capacity</span> " + d.C + " &nbsp; " +
       "<b>U</b> <span>neighbour per gap</span> " + d.U + " &nbsp; " +
       "<b>U*</b> <span>= C - P</span> " + d.Ustar +
-      "<br><span class='warn'>" + w + "</span><br>" +
+      "&nbsp;&nbsp;<span class='warn'>" + w + "</span><br>" +
       "<span>" + d.N + " candidates over " + d.approaches +
       " approach branches of " + d.approach_tokens + " tok, " + d.verify +
       " verification forks; the neighbour is metered between branches</span>";
     document.querySelectorAll(".legend").forEach(n => n.innerHTML =
-      "tree: <b>root context</b> \u2192 <b>approach</b> (its own committed " +
-      "reasoning, L1) \u2192 <b>candidate</b> (L2) \u2192 " +
-      "<b>verification</b> (L3)<br>" +
-      "<b>cache</b> <span class='g'>HIT</span> = reused its parent's whole " +
-      "lineage &nbsp;\u00b7&nbsp; <span class='a'>ROOT</span> = kept the " +
-      "shared context but re-prefilled the approach above it " +
-      "&nbsp;\u00b7&nbsp; <span class='r'>MISS</span> = re-prefilled " +
-      "everything (<b>+n</b> = tokens charged)<br>" +
-      "<b>tests</b> <span class='g'>PASS</span>/FAIL = did that candidate's " +
-      "patch pass its pytest check (green dot on the node) &nbsp;\u00b7&nbsp; " +
-      "grey + dashed = branch killed, whole subtree reaped");
+      "tree: <b>root context</b> &rarr; <b>approach</b> (committed reasoning, L1) &rarr; " +
+      "<b>candidate</b> (L2) &rarr; <b>verification</b> (L3). " +
+      "<b>cache</b> <span class='g'>HIT</span> = reused whole lineage; " +
+      "<span class='a'>ROOT</span> = kept shared context but re-paid approach; " +
+      "<span class='r'>MISS</span> = re-prefilled everything. " +
+      "Grey + dashed = killed. Green dot = tests pass.");
     drawTree("stock"); drawTree("agentfork");
   },
-  arm_start(d) { $(".url", arm(d.name)).textContent = d.url; },
+  arm_start(d) {
+    $(".url", arm(d.name)).textContent = d.url;
+    status(WHO[d.name] + " starts on a fresh server" +
+      (d.name === "stock" ? " with ordinary cache reuse" : " with pinned branches"));
+  },
   parent(d) {
     $(".url", arm(d.name)).textContent +=
-      "  \u00b7  shared context: " + d.charged + " tok charged (P=" + d.P + ")";
+      " &middot; shared context: " + d.charged + " tok";
     kv(d.name, d.charged, d.capacity);
     trees[d.name].root = {charged: d.charged};
     drawTree(d.name);
-    now(WHO[d.name] + " prefilled the shared repo context: " +
-        d.charged.toLocaleString() + " tokens every branch will inherit");
-    show($(".tree", arm(d.name)));
+    status(WHO[d.name] + " prefilled the shared repo context: " +
+           d.charged.toLocaleString() + " tokens");
   },
   child(d) {
     const t = trees[d.name];
@@ -364,29 +364,11 @@ const handlers = {
     t.nodes.push(node);
     t.byId[node.id] = node;
     drawTree(d.name);
-    const row = document.createElement("tr");
-    row.className = "pop";
-    row.innerHTML =
-      "<td class='n'>" + esc(d.label) + " " + (d.idx + 1) + "/" + d.total +
-        "<span class='lbl'> L" + d.depth + "</span></td>" +
-      "<td class='bar'><span class='p'><i style='width:" +
-        (100 * (d.idx + 1) / d.total) + "%'></i></span></td>" +
-      "<td class='" + d.hit_level + "'>" +
-        "<span class='lbl'>cache </span>" +
-        ({subtree: "HIT", root: "ROOT", miss: "MISS"}[d.hit_level]) + "</td>" +
-      "<td class='n num'>cached " + d.cached.toLocaleString() + "</td>" +
-      "<td class='num'>charged " + d.charged.toLocaleString() + "</td>" +
-      "<td class='" + (d.passed ? "pass" : "fail") + "'>" +
-        "<span class='lbl'>tests </span>" +
-        (d.passed ? "PASS" : "FAIL") + "</td>";
-    $("table", arm(d.name)).appendChild(row);
-    const what = d.label === "approach" ? "approach branch"
-      : d.label === "verify" ? "verification fork" : "candidate";
-    now(WHO[d.name] + " " + what + " " + (d.idx + 1) + "/" + d.total + " " +
-        HITSAID[d.hit_level] + " (+" + d.charged.toLocaleString() + " tok)" +
-        (d.label !== "approach" ? (d.passed ? " -- tests pass"
-                                            : " -- tests fail") : ""));
-    show(row);
+    tick(d.name, d);
+    const what = d.label === "approach" ? "approach "
+      : d.label === "verify" ? "verify " : "candidate ";
+    status(WHO[d.name] + " " + what + (d.idx + 1) + "/" + d.total + " " +
+           HITSAID[d.hit_level] + " (+" + d.charged.toLocaleString() + " tok)");
   },
   kv(d) { kv(d.name, d.used, d.capacity); },
   kills(d) {
@@ -394,51 +376,39 @@ const handlers = {
     drawTree(d.name);
     $(".ev", arm(d.name)).textContent =
       "killed " + d.n + " losers: KV freed " + d.freed.toLocaleString() +
-      " tok (pool " + (d.pool_delta > 0 ? "-" : "") + d.pool_delta.toLocaleString() + ")";
-    now(WHO[d.name] + " killed " + d.n + " losing branches" +
-        (d.freed > 0 ? ", reclaiming " + d.freed.toLocaleString() +
-                       " tokens of KV instantly" : "") +
-        "; only the winner survives to be verified");
-    show($(".ev", arm(d.name)));
+      " tok";
+    status(WHO[d.name] + " killed " + d.n + " losers" +
+      (d.freed > 0 ? ", reclaiming " + d.freed.toLocaleString() + " KV tokens" : ""));
   },
   arm_done(d) {
+    updateStatbar(d.name, d);
     $(".done", arm(d.name)).innerHTML =
-      "<span class='" + (d.hit_rate >= 1 ? "hit" : "miss") + "'>root hit " +
-      Math.round(100 * d.hit_rate) + "%</span> &nbsp; " +
-      "<span class='" + (d.subtree_rate >= 1 ? "hit" : "miss") +
-      "'>lineage hit " + Math.round(100 * d.subtree_rate) + "%</span>" +
-      " &nbsp; prefill " +
-      d.prefill.toLocaleString() + " tok &nbsp; " +
-      (d.verified ? "<span class='pass'>VERIFIED</span>" : "UNVERIFIED");
-    now(WHO[d.name] + " done: " + Math.round(100 * d.hit_rate) +
-        "% cache hits, " + d.prefill.toLocaleString() +
-        " prefill tokens paid, fix " +
-        (d.verified ? "verified" : "not verified"));
-    show($(".done", arm(d.name)));
+      (d.verified ? "<span class='pass'>VERIFIED</span>" : "UNVERIFIED") +
+      " &nbsp; prefill " + d.prefill.toLocaleString() + " tok";
+    status(WHO[d.name] + " done: root hit " + Math.round(100 * d.hit_rate) +
+      "%, prefill " + d.prefill.toLocaleString() + " tokens");
   },
   scoreboard(d) {
-    $("#score").innerHTML = "<table>" + d.rows.map(r =>
-      "<tr><td class='k'>" + esc(r[0]) + "</td><td class='v'>" + esc(r[1]) +
-      "</td><td class='v'>" + esc(r[2]) + "</td></tr>").join("") + "</table>";
-    $("#foot").textContent = d.notes;
-    now("finished -- same verified fix, but compare the token bills " +
-        "in the scoreboard below");
-    show($("#score"));
+    $("#score").classList.remove("hidden");
+    $("#score").innerHTML =
+      "<table><thead><tr><th>metric</th><th>STOCK</th><th>AGENTFORK</th></tr></thead><tbody>" +
+      d.rows.map(r =>
+        "<tr><td class='k'>" + esc(r[0]) + "</td>" +
+        "<td class='v'>" + esc(r[1]) + "</td>" +
+        "<td class='v'>" + esc(r[2]) + "</td></tr>").join("") +
+      "</tbody></table>";
+    $("#foot").innerHTML =
+      "<details><summary>honest caveats</summary>" +
+      esc(d.notes).replace(/\\n/g, "<br>") + "</details>";
+    status("Race finished -- same verified fix, very different token bills.");
   },
 };
-
-handlers.started = () => { $("#gate").classList.add("hidden"); };
-
+handlers.started = () => { $("#gate").classList.add("hidden"); status("Race running..."); };
 $("#startbtn").onclick = () => {
-  follow = true;
   $("#startbtn").disabled = true;
   $("#startbtn").textContent = "racing...";
   fetch("/start", {method: "POST"});
 };
-
-// The server streams events as fast as the race produces them (bursts);
-// pacing the visual ones a beat apart is what makes the trees animate --
-// including for a browser that connects late and gets the replay.
 const src = new EventSource("/events");
 const pending = [];
 let draining = false;
@@ -458,7 +428,6 @@ function drain() {
 src.onmessage = e => { pending.push(JSON.parse(e.data)); drain(); };
 </script></body></html>
 """
-
 
 class _Handler(BaseHTTPRequestHandler):
     server_version = "AgentforkRaceWeb/1"
@@ -515,7 +484,7 @@ class WebUI:
 
     def __init__(self, args, inner, port: int = 8765, open_browser: bool = True):
         self.args = args
-        self.inner = inner          # a LogUI, so the terminal still shows progress
+        self.inner = inner
         self.capacity = args.capacity_tokens
         self._lock = threading.Lock()
         self.start = threading.Event()
@@ -532,15 +501,12 @@ class WebUI:
                              daemon=True).start()
 
     def wait_for_start(self, autostart: bool = False) -> None:
-        """Block until the browser presses Start (or ``--autostart``)."""
         if autostart:
             self.start.set()
         elif not self.start.is_set():
             self.inner.say("waiting for Start in the browser...")
         self.start.wait()
         self._emit(kind="started")
-
-    # -- pub/sub -----------------------------------------------------------
 
     def subscribe(self) -> queue.Queue:
         q: queue.Queue = queue.Queue()
@@ -563,8 +529,6 @@ class WebUI:
             subs = list(self._subs)
         for q in subs:
             q.put(event)
-
-    # -- race UI interface -------------------------------------------------
 
     def say(self, msg: str = "") -> None:
         self.inner.say(msg)
