@@ -27,8 +27,9 @@ PAGE = """<!doctype html>
          --bg:#f8fafc; --panel:#ffffff; --blue:#2563eb; --green:#16a34a;
          --red:#dc2626; --amber:#b45309; }
  * { box-sizing: border-box; }
- html, body { height: 100vh; margin: 0; overflow: hidden; }
- body { display: flex; flex-direction: column; padding: 8px 10px; gap: 5px;
+ html { height: 100%; }
+ body { min-height: 100vh; margin: 0; overflow-y: auto;
+        display: flex; flex-direction: column; padding: 8px 10px; gap: 5px;
         background: var(--bg); color: var(--ink);
         font: 12px/1.3 ui-sans-serif,system-ui,-apple-system,"Segoe UI",
              Roboto,Inter,sans-serif; }
@@ -57,10 +58,10 @@ PAGE = """<!doctype html>
  #startbtn:hover { background: #1d4ed8; }
  #startbtn[disabled] { background: #93c5fd; cursor: default; }
  .gatehint { color: var(--mute); font-size: 10px; max-width: 640px; }
- .arms { flex: 1 1 0; display: grid; grid-template-columns: 1fr 1fr;
-         grid-template-rows: minmax(240px, 1fr);
-         gap: 10px; min-height: 0; overflow: hidden;
-         margin-bottom: 2px; }
+ .arms { flex: none; display: grid; grid-template-columns: 1fr 1fr;
+         grid-template-rows: 1fr;
+         height: calc(100vh - 210px); min-height: 420px;
+         gap: 10px; margin-bottom: 2px; }
  @media (max-width: 1000px) { .arms { grid-template-columns: 1fr; } }
  .arm { padding: 6px; display: flex; flex-direction: column;
         gap: 3px; min-width: 0; min-height: 0; height: 100%; }
@@ -68,7 +69,7 @@ PAGE = """<!doctype html>
            color: var(--blue); }
  #arm-stock h2 { color: var(--mute); }
  .arm .url { color: var(--mute); font-size: 10px; margin-bottom: 1px; }
- .tree-wrap { flex: 1 1 0; min-height: 110px; position: relative;
+ .tree-wrap { flex: 1 1 0; min-height: 200px; position: relative;
               overflow: hidden; }
  .tree { position: absolute; inset: 0; width: 100%; height: 100%;
          display: block; }
@@ -95,9 +96,7 @@ PAGE = """<!doctype html>
  .ticker .ch { flex: none; font-family: ui-monospace,Menlo,monospace; }
  .ev { color: var(--amber); font-size: 10.5px; margin-top: 1px; }
  .done { font-size: 10.5px; margin-top: 1px; }
- #score { flex: none; height: 155px; padding: 4px 10px; overflow-y: auto; overflow-x: hidden; }
- #score::-webkit-scrollbar { width: 6px; }
- #score::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+ #score { flex: none; padding: 6px 10px; }
  #score.hidden { display: none; }
  #score table { width: 100%; border-collapse: collapse; font-size: 9.5px;
                 line-height: 1.25; }
