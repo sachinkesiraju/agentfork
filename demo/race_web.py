@@ -172,14 +172,14 @@ const metrics = {
 const FILL = {subtree: "#f0fdf4", root: "#fffbeb", miss: "#fef2f2"};
 const STROKE = {subtree: "#86efac", root: "#fcd34d", miss: "#fecaca"};
 const EDGE = {subtree: "#22c55e", root: "#f59e0b", miss: "#f87171"};
-const INK = {subtree: "#16a34a", root: "#b45309", miss: "#dc2626"};
-const NODE_W = {1: 108, 2: 60, 3: 60};
-const GAP = {1: 28, 2: 20, 3: 20};
-const ROOT_Y = 22;
-const LEVEL_H = 56;
-const PAD_Y = 14;
-const BH = 30;
-const M = 30;
+const INK = {subtree: "#15803d", root: "#b45309", miss: "#dc2626"};
+const NODE_W = {1: 120, 2: 58, 3: 58};
+const NODE_H = {1: 32, 2: 26, 3: 26};
+const GAP = {1: 24, 2: 16, 3: 16};
+const ROOT_Y = 28;
+const LEVEL_H = 60;
+const PAD_Y = 16;
+const M = 24;
 function el(tag, attrs, text) {
   const n = document.createElementNS(SVG, tag);
   for (const k in attrs) n.setAttribute(k, attrs[k]);
@@ -264,18 +264,16 @@ function drawTree(name) {
   svg.setAttribute("preserveAspectRatio", "xMidYMin meet");
   if (t.root === null) {
     svg.appendChild(el("text", {x: W2 / 2, y: H / 2, fill: "#94a3b8",
-      "text-anchor": "middle", "font-size": 12}, "waiting..."));
+      "text-anchor": "middle", "font-size": 13}, "waiting..."));
     return;
   }
-  const rootX = rootAt.x;
-  const rw = Math.min(220, W2 - 2 * M);
-  const rx = rootX - rw / 2;
-  svg.appendChild(el("rect", {x: rx, y: 7, width: rw, height: 30, rx: 8,
-    fill: "#eff6ff", stroke: "#bfdbfe"}));
-  svg.appendChild(el("text", {x: rootX, y: 22, "font-size": 11,
-    "font-weight": 600, fill: "#2563eb", "text-anchor": "middle"}, "SHARED CONTEXT"));
-  svg.appendChild(el("text", {x: rootX, y: 34, "font-size": 9,
-    fill: "#64748b", "text-anchor": "middle"},
+  const rw = Math.min(200, W2 - 2 * M);
+  svg.appendChild(el("rect", {x: rootAt.x - rw / 2, y: 6, width: rw,
+    height: 30, rx: 15, fill: "#dbeafe", stroke: "#93c5fd"}));
+  svg.appendChild(el("text", {x: rootAt.x, y: 20, "text-anchor": "middle",
+    "font-size": 11, "font-weight": 700, fill: "#1d4ed8"}, "SHARED CONTEXT"));
+  svg.appendChild(el("text", {x: rootAt.x, y: 30, "text-anchor": "middle",
+    "font-size": 9, fill: "#64748b"},
     t.root.charged.toLocaleString() + " tok"));
 
   for (const n of t.nodes) {
@@ -283,37 +281,38 @@ function drawTree(name) {
     if (cx === undefined) continue;
     const dead = !alive(t, n);
     const from = t.byId[n.parent]
-      ? {x: x[n.parent], y: levelY[t.byId[n.parent].depth] + BH / 2}
+      ? {x: x[n.parent], y: levelY[t.byId[n.parent].depth] +
+         NODE_H[t.byId[n.parent].depth] / 2}
       : rootAt;
     const g = el("g", {});
     if (!t.seen.has(n.id)) { g.setAttribute("class", "pop"); t.seen.add(n.id); }
     else if (dead && !t.reaped.has(n.id)) {
       g.setAttribute("class", "reap"); t.reaped.add(n.id);
     }
-    const bw = NODE_W[n.depth];
-    const tagFS = n.depth === 1 ? 9 : 10;
-    const numFS = 8;
+    const w = NODE_W[n.depth], h = NODE_H[n.depth];
+    const r = n.depth === 1 ? 10 : 7;
     g.appendChild(el("path", {
-      d: `M${from.x},${from.y} C${from.x},${from.y + 18} ${cx},${y - 18} ${cx},${y - BH / 2}`,
-      fill: "none", "stroke-width": n.depth === 1 ? 1.6 : 1.2,
+      d: `M${from.x},${from.y} C${from.x},${from.y + 16} ${cx},${y - 16} ${cx},${y - h / 2}`,
+      fill: "none", "stroke-width": n.depth === 1 ? 1.8 : 1.2,
       stroke: dead ? "#cbd5e1" : EDGE[n.hit],
       "stroke-dasharray": dead ? "3 2" : "none"}));
-    g.appendChild(el("rect", {x: cx - bw / 2, y: y - BH / 2, width: bw,
-      height: BH, rx: 6,
+    g.appendChild(el("rect", {x: cx - w / 2, y: y - h / 2, width: w,
+      height: h, rx: r,
       fill: dead ? "#f8fafc" : FILL[n.hit],
-      stroke: dead ? "#e2e8f0" : STROKE[n.hit]}));
+      stroke: dead ? "#e2e8f0" : STROKE[n.hit], "stroke-width": 1.5}));
     const label = n.depth === 1 ? (n.plan || "").slice(0, 14) : ("+" + n.charged);
-    const label2 = n.depth === 1 ? ("+" + n.charged) : "";
-    g.appendChild(el("text", {x: cx, y: y - BH / 2 + 12, "text-anchor": "middle",
-      "font-size": tagFS, "font-weight": 600,
+    const sub = n.depth === 1 ? (n.passed ? "PASS" : "...") : "";
+    g.appendChild(el("text", {x: cx, y: y - h / 2 + 13, "text-anchor": "middle",
+      "font-size": n.depth === 1 ? 10 : 11, "font-weight": 600,
       fill: dead ? "#94a3b8" : INK[n.hit]}, label));
-    if (label2) {
-      g.appendChild(el("text", {x: cx, y: y + BH / 2 - 4, "text-anchor": "middle",
-        "font-size": numFS, fill: dead ? "#cbd5e1" : "#64748b"}, label2));
+    if (sub) {
+      g.appendChild(el("text", {x: cx, y: y + h / 2 - 5, "text-anchor": "middle",
+        "font-size": 8, fill: dead ? "#cbd5e1" : "#64748b"}, sub));
     }
-    if (n.passed && n.depth > 1) {
-      g.appendChild(el("circle", {cx: cx + bw / 2 - 5, cy: y - BH / 2 + 5, r: 4,
-        fill: dead ? "#cbd5e1" : "#16a34a"}));
+    if (n.depth > 1) {
+      const dotFill = dead ? "#cbd5e1" : (n.passed ? "#22c55e" : "#ef4444");
+      g.appendChild(el("circle", {cx: cx + w / 2 - 5, cy: y - h / 2 + 5, r: 3.5,
+        fill: dotFill}));
     }
     svg.appendChild(g);
   }
