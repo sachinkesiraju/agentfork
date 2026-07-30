@@ -1049,6 +1049,9 @@ def parse_args(argv=None):
                    help="candidate source; 'fake' is deterministic + offline")
     p.add_argument("--port", type=int, default=8765,
                    help="port for the browser dashboard")
+    p.add_argument("--autostart", action="store_true",
+                   help="run the race immediately instead of waiting for the "
+                        "browser's Start button")
     p.add_argument("--no-open", action="store_true",
                    help="do not open a browser automatically")
     p.add_argument("--no-ui", action="store_true",
@@ -1078,6 +1081,8 @@ def main(argv=None) -> int:
                    open_browser=not args.no_open)
     race = Race(args, ui)
     ui.banner(race, args)
+    if not args.no_ui:
+        ui.wait_for_start(autostart=args.autostart)
     try:
         stock = race.run_arm("stock")
         agentfork = race.run_arm("agentfork")

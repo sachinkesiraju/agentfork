@@ -99,6 +99,12 @@ reuse*:
 | green dot | that branch's `pytest` check passed |
 | grey + dashed | killed as a loser, with its whole subtree reaped |
 
+The page loads idle with a **Start** button; the race only begins when it is
+pressed (`--autostart` skips the wait for unattended runs). Once started the
+trees animate: each branch pops in as the cache resolves it -- events are
+paced a beat apart client-side, so even a browser that connects late and gets
+the replay sees the trees grow -- and killed subtrees fade to grey on the kill.
+
 `+n` under a node is the tokens it was actually charged. Below the tree: live
 KV bars per arm, one row per branch tagged with its level (`L1` approach, `L2`
 candidate, `L3` verification) and its `cache`/`tests` result, the kill event,
@@ -260,7 +266,7 @@ $ PYTHONPATH=~/sglang/python .venv/bin/python -m pytest -q tests/test_race_demo.
 11 passed in 44.90s
 
 $ PYTHONPATH=~/sglang/python .venv/bin/pytest -q
-244 passed, 2 skipped in 68.08s
+246 passed, 2 skipped in 62.69s
 
 $ .venv/bin/ruff check agentfork demo tests
 All checks passed!

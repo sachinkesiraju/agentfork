@@ -40,6 +40,21 @@ PAGE = """<!doctype html>
  .math b { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
  .math span { color:var(--mute); }
  .warn { color:var(--amber); }
+ #gate { margin:0 0 18px; padding:14px 16px; display:flex; gap:14px;
+         align-items:center; }
+ #gate.hidden { display:none; }
+ #startbtn { font:600 14px/1 ui-sans-serif,system-ui,sans-serif; cursor:pointer;
+             color:#fff; background:var(--blue); border:none; border-radius:8px;
+             padding:11px 18px; }
+ #startbtn:hover { background:#1d4ed8; }
+ #startbtn[disabled] { background:#93c5fd; cursor:default; }
+ .gatehint { color:var(--mute); font-size:12.5px; max-width:640px; }
+ @keyframes pop { from { opacity:0; transform:translateY(-10px); }
+                  to { opacity:1; transform:none; } }
+ .tree g.pop { animation:pop .5s ease-out both; }
+ @keyframes reap { from { opacity:1; } 40% { opacity:.15; } to { opacity:1; } }
+ .tree g.reap { animation:reap .9s ease-out both; }
+ tr.pop { animation:pop .4s ease-out both; }
  .arms { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
  @media (max-width:1000px) { .arms { grid-template-columns:1fr; } }
  .arm { padding:16px; }
@@ -88,6 +103,12 @@ PAGE = """<!doctype html>
 <h1>agentfork: 10 fixes, 1 inference server, and someone else is using it too</h1>
 <div class="sub" id="header"></div>
 <div class="math card" id="math"></div>
+<div id="gate" class="card">
+  <button id="startbtn">&#9654;&nbsp; Start the race</button>
+  <div class="gatehint">Both arms will run the same fan-out against their own
+  fresh server while the noisy neighbour streams through it. Watch the trees
+  grow: every branch animates in as the cache resolves it.</div>
+</div>
 <div class="arms">
   <div class="arm card" id="arm-stock"><h2>STOCK</h2><div class="url"></div>
     <svg class="tree" viewBox="0 0 460 290" preserveAspectRatio="xMidYMid meet"></svg>
@@ -118,8 +139,10 @@ const SVG = "http://www.w3.org/2000/svg";
 //   red    MISS  nothing was left; it re-prefilled from scratch
 // Killed losers grey out with dashed edges; the surviving lineage stays lit.
 const trees = {
-  stock: {root: null, nodes: [], byId: {}, killed: false},
-  agentfork: {root: null, nodes: [], byId: {}, killed: false},
+  stock: {root: null, nodes: [], byId: {}, killed: false,
+          seen: new Set(), reaped: new Set()},
+  agentfork: {root: null, nodes: [], byId: {}, killed: false,
+              seen: new Set(), reaped: new Set()},
 };
 
 const LEVEL_Y = {1: 108, 2: 186, 3: 258};
@@ -207,31 +230,37 @@ function drawTree(name) {
     const cx = x[n.id], y = LEVEL_Y[n.depth];
     if (cx === undefined) continue;
     const dead = !alive(t, n);
-    const lvl = dead ? "dead" : n.hit;
     const from = t.byId[n.parent]
       ? {x: x[n.parent], y: LEVEL_Y[t.byId[n.parent].depth] + 14} : rootAt;
-    svg.appendChild(el("path", {
+    const g = el("g", {});
+    // the full redraw would restart CSS animations, so each node animates
+    // exactly once: a "pop" when it first appears, a "reap" when it dies
+    if (!t.seen.has(n.id)) { g.setAttribute("class", "pop"); t.seen.add(n.id); }
+    else if (dead && !t.reaped.has(n.id)) {
+      g.setAttribute("class", "reap"); t.reaped.add(n.id);
+    }
+    g.appendChild(el("path", {
       d: `M${from.x},${from.y} C${from.x},${from.y + 26} ${cx},${y - 34} ${cx},${y - 14}`,
       fill: "none", "stroke-width": n.depth === 1 ? 1.8 : 1.4,
       stroke: dead ? "#cbd5e1" : EDGE[n.hit],
       "stroke-dasharray": dead ? "3 3" : "none"}));
     const bw = n.depth === 1 ? 76 : 38;
-    svg.appendChild(el("rect", {x: cx - bw / 2, y: y - 14, width: bw,
+    g.appendChild(el("rect", {x: cx - bw / 2, y: y - 14, width: bw,
       height: 28, rx: 8,
       fill: dead ? "#f1f5f9" : FILL[n.hit],
       stroke: dead ? "#e2e8f0" : STROKE[n.hit]}));
-    svg.appendChild(el("text", {x: cx, y: y - 1, "text-anchor": "middle",
+    g.appendChild(el("text", {x: cx, y: y - 1, "text-anchor": "middle",
       "font-size": n.depth === 1 ? 9 : 10, "font-weight": 600,
       fill: dead ? "#94a3b8" : INK[n.hit]},
       n.depth === 1 ? n.plan : TAG[n.hit]));
-    svg.appendChild(el("text", {x: cx, y: y + 10, "text-anchor": "middle",
+    g.appendChild(el("text", {x: cx, y: y + 10, "text-anchor": "middle",
       "font-size": 8, fill: dead ? "#cbd5e1" : "#64748b"},
       (n.depth === 1 ? TAG[n.hit] + " " : "") + "+" + n.charged));
     if (n.passed && n.depth > 1) {
-      svg.appendChild(el("circle", {cx: cx + bw / 2 - 4, cy: y - 14, r: 4,
+      g.appendChild(el("circle", {cx: cx + bw / 2 - 4, cy: y - 14, r: 4,
         fill: dead ? "#cbd5e1" : "#16a34a"}));
     }
-    if (lvl === "dead") { /* dead nodes keep their shape, greyed */ }
+    svg.appendChild(g);
   }
   const label = t.killed
     ? (t.nodes.some(n => n.depth === 3)
@@ -295,6 +324,7 @@ const handlers = {
     t.byId[node.id] = node;
     drawTree(d.name);
     const row = document.createElement("tr");
+    row.className = "pop";
     row.innerHTML =
       "<td class='n'>" + esc(d.label) + " " + (d.idx + 1) + "/" + d.total +
         "<span class='lbl'> L" + d.depth + "</span></td>" +
@@ -336,13 +366,34 @@ const handlers = {
   },
 };
 
-const src = new EventSource("/events");
-src.onmessage = e => {
-  const msg = JSON.parse(e.data);
-  if (msg.kind === "done") { src.close(); return; }
-  const h = handlers[msg.kind];
-  if (h) h(msg);
+handlers.started = () => { $("#gate").classList.add("hidden"); };
+
+$("#startbtn").onclick = () => {
+  $("#startbtn").disabled = true;
+  $("#startbtn").textContent = "racing...";
+  fetch("/start", {method: "POST"});
 };
+
+// The server streams events as fast as the race produces them (bursts);
+// pacing the visual ones a beat apart is what makes the trees animate --
+// including for a browser that connects late and gets the replay.
+const src = new EventSource("/events");
+const pending = [];
+let draining = false;
+const PACED = {parent: 420, child: 320, kills: 700, arm_start: 500};
+function drain() {
+  if (draining) return;
+  draining = true;
+  (function step() {
+    if (!pending.length) { draining = false; return; }
+    const msg = pending.shift();
+    if (msg.kind === "done") { src.close(); draining = false; return; }
+    const h = handlers[msg.kind];
+    if (h) h(msg);
+    setTimeout(step, PACED[msg.kind] || 0);
+  })();
+}
+src.onmessage = e => { pending.push(JSON.parse(e.data)); drain(); };
 </script></body></html>
 """
 
@@ -364,6 +415,14 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/events":
             self._stream()
+            return
+        self.send_error(404)
+
+    def do_POST(self):  # noqa: N802 (stdlib naming)
+        if self.path == "/start":
+            self.server.ui.start.set()  # type: ignore[attr-defined]
+            self.send_response(204)
+            self.end_headers()
             return
         self.send_error(404)
 
@@ -397,6 +456,7 @@ class WebUI:
         self.inner = inner          # a LogUI, so the terminal still shows progress
         self.capacity = args.capacity_tokens
         self._lock = threading.Lock()
+        self.start = threading.Event()
         self._history: list[dict] = []
         self._subs: list[queue.Queue] = []
         self.httpd = ThreadingHTTPServer(("127.0.0.1", port), _Handler)
@@ -408,6 +468,15 @@ class WebUI:
         if open_browser:
             threading.Thread(target=webbrowser.open, args=(self.url,),
                              daemon=True).start()
+
+    def wait_for_start(self, autostart: bool = False) -> None:
+        """Block until the browser presses Start (or ``--autostart``)."""
+        if autostart:
+            self.start.set()
+        elif not self.start.is_set():
+            self.inner.say("waiting for Start in the browser...")
+        self.start.wait()
+        self._emit(kind="started")
 
     # -- pub/sub -----------------------------------------------------------
 

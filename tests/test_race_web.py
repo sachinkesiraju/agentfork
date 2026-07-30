@@ -56,6 +56,22 @@ def test_unknown_path_is_404(ui):
     assert exc.value.code == 404
 
 
+def test_start_button_releases_the_race(ui):
+    """The page loads idle; POST /start is what lets the race begin."""
+    assert not ui.start.is_set()
+    req = urllib.request.Request(ui.url + "/start", method="POST")
+    with urllib.request.urlopen(req, timeout=10) as r:
+        assert r.status == 204
+    ui.wait_for_start()          # returns immediately: the button was pressed
+    assert ui.start.is_set()
+    assert any(e["kind"] == "started" for e in ui.replay())
+
+
+def test_autostart_skips_the_button(ui):
+    ui.wait_for_start(autostart=True)
+    assert ui.start.is_set()
+
+
 def test_events_stream_replays_then_follows_live(ui):
     ui.kv("stock", 1234)                      # happens before the browser opens
     received = []
