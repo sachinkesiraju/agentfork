@@ -21,131 +21,134 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>agentfork race</title>
 <style>
 :root { color-scheme: light; --ink:#0f172a; --mute:#64748b; --line:#e2e8f0;
         --bg:#f8fafc; --panel:#ffffff; --blue:#2563eb; --green:#16a34a;
-        --red:#dc2626; --amber:#b45309; }
+        --red:#ef4444; --amber:#f59e0b; }
 * { box-sizing: border-box; }
-html { height: 100%; }
-body { margin: 0; padding: 12px 14px; gap: 10px; display: flex;
-       flex-direction: column; min-height: 100vh;
-       background: var(--bg); color: var(--ink);
-       font: 12px/1.4 ui-sans-serif,system-ui,-apple-system,"Segoe UI",
-            Roboto,Inter,sans-serif; }
-code, .mono { font-family: ui-monospace,SFMono-Regular,Menlo,monospace; }
-h1 { font-size: 16px; margin: 0; }
-.intro { font-size: 11px; color: #475569; max-width: 720px; }
-.intro b { color: var(--blue); }
-.top { display: flex; flex-direction: column; gap: 6px; flex: none; }
-.sub { color: var(--mute); font-size: 10.5px; min-height: 1.3em; }
-.status { font-size: 11px; color: #0f172a; font-weight: 500; min-height: 1.3em; }
-.card { background: var(--panel); border: 1px solid var(--line);
-        border-radius: 10px; box-shadow: 0 1px 2px rgba(15,23,42,.06); }
-.math { padding: 5px 8px; font-size: 10px; display: flex; flex-wrap: wrap;
-        gap: 8px 14px; color: #334155; }
-.math b { font-family: ui-monospace,Menlo,monospace; color: var(--ink); }
-#gate { padding: 6px 10px; display: flex; gap: 10px; align-items: center;
-        flex-wrap: wrap; }
-#gate.hidden { display: none; }
-#startbtn { font: 600 12px/1 ui-sans-serif,system-ui,sans-serif;
-            cursor: pointer; color: #fff; background: var(--blue);
-            border: none; border-radius: 6px; padding: 8px 14px; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--ink);
+       font: 13px/1.4 ui-sans-serif,system-ui,-apple-system,Roboto,Inter,sans-serif;
+       display: flex; flex-direction: column; }
+header { background: #fff; border-bottom: 1px solid var(--line);
+         padding: 10px 16px; display: flex; align-items: center;
+         gap: 12px; flex-wrap: wrap; }
+header h1 { font-size: 15px; font-weight: 700; margin: 0; letter-spacing: -.2px; }
+header p { font-size: 11px; color: var(--mute); margin: 0; flex: 1 1 220px; }
+#startbtn { background: var(--blue); color: #fff; border: none;
+            border-radius: 8px; padding: 8px 18px;
+            font: 600 12px/1 sans-serif; cursor: pointer; }
 #startbtn:hover { background: #1d4ed8; }
 #startbtn[disabled] { background: #93c5fd; cursor: default; }
-.gatehint { color: var(--mute); font-size: 10px; }
-.arms { display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
-        align-items: start; }
-@media (max-width: 900px) { .arms { grid-template-columns: 1fr; } }
-.arm { padding: 10px; display: flex; flex-direction: column; gap: 6px;
-       min-width: 0; }
-.arm h2 { font-size: 12px; margin: 0; letter-spacing: .08em;
-          color: var(--blue); }
+#status { font-size: 12px; font-weight: 600; color: var(--ink); min-width: 120px; }
+main { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
+       padding: 16px; min-height: 0; overflow: hidden; }
+@media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+.arm { background: var(--panel); border: 1px solid var(--line);
+        border-radius: 14px; box-shadow: 0 1px 2px rgba(15,23,42,.05);
+        display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.arm-head { padding: 10px 14px; border-bottom: 1px solid var(--line);
+            display: flex; justify-content: space-between; align-items: center; }
+.arm h2 { font-size: 13px; margin: 0; letter-spacing: .08em; color: var(--blue); }
 #arm-stock h2 { color: var(--mute); }
-.arm .url { color: var(--mute); font-size: 10px; }
-.tree-wrap { min-height: 220px; max-height: 480px; position: relative;
-             overflow: auto; border: 1px solid var(--line); border-radius: 8px;
-             background: #fff; padding: 8px; }
+.arm .url { font-size: 10px; color: var(--mute); }
+.metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px;
+           background: var(--line); border-bottom: 1px solid var(--line); }
+.metric { background: #fff; padding: 8px; text-align: center; }
+.metric .num { font: 700 15px/1 ui-monospace,SFMono-Regular,Menlo,monospace;
+               color: var(--ink); }
+.metric .num.win { color: var(--green); }
+.metric .num.lose { color: var(--red); }
+.metric .lbl { font-size: 9px; color: var(--mute); text-transform: uppercase;
+                letter-spacing: .04em; margin-top: 2px; }
+.kvbar { height: 6px; background: #e2e8f0; overflow: hidden; }
+.kvbar i { display: block; height: 100%; width: 0; background: var(--blue);
+            transition: width .2s; }
+.tree-wrap { flex: 1; min-height: 220px; position: relative; overflow: auto;
+             padding: 12px; background: #fafafa; }
 .tree { display: block; width: 100%; min-width: 320px; height: auto; }
-.legend { color: var(--mute); font-size: 9.5px; line-height: 1.3; }
-.legend b { font-weight: 600; }
-.legend .g { color: var(--green); } .legend .r { color: var(--red); }
-.legend .a { color: var(--amber); }
-.kv { height: 12px; background: #eef2f7; border-radius: 4px;
-      overflow: hidden; position: relative; border: 1px solid var(--line); }
-.kv i { display: block; height: 100%; width: 0; background: #bfdbfe;
-        transition: width .2s; }
-.kv b { position: absolute; inset: 0; text-align: center; font-weight: 600;
-        font-size: 9px; line-height: 10px;
-        font-family: ui-monospace,Menlo,monospace; }
-.kvlabel { color: var(--mute); font-size: 9px; }
-.statbar { display: flex; flex-wrap: wrap; gap: 4px; font-size: 9.5px; }
-.statbar span { background: #f1f5f9; padding: 2px 6px; border-radius: 4px; }
-.ticker { max-height: 70px; overflow-y: auto; flex: none;
-          border-top: 1px solid var(--line); padding-top: 4px; }
-.ticker > div { font-size: 10px; padding: 2px 0;
-                display: flex; gap: 8px; color: #334155; }
-.ticker .n { color: var(--mute); flex: none; }
-.ticker .hl { flex: none; font-weight: 600; }
-.ticker .ch { flex: none; font-family: ui-monospace,Menlo,monospace; }
-.ev { color: var(--amber); font-size: 10.5px; }
-.done { font-size: 10.5px; }
-#score { padding: 8px 12px; }
-#score.hidden { display: none; }
-#score table { width: 100%; border-collapse: collapse; font-size: 10px;
-               line-height: 1.3; }
-#score td { padding: 2px 4px; border-top: 1px solid var(--line); }
-#score tr:first-child td { border-top: none; }
-#score td.k { color: var(--mute); width: 48%; }
-#score td.v { text-align: right; width: 26%;
-              font-family: ui-monospace,Menlo,monospace; }
-#score th { text-align: right; font-size: 9px; color: var(--mute);
-            padding: 0 4px 2px; font-weight: 600; }
-#score th:first-child { text-align: left; }
-.foot { color: var(--mute); font-size: 9px; }
-.foot details { margin: 0; }
-.foot summary { cursor: pointer; color: var(--blue); font-weight: 600; }
-@keyframes pop { from { opacity: 0; transform: translateY(-4px); }
+.legend { padding: 8px 14px; font-size: 10px; color: var(--mute);
+          border-top: 1px solid var(--line);
+          display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.legend b { font-weight: 600; color: var(--ink); }
+.legend .dot { display: inline-block; width: 8px; height: 8px;
+               border-radius: 50%; margin-right: 3px; }
+.legend .g { color: var(--green); } .legend .a { color: var(--amber); }
+.legend .r { color: var(--red); }
+.ticker { max-height: 58px; overflow-y: auto; border-top: 1px solid var(--line);
+          padding: 6px 14px; font-size: 10px; color: #475569; }
+.ticker-row { display: flex; gap: 8px; padding: 1px 0; }
+.ticker-row .tag { font-weight: 700; }
+.ticker-row .dim { color: var(--mute); }
+#scoreboard { display: none; background: #fff; border-top: 1px solid var(--line);
+              padding: 12px 16px; }
+#scoreboard.open { display: block; }
+#scoreboard h3 { margin: 0 0 8px; font-size: 13px; }
+#scoreboard table { width: 100%; border-collapse: collapse; font-size: 11px; }
+#scoreboard th { text-align: right; color: var(--mute); padding: 4px;
+                 font-weight: 600; }
+#scoreboard th:first-child { text-align: left; }
+#scoreboard td { padding: 4px; border-top: 1px solid var(--line);
+                 text-align: right; font-family: ui-monospace,monospace; }
+#scoreboard td:first-child { text-align: left; color: var(--mute); }
+#scoreboard .winner td { font-weight: 700; background: #f0fdf4; }
+#foot { padding: 10px 16px; font-size: 10px; color: var(--mute);
+        background: #fff; border-top: 1px solid var(--line); }
+#foot summary { cursor: pointer; color: var(--blue); font-weight: 600; }
+@keyframes pop { from { opacity: 0; transform: translateY(-6px); }
                  to { opacity: 1; transform: none; } }
-.tree g.pop { animation: pop .3s ease-out both; }
-@keyframes reap { from { opacity: 1; } 40% { opacity: .12; } to { opacity: 1; } }
+.tree g.pop { animation: pop .35s ease-out both; }
+@keyframes reap { from { opacity: 1; } 40% { opacity: .1; } to { opacity: 1; } }
 .tree g.reap { animation: reap .8s ease-out both; }
-.ticker-row { animation: pop .3s ease-out both; }
 </style></head><body>
-<div class="top">
-<h1>Stock cache vs. pinned branches</h1>
-<div class="intro">Two arms fix the same bug. <b>STOCK</b> hopes the shared
-context survives; <b>AGENTFORK</b> pins it so the tree cannot be evicted.</div>
-<div class="sub" id="header"></div>
-<div class="math card" id="math"></div>
-<div id="gate" class="card">
+<header>
+  <h1>Stock cache vs. pinned branches</h1>
+  <p>Two arms race to fix the same bug under identical KV pressure.</p>
   <button id="startbtn">Start race</button>
-  <div class="gatehint">Same load, same bug. Watch the trees grow.</div>
-</div>
-<div class="status" id="status">Press Start.</div>
-</div>
-<div class="arms">
-  <div class="arm card" id="arm-stock">
-    <h2>STOCK</h2><div class="url"></div>
+  <div id="status">Press Start.</div>
+</header>
+<main>
+  <section class="arm" id="arm-stock">
+    <div class="arm-head"><h2>STOCK</h2><div class="url"></div></div>
+    <div class="metrics">
+      <div class="metric"><div class="num" id="m-stock-prefill">0</div><div class="lbl">prefill tok</div></div>
+      <div class="metric"><div class="num" id="m-stock-subtree">0%</div><div class="lbl">lineage hit</div></div>
+      <div class="metric"><div class="num" id="m-stock-root">0%</div><div class="lbl">root hit</div></div>
+    </div>
+    <div class="kvbar"><i id="kv-stock"></i></div>
     <div class="tree-wrap"><svg class="tree" xmlns="http://www.w3.org/2000/svg"></svg></div>
-    <div class="legend"></div>
-    <div class="kv"><i></i><b></b></div><div class="kvlabel">KV pool used</div>
-    <div class="statbar"><span>root 0%</span><span>lineage 0%</span><span>prefill 0</span></div>
+    <div class="legend">
+      <b>Cache:</b>
+      <span class="g"><span class="dot"></span>full lineage</span>
+      <span class="a"><span class="dot"></span>root only</span>
+      <span class="r"><span class="dot"></span>miss</span>
+      <span>grey/dashed = killed</span>
+    </div>
     <div class="ticker"></div>
-    <div class="ev"></div><div class="done"></div>
-  </div>
-  <div class="arm card" id="arm-agentfork">
-    <h2>AGENTFORK</h2><div class="url"></div>
+  </section>
+  <section class="arm" id="arm-agentfork">
+    <div class="arm-head"><h2>AGENTFORK</h2><div class="url"></div></div>
+    <div class="metrics">
+      <div class="metric"><div class="num" id="m-agentfork-prefill">0</div><div class="lbl">prefill tok</div></div>
+      <div class="metric"><div class="num" id="m-agentfork-subtree">0%</div><div class="lbl">lineage hit</div></div>
+      <div class="metric"><div class="num" id="m-agentfork-root">0%</div><div class="lbl">root hit</div></div>
+    </div>
+    <div class="kvbar"><i id="kv-agentfork"></i></div>
     <div class="tree-wrap"><svg class="tree" xmlns="http://www.w3.org/2000/svg"></svg></div>
-    <div class="legend"></div>
-    <div class="kv"><i></i><b></b></div><div class="kvlabel">KV pool used</div>
-    <div class="statbar"><span>root 0%</span><span>lineage 0%</span><span>prefill 0</span></div>
+    <div class="legend">
+      <b>Cache:</b>
+      <span class="g"><span class="dot"></span>full lineage</span>
+      <span class="a"><span class="dot"></span>root only</span>
+      <span class="r"><span class="dot"></span>miss</span>
+      <span>green dot = tests pass</span>
+    </div>
     <div class="ticker"></div>
-    <div class="ev"></div><div class="done"></div>
-  </div>
-</div>
-<div id="score" class="card hidden"></div>
-<div class="foot" id="foot"></div>
+  </section>
+</main>
+<div id="scoreboard"></div>
+<div id="foot"></div>
 <script>
 const $ = (s, r) => (r || document).querySelector(s);
 const arm = n => $("#arm-" + n);
@@ -154,28 +157,29 @@ const esc = s => String(s).replace(/[&<>]/g, c =>
 const SVG = "http://www.w3.org/2000/svg";
 function status(text) { $("#status").textContent = text; }
 const WHO = {stock: "STOCK", agentfork: "AGENTFORK"};
-const HITSAID = {
-  subtree: "reused whole lineage",
-  root: "kept root only",
-  miss: "re-prefilled from scratch",
-};
+const HITSAID = {subtree: "reused whole lineage", root: "kept root only",
+                 miss: "re-prefilled from scratch"};
 const trees = {
   stock: {root: null, nodes: [], byId: {}, killed: false,
           seen: new Set(), reaped: new Set()},
   agentfork: {root: null, nodes: [], byId: {}, killed: false,
               seen: new Set(), reaped: new Set()},
 };
+const metrics = {
+  stock: {prefill: 0, root: 0, subtree: 0, total: 0, verified: false},
+  agentfork: {prefill: 0, root: 0, subtree: 0, total: 0, verified: false},
+};
 const FILL = {subtree: "#f0fdf4", root: "#fffbeb", miss: "#fef2f2"};
 const STROKE = {subtree: "#86efac", root: "#fcd34d", miss: "#fecaca"};
 const EDGE = {subtree: "#22c55e", root: "#f59e0b", miss: "#f87171"};
-const INK = {subtree: "#16a34a", root: "#b45309", miss: "#dc2626"};
-const NODE_W = {1: 108, 2: 60, 3: 60};
-const GAP = {1: 28, 2: 20, 3: 20};
-const ROOT_Y = 22;
-const LEVEL_H = 56;
-const PAD_Y = 14;
-const BH = 30;
-const M = 30;
+const INK = {subtree: "#15803d", root: "#b45309", miss: "#dc2626"};
+const NODE_W = {1: 120, 2: 58, 3: 58};
+const NODE_H = {1: 32, 2: 26, 3: 26};
+const GAP = {1: 24, 2: 16, 3: 16};
+const ROOT_Y = 28;
+const LEVEL_H = 60;
+const PAD_Y = 16;
+const M = 24;
 function el(tag, attrs, text) {
   const n = document.createElementNS(SVG, tag);
   for (const k in attrs) n.setAttribute(k, attrs[k]);
@@ -188,8 +192,6 @@ function alive(t, n) {
   return true;
 }
 function layout(t, W) {
-  // Hierarchical tree layout: each node is centered over its children,
-  // and each subtree gets just enough width so siblings never overlap.
   const children = {};
   for (const n of t.nodes) {
     const p = n.parent || "root";
@@ -197,7 +199,6 @@ function layout(t, W) {
     children[p].push(n);
   }
   if (!children["root"]) children["root"] = [];
-  // deterministic order
   for (const k in children) children[k].sort((a, b) => a.id.localeCompare(b.id));
 
   const H = ROOT_Y + 4 * LEVEL_H + PAD_Y;
@@ -216,14 +217,13 @@ function layout(t, W) {
     widths[n.id] = Math.max(NODE_W[n.depth], w);
     return widths[n.id];
   }
-  // virtual root has depth 0; its children are depth 1 nodes
   const rootW = children["root"].length
     ? (function() {
         let w = -GAP[1];
         for (const c of children["root"]) w += GAP[1] + measure(c);
-        return Math.max(220, w);
+        return Math.max(200, w);
       })()
-    : 220;
+    : 200;
 
   const W2 = Math.max(W, rootW + 2 * M);
   const x = {};
@@ -255,7 +255,7 @@ function drawTree(name) {
   const t = trees[name], svg = $(".tree", arm(name));
   svg.textContent = "";
   const wrap = svg.parentElement;
-  const W = Math.max(320, (wrap.clientWidth || 336) - 16);
+  const W = Math.max(320, (wrap.clientWidth || 360) - 24);
   const {x, W: W2, H, levelY, rootAt} = layout(t, W);
   svg.style.width = "100%";
   svg.style.minWidth = W2 + "px";
@@ -264,18 +264,16 @@ function drawTree(name) {
   svg.setAttribute("preserveAspectRatio", "xMidYMin meet");
   if (t.root === null) {
     svg.appendChild(el("text", {x: W2 / 2, y: H / 2, fill: "#94a3b8",
-      "text-anchor": "middle", "font-size": 12}, "waiting..."));
+      "text-anchor": "middle", "font-size": 13}, "waiting..."));
     return;
   }
-  const rootX = rootAt.x;
-  const rw = Math.min(220, W2 - 2 * M);
-  const rx = rootX - rw / 2;
-  svg.appendChild(el("rect", {x: rx, y: 7, width: rw, height: 30, rx: 8,
-    fill: "#eff6ff", stroke: "#bfdbfe"}));
-  svg.appendChild(el("text", {x: rootX, y: 22, "font-size": 11,
-    "font-weight": 600, fill: "#2563eb", "text-anchor": "middle"}, "SHARED CONTEXT"));
-  svg.appendChild(el("text", {x: rootX, y: 34, "font-size": 9,
-    fill: "#64748b", "text-anchor": "middle"},
+  const rw = Math.min(200, W2 - 2 * M);
+  svg.appendChild(el("rect", {x: rootAt.x - rw / 2, y: 6, width: rw,
+    height: 30, rx: 15, fill: "#dbeafe", stroke: "#93c5fd"}));
+  svg.appendChild(el("text", {x: rootAt.x, y: 20, "text-anchor": "middle",
+    "font-size": 11, "font-weight": 700, fill: "#1d4ed8"}, "SHARED CONTEXT"));
+  svg.appendChild(el("text", {x: rootAt.x, y: 30, "text-anchor": "middle",
+    "font-size": 9, fill: "#64748b"},
     t.root.charged.toLocaleString() + " tok"));
 
   for (const n of t.nodes) {
@@ -283,37 +281,38 @@ function drawTree(name) {
     if (cx === undefined) continue;
     const dead = !alive(t, n);
     const from = t.byId[n.parent]
-      ? {x: x[n.parent], y: levelY[t.byId[n.parent].depth] + BH / 2}
+      ? {x: x[n.parent], y: levelY[t.byId[n.parent].depth] +
+         NODE_H[t.byId[n.parent].depth] / 2}
       : rootAt;
     const g = el("g", {});
     if (!t.seen.has(n.id)) { g.setAttribute("class", "pop"); t.seen.add(n.id); }
     else if (dead && !t.reaped.has(n.id)) {
       g.setAttribute("class", "reap"); t.reaped.add(n.id);
     }
-    const bw = NODE_W[n.depth];
-    const tagFS = n.depth === 1 ? 9 : 10;
-    const numFS = 8;
+    const w = NODE_W[n.depth], h = NODE_H[n.depth];
+    const r = n.depth === 1 ? 10 : 7;
     g.appendChild(el("path", {
-      d: `M${from.x},${from.y} C${from.x},${from.y + 18} ${cx},${y - 18} ${cx},${y - BH / 2}`,
-      fill: "none", "stroke-width": n.depth === 1 ? 1.6 : 1.2,
+      d: `M${from.x},${from.y} C${from.x},${from.y + 16} ${cx},${y - 16} ${cx},${y - h / 2}`,
+      fill: "none", "stroke-width": n.depth === 1 ? 1.8 : 1.2,
       stroke: dead ? "#cbd5e1" : EDGE[n.hit],
       "stroke-dasharray": dead ? "3 2" : "none"}));
-    g.appendChild(el("rect", {x: cx - bw / 2, y: y - BH / 2, width: bw,
-      height: BH, rx: 6,
+    g.appendChild(el("rect", {x: cx - w / 2, y: y - h / 2, width: w,
+      height: h, rx: r,
       fill: dead ? "#f8fafc" : FILL[n.hit],
-      stroke: dead ? "#e2e8f0" : STROKE[n.hit]}));
+      stroke: dead ? "#e2e8f0" : STROKE[n.hit], "stroke-width": 1.5}));
     const label = n.depth === 1 ? (n.plan || "").slice(0, 14) : ("+" + n.charged);
-    const label2 = n.depth === 1 ? ("+" + n.charged) : "";
-    g.appendChild(el("text", {x: cx, y: y - BH / 2 + 12, "text-anchor": "middle",
-      "font-size": tagFS, "font-weight": 600,
+    const sub = n.depth === 1 ? (n.passed ? "PASS" : "...") : "";
+    g.appendChild(el("text", {x: cx, y: y - h / 2 + 13, "text-anchor": "middle",
+      "font-size": n.depth === 1 ? 10 : 11, "font-weight": 600,
       fill: dead ? "#94a3b8" : INK[n.hit]}, label));
-    if (label2) {
-      g.appendChild(el("text", {x: cx, y: y + BH / 2 - 4, "text-anchor": "middle",
-        "font-size": numFS, fill: dead ? "#cbd5e1" : "#64748b"}, label2));
+    if (sub) {
+      g.appendChild(el("text", {x: cx, y: y + h / 2 - 5, "text-anchor": "middle",
+        "font-size": 8, fill: dead ? "#cbd5e1" : "#64748b"}, sub));
     }
-    if (n.passed && n.depth > 1) {
-      g.appendChild(el("circle", {cx: cx + bw / 2 - 5, cy: y - BH / 2 + 5, r: 4,
-        fill: dead ? "#cbd5e1" : "#16a34a"}));
+    if (n.depth > 1) {
+      const dotFill = dead ? "#cbd5e1" : (n.passed ? "#22c55e" : "#ef4444");
+      g.appendChild(el("circle", {cx: cx + w / 2 - 5, cy: y - h / 2 + 5, r: 3.5,
+        fill: dotFill}));
     }
     svg.appendChild(g);
   }
@@ -322,22 +321,17 @@ function drawTree(name) {
     "font-size": 9, fill: "#94a3b8"}, label));
 }
 function redraw(name) { requestAnimationFrame(() => drawTree(name)); }
-function kv(name, used, cap) {
-  const a = arm(name), pct = cap ? Math.min(100, 100 * used / cap) : 0;
-  $(".kv i", a).style.width = pct + "%";
-  $(".kv b", a).textContent = used.toLocaleString() + " / " + cap.toLocaleString();
-  $(".kvlabel", a).textContent = "KV pool used";
+function updateMetrics(name) {
+  const m = metrics[name];
+  const rootPct = m.total ? Math.round(100 * m.root / m.total) : 0;
+  const subPct = m.total ? Math.round(100 * m.subtree / m.total) : 0;
+  $(`#m-${name}-prefill`).textContent = m.prefill.toLocaleString();
+  $(`#m-${name}-subtree`).textContent = subPct + "%";
+  $(`#m-${name}-root`).textContent = rootPct + "%";
 }
-function updateStatbar(name, d) {
-  const a = arm(name);
-  const hit = Math.round(100 * (d ? d.hit_rate : 0));
-  const sub = Math.round(100 * (d ? d.subtree_rate : 0));
-  const pre = d ? d.prefill.toLocaleString() : "0";
-  $(".statbar", a).innerHTML =
-    "<span>root " + hit + "%</span>" +
-    "<span>lineage " + sub + "%</span>" +
-    "<span>prefill " + pre + "</span>" +
-    (d && d.verified ? "<span style='color:var(--green);font-weight:600'>verified</span>" : "");
+function kv(name, used, cap) {
+  const pct = cap ? Math.min(100, 100 * used / cap) : 0;
+  $(`#kv-${name}`).style.width = pct + "%";
 }
 function tick(name, d) {
   const ticker = $(".ticker", arm(name));
@@ -345,90 +339,90 @@ function tick(name, d) {
   row.className = "ticker-row";
   const tag = {subtree: "HIT", root: "ROOT", miss: "MISS"}[d.hit_level];
   row.innerHTML =
-    "<span class='n'>" + esc(d.label) + " " + (d.idx + 1) + "/" + d.total + 
-      "</span>" +
-    "<span class='hl' style='color:" + INK[d.hit_level] + "'>" + tag + "</span>" +
-    "<span class='ch'>+" + d.charged.toLocaleString() + "</span>" +
-    "<span style='color:" + (d.passed ? "var(--green)" : "var(--red)") + "'>" +
-      (d.passed ? "PASS" : "FAIL") + "</span>";
+    `<span class="dim">${esc(d.label)} ${d.idx + 1}/${d.total}</span>` +
+    `<span class="tag" style="color:${INK[d.hit_level]}">${tag}</span>` +
+    `<span class="dim">+${d.charged.toLocaleString()}</span>` +
+    (d.passed ? `<span style="color:var(--green);font-weight:700">PASS</span>` : "");
   ticker.appendChild(row);
-  while (ticker.children.length > 4) ticker.removeChild(ticker.firstChild);
+  ticker.scrollTop = ticker.scrollHeight;
+  while (ticker.children.length > 5) ticker.removeChild(ticker.firstChild);
+}
+function setArmStatus(name, verified) {
+  const url = $(".url", arm(name));
+  if (!url.textContent.includes("verified"))
+    url.textContent += verified ? " · verified" : " · unverified";
 }
 const handlers = {
-  banner(d) {
-    $("#header").textContent = d.header;
-    const w = d.regime === "above"
-      ? "U > U*: neighbour evicts unpinned context"
-      : "U <= U*: context survives in both arms";
-    $("#math").innerHTML =
-      "<b>P</b> " + d.P + " &nbsp; " +
-      "<b>C</b> " + d.C + " &nbsp; " +
-      "<b>U</b> " + d.U + " &nbsp; " +
-      "<b>U*</b> " + d.Ustar + " &nbsp; " +
-      "<span style='color:var(--amber);font-weight:600'>" + w + "</span>";
-    document.querySelectorAll(".legend").forEach(n => n.innerHTML =
-      "<b>Tree:</b> root &rarr; approach &rarr; candidate &rarr; verify. " +
-      "<span class='g'>HIT</span> full lineage; " +
-      "<span class='a'>ROOT</span> shared only; " +
-      "<span class='r'>MISS</span> cold. Grey = killed; green dot = passed.");
-    redraw("stock"); redraw("agentfork");
-  },
+  banner(d) {},
   arm_start(d) {
     $(".url", arm(d.name)).textContent = d.url;
     status(WHO[d.name] + " started");
   },
   parent(d) {
-    $(".url", arm(d.name)).textContent += " · shared " + d.charged + " tok";
+    $(".url", arm(d.name)).textContent += ` · ${d.charged.toLocaleString()} tok`;
     kv(d.name, d.charged, d.capacity);
     trees[d.name].root = {charged: d.charged};
     redraw(d.name);
     status(WHO[d.name] + " loaded shared context");
   },
   child(d) {
-    const t = trees[d.name];
+    const t = trees[d.name], m = metrics[d.name];
     const node = {id: d.branch_id, parent: d.parent_branch, depth: d.depth,
                   hit: d.hit_level, charged: d.charged, passed: d.passed,
                   plan: d.plan || ""};
     t.nodes.push(node);
     t.byId[node.id] = node;
+    m.prefill += d.charged;
+    m.total++;
+    if (d.hit_level === "subtree") { m.subtree++; m.root++; }
+    else if (d.hit_level === "root") m.root++;
+    updateMetrics(d.name);
     redraw(d.name);
     tick(d.name, d);
     status(WHO[d.name] + " " + d.label + " " + (d.idx + 1) + "/" + d.total +
-           ": " + HITSAID[d.hit_level] + " (+" + d.charged.toLocaleString() + ")");
+           ": " + HITSAID[d.hit_level]);
   },
   kv(d) { kv(d.name, d.used, d.capacity); },
   kills(d) {
     trees[d.name].killed = true;
     redraw(d.name);
-    $(".ev", arm(d.name)).textContent = "reaped " + d.n + " losers; freed " + d.freed.toLocaleString() + " tok";
     status(WHO[d.name] + " reaped " + d.n + " losers");
   },
   arm_done(d) {
-    updateStatbar(d.name, d);
-    $(".done", arm(d.name)).innerHTML =
-      (d.verified ? "<span style='color:var(--green);font-weight:600'>VERIFIED</span>" : "UNVERIFIED") +
-      " &nbsp; prefill " + d.prefill.toLocaleString();
+    const m = metrics[d.name];
+    m.verified = d.verified;
+    updateMetrics(d.name);
+    setArmStatus(d.name, d.verified);
+    $(`#m-${d.name}-prefill`).classList.add(d.verified ? "win" : "lose");
     redraw(d.name);
-    status(WHO[d.name] + " done: root " + Math.round(100 * d.hit_rate) +
-      "%, prefill " + d.prefill.toLocaleString());
+    status(WHO[d.name] + " done — prefill " + d.prefill.toLocaleString() +
+           (d.verified ? " (verified)" : ""));
   },
   scoreboard(d) {
-    $("#score").classList.remove("hidden");
-    $("#score").innerHTML =
+    const sb = $("#scoreboard");
+    sb.classList.add("open");
+    const winner = metrics.agentfork.prefill < metrics.stock.prefill
+      ? "AGENTFORK" : "STOCK";
+    const rows = d.rows.map(r =>
+      "<tr" + (r[0].toLowerCase().includes("prefill") ? " class='winner'" : "") +
+      "><td>" + esc(r[0]) + "</td><td>" + esc(r[1]) + "</td><td>" + esc(r[2]) + "</td></tr>"
+    ).join("");
+    sb.innerHTML =
+      "<h3>" + winner + " wins on prefill tokens</h3>" +
       "<table><thead><tr><th>metric</th><th>STOCK</th><th>AGENTFORK</th></tr></thead><tbody>" +
-      d.rows.map(r =>
-        "<tr><td class='k'>" + esc(r[0]) + "</td>" +
-        "<td class='v'>" + esc(r[1]) + "</td>" +
-        "<td class='v'>" + esc(r[2]) + "</td></tr>").join("") +
-      "</tbody></table>";
+      rows + "</tbody></table>";
     $("#foot").innerHTML =
       "<details><summary>honest caveats</summary>" +
       esc(d.notes).replace(/\\n/g, "<br>") + "</details>";
     redraw("stock"); redraw("agentfork");
-    status("Race finished.");
+    status(winner + " wins — see scoreboard below");
   },
 };
-handlers.started = () => { $("#gate").classList.add("hidden"); status("Race running..."); };
+handlers.started = () => {
+  $("#startbtn").disabled = true;
+  $("#startbtn").textContent = "racing...";
+  status("Race running...");
+};
 $("#startbtn").onclick = () => {
   $("#startbtn").disabled = true;
   $("#startbtn").textContent = "racing...";
