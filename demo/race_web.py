@@ -28,14 +28,14 @@ PAGE = """<!doctype html>
          --red:#dc2626; --amber:#b45309; }
  * { box-sizing: border-box; }
  html, body { height: 100vh; margin: 0; overflow: hidden; }
- body { display: flex; flex-direction: column; padding: 10px 12px; gap: 6px;
+ body { display: flex; flex-direction: column; padding: 8px 10px; gap: 5px;
         background: var(--bg); color: var(--ink);
-        font: 12px/1.4 ui-sans-serif,system-ui,-apple-system,"Segoe UI",
+        font: 12px/1.3 ui-sans-serif,system-ui,-apple-system,"Segoe UI",
              Roboto,Inter,sans-serif; }
  code, .mono, td.num { font-family: ui-monospace,SFMono-Regular,Menlo,monospace; }
- h1 { font-size: 16px; margin: 0 0 2px; letter-spacing: -.3px; }
- .intro { font-size: 11.5px; max-width: 980px; color: #334155;
-          line-height: 1.45; margin-bottom: 4px; }
+ h1 { font-size: 15px; margin: 0 0 1px; letter-spacing: -.2px; }
+ .intro { font-size: 11px; max-width: 900px; color: #334155;
+          line-height: 1.35; margin-bottom: 2px; }
  .intro b { color: var(--blue); }
  .top { flex: none; }
  .sub { color: var(--mute); white-space: pre-wrap; font-size: 10.5px;
@@ -44,7 +44,7 @@ PAGE = """<!doctype html>
            font-weight: 500; }
  .card { background: var(--panel); border: 1px solid var(--line);
          border-radius: 10px; box-shadow: 0 1px 2px rgba(15,23,42,.06); }
- .math { padding: 6px 8px; font-size: 11px; }
+ .math { padding: 4px 6px; font-size: 10px; }
  .math b { font-family: ui-monospace,SFMono-Regular,Menlo,monospace; }
  .math span { color: var(--mute); }
  .warn { color: var(--amber); font-weight: 600; }
@@ -58,44 +58,46 @@ PAGE = """<!doctype html>
  #startbtn[disabled] { background: #93c5fd; cursor: default; }
  .gatehint { color: var(--mute); font-size: 10px; max-width: 640px; }
  .arms { flex: 1 1 0; display: grid; grid-template-columns: 1fr 1fr;
-         grid-template-rows: minmax(0, 1fr);
+         grid-template-rows: minmax(240px, 1fr);
          gap: 10px; min-height: 0; overflow: hidden;
-         margin-bottom: 4px; }
+         margin-bottom: 2px; }
  @media (max-width: 1000px) { .arms { grid-template-columns: 1fr; } }
- .arm { padding: 8px; display: flex; flex-direction: column;
-        gap: 4px; min-width: 0; min-height: 0; height: 100%; }
+ .arm { padding: 6px; display: flex; flex-direction: column;
+        gap: 3px; min-width: 0; min-height: 0; height: 100%; }
  .arm h2 { font-size: 11px; margin: 0; letter-spacing: .08em;
            color: var(--blue); }
  #arm-stock h2 { color: var(--mute); }
  .arm .url { color: var(--mute); font-size: 10px; margin-bottom: 1px; }
- .tree-wrap { flex: 1 1 0; min-height: 50px; position: relative; }
+ .tree-wrap { flex: 1 1 0; min-height: 110px; position: relative;
+              overflow: hidden; }
  .tree { position: absolute; inset: 0; width: 100%; height: 100%;
          display: block; }
- .legend { color: var(--mute); font-size: 9.5px; line-height: 1.35; }
+ .legend { color: var(--mute); font-size: 9px; line-height: 1.25; }
  .legend b { font-weight: 600; }
  .legend .g { color: var(--green); } .legend .r { color: var(--red); }
  .legend .a { color: var(--amber); }
- .kv { height: 14px; background: #eef2f7; border-radius: 4px;
+ .kv { height: 12px; background: #eef2f7; border-radius: 4px;
        overflow: hidden; position: relative; border: 1px solid var(--line); }
  .kv i { display: block; height: 100%; width: 0; background: #bfdbfe;
          transition: width .2s; }
  .kv b { position: absolute; inset: 0; text-align: center; font-weight: 600;
-         font-size: 9.5px; line-height: 12px;
+         font-size: 9px; line-height: 10px;
          font-family: ui-monospace,SFMono-Regular,Menlo,monospace; }
- .kvlabel { color: var(--mute); font-size: 10px; }
- .statbar { display: flex; flex-wrap: wrap; gap: 4px; font-size: 10px;
-            margin-top: 1px; }
+ .kvlabel { color: var(--mute); font-size: 9px; }
+ .statbar { display: flex; flex-wrap: wrap; gap: 3px; font-size: 9.5px; }
  .statbar span { background: #f1f5f9; padding: 1px 5px; border-radius: 4px; }
- .ticker { height: 44px; overflow: hidden; flex: none;
-           border-top: 1px solid var(--line); padding-top: 2px; }
- .ticker > div { font-size: 10.5px; padding: 1px 0;
+ .ticker { height: 34px; overflow: hidden; flex: none;
+           border-top: 1px solid var(--line); padding-top: 1px; }
+ .ticker > div { font-size: 10px; padding: 1px 0;
                  display: flex; gap: 8px; color: #334155; }
  .ticker .n { color: var(--mute); flex: none; }
  .ticker .hl { flex: none; font-weight: 600; }
  .ticker .ch { flex: none; font-family: ui-monospace,Menlo,monospace; }
  .ev { color: var(--amber); font-size: 10.5px; margin-top: 1px; }
  .done { font-size: 10.5px; margin-top: 1px; }
- #score { flex: none; max-height: 150px; padding: 5px 10px; overflow-y: auto; overflow-x: hidden; }
+ #score { flex: none; height: 155px; padding: 4px 10px; overflow-y: auto; overflow-x: hidden; }
+ #score::-webkit-scrollbar { width: 6px; }
+ #score::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
  #score.hidden { display: none; }
  #score table { width: 100%; border-collapse: collapse; font-size: 9.5px;
                 line-height: 1.25; }
@@ -107,7 +109,7 @@ PAGE = """<!doctype html>
  #score th { text-align: right; font-size: 9px; color: var(--mute);
              padding: 0 3px 1px; font-weight: 600; }
  #score th:first-child { text-align: left; }
- .foot { color: var(--mute); font-size: 9px; line-height: 1.35;
+ .foot { color: var(--mute); font-size: 9px; line-height: 1.3;
          max-width: 980px; }
  .foot details { margin: 0; }
  .foot summary { cursor: pointer; color: var(--blue); font-weight: 600; }
@@ -138,7 +140,7 @@ pins its branch tree so it cannot be evicted. Same bug, same load, same noise.</
 <div class="arms">
   <div class="arm card" id="arm-stock">
     <h2>STOCK</h2><div class="url"></div>
-    <div class="tree-wrap"><svg class="tree" viewBox="0 0 460 220" preserveAspectRatio="xMidYMid meet"></svg></div>
+    <div class="tree-wrap"><svg class="tree"></svg></div>
     <div class="legend"></div>
     <div class="kv"><i></i><b></b></div><div class="kvlabel">KV pool used</div>
     <div class="statbar"><span>root hit 0%</span><span>lineage hit 0%</span><span>prefill 0</span></div>
@@ -147,7 +149,7 @@ pins its branch tree so it cannot be evicted. Same bug, same load, same noise.</
   </div>
   <div class="arm card" id="arm-agentfork">
     <h2>AGENTFORK</h2><div class="url"></div>
-    <div class="tree-wrap"><svg class="tree" viewBox="0 0 460 220" preserveAspectRatio="xMidYMid meet"></svg></div>
+    <div class="tree-wrap"><svg class="tree"></svg></div>
     <div class="legend"></div>
     <div class="kv"><i></i><b></b></div><div class="kvlabel">KV pool used</div>
     <div class="statbar"><span>root hit 0%</span><span>lineage hit 0%</span><span>prefill 0</span></div>
@@ -176,7 +178,6 @@ const trees = {
   agentfork: {root: null, nodes: [], byId: {}, killed: false,
               seen: new Set(), reaped: new Set()},
 };
-const LEVEL_Y = {1: 84, 2: 142, 3: 198};
 const FILL = {subtree: "#f0fdf4", root: "#fffbeb", miss: "#fef2f2"};
 const STROKE = {subtree: "#bbf7d0", root: "#fde68a", miss: "#fecaca"};
 const EDGE = {subtree: "#86efac", root: "#fcd34d", miss: "#fecaca"};
@@ -194,8 +195,10 @@ function alive(t, n) {
   return true;
 }
 function layout(t, W) {
+  const M = 16;
   const depths = [3, 2, 1];
   const x = {};
+  const steps = {};
   for (const d of depths) {
     const row = t.nodes.filter(n => n.depth === d);
     if (!row.length) continue;
@@ -203,13 +206,15 @@ function layout(t, W) {
     const parents = [];
     for (const n of placed) if (!parents.includes(n.parent)) parents.push(n.parent);
     const gap = 0.5 * (parents.length - 1);
-    const step = Math.min(46, (W - 44) / Math.max(placed.length + gap, 8));
+    const maxStep = d === 1 ? 120 : 56;
+    const step = Math.min(maxStep, Math.max(18, (W - 2 * M) / Math.max(placed.length + gap, 3)));
+    steps[d] = step;
     const span = step * (placed.length + gap);
     const anchor = placed.length && x[placed[0].parent] !== undefined
       ? x[placed[0].parent] : W / 2;
     const start = d === 3
-      ? Math.max(24, Math.min(W - 24 - span, anchor - span / 2))
-      : 22 + (W - 44 - span) / 2;
+      ? Math.max(M, Math.min(W - M - span, anchor - span / 2))
+      : M + (W - 2 * M - span) / 2;
     let slot = 0, prev = null;
     for (const n of placed) {
       if (prev !== null && n.parent !== prev) slot += 0.5;
@@ -223,57 +228,76 @@ function layout(t, W) {
       if (kids.length) x[n.id] = kids.reduce((a, b) => a + b, 0) / kids.length;
     }
   }
-  return {x: x, step: Math.min(46, (W - 44) / 8)};
+  return {x: x, steps: steps, step: steps[2] || steps[1] || 30};
 }
 function drawTree(name) {
   const t = trees[name], svg = $(".tree", arm(name));
   svg.textContent = "";
-  const W = 460;
+  const wrap = svg.parentElement;
+  const W = Math.max(280, wrap.clientWidth || 460);
+  const H = Math.max(150, wrap.clientHeight || 220);
+  svg.setAttribute("viewBox", "0 0 " + W + " " + H);
   if (t.root === null) {
-    svg.appendChild(el("text", {x: 14, y: 20, fill: "#94a3b8",
-      "font-size": 12}, "waiting for the shared context..."));
+    svg.appendChild(el("text", {x: W / 2, y: H / 2, fill: "#94a3b8",
+      "text-anchor": "middle", "font-size": 12}, "waiting for the shared context..."));
     return;
   }
-  const {x} = layout(t, W);
-  const rw = 168, rx = (W - rw) / 2, RY = 22;
-  svg.appendChild(el("rect", {x: rx, y: RY - 18, width: rw, height: 36, rx: 10,
+  const {x, steps} = layout(t, W);
+  const RY = Math.max(20, H * 0.14);
+  const rootAt = {x: W / 2, y: RY + 14};
+  const rw = Math.min(190, W - 40);
+  const rx = (W - rw) / 2;
+  const titleFS = Math.min(12, Math.max(9, W / 50));
+  const tokFS = Math.min(11, Math.max(9, W / 55));
+  svg.appendChild(el("rect", {x: rx, y: RY - 16, width: rw, height: 32, rx: 10,
     fill: "#eff6ff", stroke: "#bfdbfe"}));
-  svg.appendChild(el("text", {x: rx + 12, y: RY - 4, "font-size": 10,
+  svg.appendChild(el("text", {x: rx + 12, y: RY - 2, "font-size": titleFS,
     "font-weight": 600, fill: "#2563eb"}, "ROOT CONTEXT"));
-  svg.appendChild(el("text", {x: rx + 12, y: RY + 10, "font-size": 11,
+  svg.appendChild(el("text", {x: rx + 12, y: RY + 12, "font-size": tokFS,
     fill: "#0f172a", "font-family": "ui-monospace,Menlo,monospace"},
     t.root.charged.toLocaleString() + " tok shared prefix"));
-  const rootAt = {x: W / 2, y: RY + 18};
+
+  const LY1 = RY + 38;
+  const LY2 = Math.max(LY1 + 40, H * 0.40);
+  const LY3 = Math.max(LY2 + 40, H * 0.66);
+  const levelY = {1: LY1, 2: LY2, 3: LY3};
+
   for (const n of t.nodes) {
-    const cx = x[n.id], y = LEVEL_Y[n.depth];
+    const cx = x[n.id], y = levelY[n.depth];
     if (cx === undefined) continue;
     const dead = !alive(t, n);
     const from = t.byId[n.parent]
-      ? {x: x[n.parent], y: LEVEL_Y[t.byId[n.parent].depth] + 14} : rootAt;
+      ? {x: x[n.parent], y: levelY[t.byId[n.parent].depth] + 12} : rootAt;
     const g = el("g", {});
     if (!t.seen.has(n.id)) { g.setAttribute("class", "pop"); t.seen.add(n.id); }
     else if (dead && !t.reaped.has(n.id)) {
       g.setAttribute("class", "reap"); t.reaped.add(n.id);
     }
+    const s = steps[n.depth] || 40;
+    const bw = n.depth === 1
+      ? Math.min(110, Math.max(52, s - 10))
+      : Math.min(52, Math.max(22, s - 6));
+    const bh = Math.min(30, Math.max(22, H / 9));
+    const tagFS = Math.max(7, Math.min(10, bw / 6));
+    const numFS = Math.max(6, Math.min(9, bw / 7));
     g.appendChild(el("path", {
-      d: `M${from.x},${from.y} C${from.x},${from.y + 24} ${cx},${y - 30} ${cx},${y - 14}`,
+      d: `M${from.x},${from.y} C${from.x},${from.y + 24} ${cx},${y - 24} ${cx},${y - bh / 2}`,
       fill: "none", "stroke-width": n.depth === 1 ? 1.8 : 1.4,
       stroke: dead ? "#cbd5e1" : EDGE[n.hit],
       "stroke-dasharray": dead ? "3 3" : "none"}));
-    const bw = n.depth === 1 ? 76 : 38;
-    g.appendChild(el("rect", {x: cx - bw / 2, y: y - 14, width: bw,
-      height: 28, rx: 8,
+    g.appendChild(el("rect", {x: cx - bw / 2, y: y - bh / 2, width: bw,
+      height: bh, rx: 7,
       fill: dead ? "#f1f5f9" : FILL[n.hit],
       stroke: dead ? "#e2e8f0" : STROKE[n.hit]}));
-    g.appendChild(el("text", {x: cx, y: y - 1, "text-anchor": "middle",
-      "font-size": n.depth === 1 ? 9 : 10, "font-weight": 600,
-      fill: dead ? "#94a3b8" : INK[n.hit]},
-      n.depth === 1 ? n.plan : TAG[n.hit]));
-    g.appendChild(el("text", {x: cx, y: y + 10, "text-anchor": "middle",
-      "font-size": 8, fill: dead ? "#cbd5e1" : "#64748b"},
-      (n.depth === 1 ? TAG[n.hit] + " " : "") + "+" + n.charged));
+    const label1 = n.depth === 1 ? n.plan : TAG[n.hit];
+    const label2 = (n.depth === 1 ? TAG[n.hit] + " " : "") + "+" + n.charged;
+    g.appendChild(el("text", {x: cx, y: y - bh / 2 + tagFS + 2, "text-anchor": "middle",
+      "font-size": tagFS, "font-weight": 600,
+      fill: dead ? "#94a3b8" : INK[n.hit]}, label1));
+    g.appendChild(el("text", {x: cx, y: y + bh / 2 - 3, "text-anchor": "middle",
+      "font-size": numFS, fill: dead ? "#cbd5e1" : "#64748b"}, label2));
     if (n.passed && n.depth > 1) {
-      g.appendChild(el("circle", {cx: cx + bw / 2 - 4, cy: y - 14, r: 4,
+      g.appendChild(el("circle", {cx: cx + bw / 2 - 4, cy: y - bh / 2, r: 4,
         fill: dead ? "#cbd5e1" : "#16a34a"}));
     }
     svg.appendChild(g);
@@ -283,9 +307,10 @@ function drawTree(name) {
         ? "losing subtrees reaped; winner re-forked to verify"
         : "losing candidates and their approach subtrees reaped")
     : "fan-out in progress";
-  svg.appendChild(el("text", {x: W - 14, y: 14, "text-anchor": "end",
-    "font-size": 10, fill: "#94a3b8"}, label));
+  svg.appendChild(el("text", {x: W - 10, y: 12, "text-anchor": "end",
+    "font-size": 9, fill: "#94a3b8"}, label));
 }
+function redraw(name) { requestAnimationFrame(() => drawTree(name)); }
 function kv(name, used, cap) {
   const a = arm(name), pct = cap ? Math.min(100, 100 * used / cap) : 0;
   $(".kv i", a).style.width = pct + "%";
@@ -340,7 +365,7 @@ const handlers = {
       "<span class='a'>ROOT</span> = kept shared context but re-paid approach; " +
       "<span class='r'>MISS</span> = re-prefilled everything. " +
       "Grey + dashed = killed. Green dot = tests pass.");
-    drawTree("stock"); drawTree("agentfork");
+    redraw("stock"); redraw("agentfork");
   },
   arm_start(d) {
     $(".url", arm(d.name)).textContent = d.url;
@@ -352,7 +377,7 @@ const handlers = {
       " &middot; shared context: " + d.charged + " tok";
     kv(d.name, d.charged, d.capacity);
     trees[d.name].root = {charged: d.charged};
-    drawTree(d.name);
+    redraw(d.name);
     status(WHO[d.name] + " prefilled the shared repo context: " +
            d.charged.toLocaleString() + " tokens");
   },
@@ -363,7 +388,7 @@ const handlers = {
                   plan: d.plan || ""};
     t.nodes.push(node);
     t.byId[node.id] = node;
-    drawTree(d.name);
+    redraw(d.name);
     tick(d.name, d);
     const what = d.label === "approach" ? "approach "
       : d.label === "verify" ? "verify " : "candidate ";
@@ -373,7 +398,7 @@ const handlers = {
   kv(d) { kv(d.name, d.used, d.capacity); },
   kills(d) {
     trees[d.name].killed = true;
-    drawTree(d.name);
+    redraw(d.name);
     $(".ev", arm(d.name)).textContent =
       "killed " + d.n + " losers: KV freed " + d.freed.toLocaleString() +
       " tok";
@@ -385,6 +410,7 @@ const handlers = {
     $(".done", arm(d.name)).innerHTML =
       (d.verified ? "<span class='pass'>VERIFIED</span>" : "UNVERIFIED") +
       " &nbsp; prefill " + d.prefill.toLocaleString() + " tok";
+    redraw(d.name);
     status(WHO[d.name] + " done: root hit " + Math.round(100 * d.hit_rate) +
       "%, prefill " + d.prefill.toLocaleString() + " tokens");
   },
@@ -400,6 +426,7 @@ const handlers = {
     $("#foot").innerHTML =
       "<details><summary>honest caveats</summary>" +
       esc(d.notes).replace(/\\n/g, "<br>") + "</details>";
+    redraw("stock"); redraw("agentfork");
     status("Race finished -- same verified fix, very different token bills.");
   },
 };
@@ -409,6 +436,7 @@ $("#startbtn").onclick = () => {
   $("#startbtn").textContent = "racing...";
   fetch("/start", {method: "POST"});
 };
+window.addEventListener("resize", () => { redraw("stock"); redraw("agentfork"); });
 const src = new EventSource("/events");
 const pending = [];
 let draining = false;
