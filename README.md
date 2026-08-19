@@ -40,6 +40,10 @@ protocols:
   forward stubbed on CPU), and `demo/integrated_demo.py` runs it together
   with a real sandbox under one orchestrator (see
   [report/RESULTS.md](report/RESULTS.md)).
+- **`agentfork.kvzip_router`** (`KVZipBackend`) is an optional, router-aware,
+  compressed KV-cache backend. It lets `ForkOrchestrator` fork and generate from
+  a learned, budget-controlled compression of the shared prefix. See
+  [docs/kvzip_router.md](docs/kvzip_router.md).
 
 Use it for:
 
