@@ -14,7 +14,6 @@ import threading
 import time
 from typing import TYPE_CHECKING
 
-from agentfork.app import amr
 
 if TYPE_CHECKING:
     from agentfork.app.engine import Engine
@@ -37,6 +36,7 @@ class AutoresearchLoop:
         if self.alive:
             return
         self._stop.clear()
+        self.engine.driven.add(self.project_id)
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
@@ -45,6 +45,9 @@ class AutoresearchLoop:
 
     def _set(self, **kw):
         self.engine.store.set_loop_state(self.project_id, **kw)
+
+    def _release(self) -> None:
+        self.engine.driven.discard(self.project_id)
 
     def _wait_runs(self, node_ids: list[str]) -> None:
         """Block until every eval for the given nodes has finished."""
@@ -100,12 +103,11 @@ class AutoresearchLoop:
                               message=f"gen {gen}: STALL — frontier unchanged")
                     break
             self._finish()
-        except amr.AmrError as exc:
-            self._set(state="error", message=str(exc))
-            _log.exception("loop failed")
         except Exception as exc:  # noqa: BLE001
             self._set(state="error", message=str(exc))
             _log.exception("loop failed")
+        finally:
+            self._release()
 
     def _finish(self) -> None:
         store = self.engine.store

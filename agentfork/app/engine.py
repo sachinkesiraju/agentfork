@@ -100,6 +100,10 @@ class Engine:
         self.home = home or (store.path.parent)
         self._orchestrators: dict[str, ForkOrchestrator] = {}
         self._sandboxes: dict[str, WorktreeSandbox] = {}
+        self._reconciled: set[str] = set()
+        # projects currently driven by an AutoresearchLoop; the loop owns the
+        # loop state while it runs, so single steps must not overwrite it
+        self.driven: set[str] = set()
         self._stop = threading.Event()
         self._poller = threading.Thread(target=self._poll_loop, daemon=True)
         self._poller.start()
@@ -123,7 +127,15 @@ class Engine:
     def results(self, project_id: str) -> amr.Results:
         return amr.Results(self.project_dir(project_id) / "results.tsv")
 
-    def _orchestrator(self, project: dict) -> ForkOrchestrator:
+    def _orchestrator(self, project: dict,
+                      reconcile: bool = True) -> ForkOrchestrator:
+        """The project's orchestrator, built on first use.
+
+        ``reconcile`` replays kill over rows loaded from a previous dashboard
+        process (the runtime cannot adopt another owner's sandbox handles or
+        KV state), which also removes their worktrees — so read-only callers
+        pass ``False`` and the collection happens on the first mutating use.
+        """
         orch = self._orchestrators.get(project["id"])
         if orch is None:
             base = self.project_dir(project["id"]) / _WORKTREES
@@ -132,13 +144,22 @@ class Engine:
             orch = ForkOrchestrator(
                 sandbox=sandbox,
                 registry_path=self.project_dir(project["id"]) / "orch.journal")
-            orch.reconcile()
             self._orchestrators[project["id"]] = orch
             self._sandboxes[project["id"]] = sandbox
+        if reconcile and project["id"] not in self._reconciled:
+            self._reconciled.add(project["id"])
+            orch.reconcile()
         return orch
 
     def _emit(self, project_id: str, kind: str, **payload) -> None:
         self.store.add_event(project_id, kind, payload)
+
+    def _set_step_state(self, project_id: str, **changes) -> None:
+        """Loop state for a single manual step, ignored while a loop drives
+        the project (its own state machine is authoritative then)."""
+        if project_id in self.driven:
+            return
+        self.store.set_loop_state(project_id, **changes)
 
     # -- projects ------------------------------------------------------------
 
@@ -235,10 +256,10 @@ class Engine:
             self._emit(project_id, "node.created", node_id=node["id"],
                        title=idea.title, gen=node["gen"],
                        parent_id=parent_node_id)
-        loop = self.store.loop_state(project_id)
-        self.store.set_loop_state(project_id, gen=parent["gen"] + 1,
-                                  state="running",
-                                  frontier=loop["frontier"])
+        self._set_step_state(project_id, gen=parent["gen"] + 1,
+                             state="running",
+                             message=f"gen {parent['gen'] + 1}: "
+                                     f"{len(nodes)} candidates")
         harness = build_harness(project["harness"])
         for node, idea in zip(nodes, ideas):
             self.start_worker(project, node, harness, idea)
@@ -308,17 +329,23 @@ class Engine:
         command = params["holdout_cmd"] if kind == "holdout" else params["eval_cmd"]
         if not command:
             raise EngineError(f"{kind} command is empty")
-        run_dir = self.project_dir(project_id) / _RUNS / f"{kind}-{node_id}"
+        # the run row comes first so its id keys the run directory: two runs
+        # of the same node (the baseline pair, a re-run) must not share a
+        # log, pid or exit_code file
+        run = self.store.create_run(project_id=project_id, node_id=node_id,
+                                    kind=kind, command=command,
+                                    run_dir="", status="queued")
+        run_dir = self.project_dir(project_id) / _RUNS / run["id"]
         run_dir.mkdir(parents=True, exist_ok=True)
         handle = runner.start(run_dir, command, node["worktree_path"],
                               env={"AGENTFORK_NODE": node_id,
+                                   "AGENTFORK_RUN": run["id"],
                                    "AGENTFORK_RUN_DIR": str(run_dir)})
-        self.store.update_node(node_id, status="running")
-        run = self.store.create_run(project_id=project_id, node_id=node_id,
-                                    kind=kind, command=command,
-                                    run_dir=str(run_dir), status="running")
-        self.store.update_run(run["id"], pid=handle.pid,
-                              started_at=time.time())
+        # a re-answer unfreezes the node so the new run's score lands on it
+        self.store.update_node(node_id, status="running", frozen=False)
+        run = self.store.update_run(run["id"], status="running",
+                                    run_dir=str(run_dir), pid=handle.pid,
+                                    started_at=time.time())
         self._emit(project_id, "run.started", run_id=run["id"],
                    node_id=node_id, run_kind=kind, pid=handle.pid)
         return run
@@ -328,8 +355,11 @@ class Engine:
         if run is None:
             raise EngineError(f"no such run: {run_id}")
         runner.kill(run["run_dir"])
-        self.store.update_run(run_id, status="killed", ended_at=time.time())
         self._emit(run["project_id"], "run.killed", run_id=run_id)
+        # settle the node too: a killed run still answers it (as a crash),
+        # otherwise the node is stuck "running" with nothing left to finish it
+        self._finish_run(run, runner_exit=runner.exit_code(run["run_dir"]),
+                         killed="killed")
         return self.store.run(run_id)
 
     # -- reduce ---------------------------------------------------------------
@@ -371,8 +401,20 @@ class Engine:
                     orch.kill(loser)
                 except Exception:  # noqa: BLE001 — keep going, reconcile later
                     _log.exception("kill failed for %s", loser)
-            self.store.set_loop_state(project_id, state="running", gen=gen,
+            # the frontier is state the loop reads back, so it is always
+            # written; only the human-facing state/message is step-scoped
+            self.store.set_loop_state(project_id, gen=gen,
                                       frontier=[s.commit for s in red.kept])
+            self._set_step_state(
+                project_id, state="ready",
+                message=f"gen {gen}: keeping "
+                        f"{', '.join(s.commit for s in red.kept)}")
+        else:
+            self._set_step_state(
+                project_id, gen=gen, state="stalled" if red.stall else "ready",
+                message=(f"gen {gen}: STALL — frontier unchanged"
+                         if red.stall else f"gen {gen}: nothing kept"))
+
         self._emit(project_id, "reduced", gen=gen,
                    kept=[s.commit for s in red.kept], stall=red.stall)
         return red
@@ -438,14 +480,10 @@ class Engine:
                     runner.kill(run_dir)
                     self._finish_run(run, runner_exit=None, killed="timeout")
                 continue
-            # a signalled run never writes exit_code; a run that was killed
-            # here one tick ago is finished again — distinguish by what the
-            # run was doing when we last saw it
+            # a run killed by a signal never writes exit_code
             exit_code = runner.exit_code(run_dir)
-            was_killed = (exit_code is None and run["status"] == "running"
-                          and (run.get("started_at") or 0) > 0)
             self._finish_run(run, runner_exit=exit_code,
-                             killed="killed" if was_killed else None)
+                             killed=None if exit_code is not None else "killed")
 
     def _finish_run(self, run: dict, runner_exit: int | None,
                     killed: str | None) -> None:
@@ -454,18 +492,21 @@ class Engine:
         node = self.store.node(run["node_id"])
         score = runner.extract_score(run["run_dir"], params["metric_grep"]) \
             if run["kind"] in ("eval", "holdout") else None
-        status = ("timeout" if killed else
+        status = (killed if killed else
                   "done" if runner_exit == 0 else
-                  "failed" if runner_exit is not None and runner_exit != 0
-                  else "killed")
+                  "failed" if runner_exit is not None else "killed")
         self.store.update_run(run["id"], status=status, exit_code=runner_exit,
                               score=score, ended_at=time.time())
         self._emit(run["project_id"], "run.finished", run_id=run["id"],
                    node_id=run["node_id"], status=status,
                    exit_code=runner_exit, score=score)
-        if run["kind"] in ("eval", "holdout") and node:
+        if run["kind"] in ("eval", "holdout") and node and not node["frozen"]:
+            # the baseline node is answered by a *pair* of runs, so it only
+            # freezes once _baseline_done has seen them all
+            freeze = node["gen"] > 0
             if score is None or status != "done":
-                self.store.update_node(node["id"], status="crash", frozen=True)
+                self.store.update_node(node["id"], status="crash",
+                                       frozen=freeze)
                 self.results(run["project_id"]).log(
                     node["gen"], node["id"], node["parent_id"] or "-",
                     None, "crash", f"{run['kind']} exited {runner_exit}")
@@ -475,13 +516,14 @@ class Engine:
                 delta = (score - parent["score"]
                          if parent and parent["score"] is not None else None)
                 self.store.update_node(node["id"], status="ran", score=score,
-                                       delta=delta, frozen=True)
+                                       delta=delta, frozen=freeze)
                 self.results(run["project_id"]).log(
                     node["gen"], node["id"], node["parent_id"] or "-",
                     score, "ran", node["title"],
                     costs=self._costs(run), regions=node["regions"])
-                if node["gen"] == 0:
-                    self._baseline_done(run["project_id"], node)
+            if node["gen"] == 0:
+                self._baseline_done(run["project_id"], node)
+            if score is not None and status == "done":
                 self._emit(run["project_id"], "node.scored",
                            node_id=node["id"], score=score, delta=delta)
 
@@ -491,22 +533,35 @@ class Engine:
         return {"seconds": round(time.time() - started, 3)}
 
     def _baseline_done(self, project_id: str, node: dict) -> None:
+        """Fix the noise margin once every baseline eval has settled.
+
+        Called after each baseline eval; the last one to finish wins. A
+        baseline eval that crashed or was killed still counts as settled, so
+        the margin is fixed from whatever scores exist rather than leaving the
+        project stuck in ``baseline`` forever.
+        """
+        evals = [r for r in self.store.runs(project_id, node["id"])
+                 if r["kind"] == "eval"]
+        if any(r["status"] in ("queued", "running") for r in evals):
+            return
         scores = [r.score for r in self.results(project_id).rows()
                   if r.gen == 0 and r.score is not None]
-        done = [r for r in self.store.runs(project_id, node["id"])
-                if r["status"] in ("done", "failed", "killed", "timeout")]
-        total = [r for r in self.store.runs(project_id, node["id"])
-                 if r["kind"] == "eval"]
-        if len(done) < len(total):
-            return  # other baseline evals still running
         if len(scores) >= 2:
             margin = abs(scores[0] - scores[1])
-            node_score = scores[0]
-            self.store.update_node(node["id"], score=node_score)
-            self.store.set_loop_state(project_id, state="ready", margin=margin,
+            self.store.update_node(node["id"], status="ran", score=scores[0],
+                                   frozen=True)
+            self.store.set_loop_state(project_id, margin=margin,
                                       frontier=[node["id"]])
+            self._set_step_state(
+                project_id, state="ready",
+                message=f"baseline {scores[0]:g}; noise margin {margin:g}")
             self._emit(project_id, "baseline.ready", node_id=node["id"],
-                       score=node_score, margin=margin)
+                       score=scores[0], margin=margin)
+        else:
+            self._set_step_state(
+                project_id, state="error",
+                message="baseline needs two scored runs to fix the noise "
+                        "margin; re-run it")
 
     # -- snapshots for the API -------------------------------------------------
 
@@ -517,13 +572,20 @@ class Engine:
                 str(self.results(project_id).path) or None}
 
     def metrics(self, project_id: str) -> dict:
-        orch = self._orchestrators.get(project_id)
-        if orch is None:
-            return {"orchestrator": {}, "kv": {}}
+        project = self.store.project(project_id)
+        if project is None:
+            return {"orchestrator": {}, "kv": {}, "branches": 0}
+        # built on demand (read-only) so the ledger still reports a project's
+        # branches after a dashboard restart
+        orch = self._orchestrator(project, reconcile=False)
         kv_stats = getattr(orch.kv, "stats", None)
         kv = kv_stats() if callable(kv_stats) else (kv_stats or {})
         if hasattr(kv, "__dict__"):
             kv = {**vars(kv), "dedup_ratio": kv.dedup_ratio}
+        live = [b for b in orch.branches() if b.state == "live"]
         return {"orchestrator": orch.metrics_snapshot(), "kv": kv,
-                "branches": len([b for b in orch.branches()
-                                 if b.state == "live"])}
+                "branches": len(live),
+                "worktrees": sum(
+                    1 for n in self.store.nodes(project_id)
+                    if n["worktree_path"]
+                    and Path(n["worktree_path"]).exists())}

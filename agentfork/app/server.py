@@ -124,18 +124,25 @@ def make_handler(app: App, ui_root: Path | None):
         def _error(self, code: int, msg: str) -> None:
             self._json(code, {"error": msg})
 
-        def _body(self) -> dict:
+        def _read_body(self) -> None:
+            """Drain the request body before routing.
+
+            The body must be consumed even when the route ignores it: on a
+            keep-alive connection the leftover bytes would otherwise be read
+            as the next request's request line (``{}GET /... -> 501``).
+            """
             length = int(self.headers.get("content-length") or 0)
-            if not length:
-                return {}
-            raw = self.rfile.read(length)
-            return json.loads(raw or b"{}")
+            self._raw_body = self.rfile.read(length) if length else b""
+
+        def _body(self) -> dict:
+            return json.loads(self._raw_body or b"{}")
 
         def _dispatch(self, method: str) -> None:
             url = urlparse(self.path)
             parts = [p for p in url.path.split("/") if p]
             query = parse_qs(url.query)
             try:
+                self._read_body()
                 out = self._route(method, parts, query)
             except (EngineError, amr.AmrError, ValueError, KeyError) as exc:
                 self._error(400, str(exc))

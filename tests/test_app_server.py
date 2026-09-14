@@ -161,3 +161,25 @@ def test_unknown_route_is_a_400(server):
     with pytest.raises(AssertionError) as e:
         _req(server, "GET", "/api/nothing")
     assert "400" in str(e.value)
+
+
+def test_keepalive_survives_a_post_whose_route_ignores_the_body(server, repo):
+    """A body left unread desyncs the connection and the next request on it
+    is parsed as ``{}GET /...`` (HTTP 501)."""
+    import http.client
+
+    p = _new_project(server, repo)
+    conn = http.client.HTTPConnection("127.0.0.1", server, timeout=30)
+    try:
+        for method, path in [("POST", f"/api/projects/{p['id']}/baseline"),
+                             ("GET", f"/api/projects/{p['id']}"),
+                             ("POST", f"/api/projects/{p['id']}/loop/stop"),
+                             ("GET", f"/api/projects/{p['id']}/runs")]:
+            conn.request(method, path, body=b"{}",
+                         headers={"content-type": "application/json"})
+            resp = conn.getresponse()
+            body = resp.read()
+            assert resp.status == 200, (method, path, resp.status, body[:200])
+            assert resp.getheader("content-type") == "application/json"
+    finally:
+        conn.close()

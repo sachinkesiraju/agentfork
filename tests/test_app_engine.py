@@ -316,3 +316,74 @@ def test_worktrees_are_isolated_between_candidates(engine, repo):
                             capture_output=True, text=True).stdout.strip()
              for n in nodes}
     assert len(heads) == 2
+
+
+def test_each_run_gets_its_own_run_directory(engine, repo):
+    """Two runs of one node must not share a log, pid or exit_code file."""
+    p = _project(engine, repo, eval_cmd="sleep 30", timeout_s=300)
+    engine.baseline(p["id"])
+    runs = engine.store.runs(p["id"])
+    assert len(runs) == 2
+    assert len({r["run_dir"] for r in runs}) == 2
+    for run in runs:
+        engine.kill_run(run["id"])
+
+
+def test_killing_one_run_leaves_its_sibling_alone(engine, repo):
+    p = _project(engine, repo, eval_cmd="sleep 30", timeout_s=300)
+    engine.baseline(p["id"])
+    first, second = engine.store.runs(p["id"])
+    engine.kill_run(first["id"])
+    assert engine.store.run(first["id"])["status"] == "killed"
+    assert engine.store.run(second["id"])["status"] == "running"
+    engine.kill_run(second["id"])
+
+
+def test_a_killed_run_settles_its_node(engine, repo):
+    p = _project(engine, repo)
+    root = engine.baseline(p["id"])
+    _wait(engine, [root["id"]])
+    nodes = engine.fan_out(p["id"], root["id"], [Idea("good", "a")])
+    _wait(engine, [n["id"] for n in nodes])
+    node = nodes[0]
+    run = engine.start_eval(p["id"], node["id"], force=True)
+    engine.kill_run(run["id"])
+    assert engine.store.run(run["id"])["status"] == "killed"
+    assert engine.store.node(node["id"])["status"] != "running"
+
+
+def test_baseline_with_one_unscored_run_does_not_stay_in_baseline(engine, repo):
+    p = _project(engine, repo, eval_cmd="sleep 30", timeout_s=300)
+    engine.baseline(p["id"])
+    for run in engine.store.runs(p["id"]):
+        engine.kill_run(run["id"])
+    assert engine.store.loop_state(p["id"])["state"] == "error"
+
+
+def test_manual_reduce_leaves_the_loop_idle_not_running(engine, repo):
+    p = _project(engine, repo)
+    root = engine.baseline(p["id"])
+    _wait(engine, [root["id"]])
+    nodes = engine.fan_out(p["id"], root["id"],
+                           [Idea("good", "a"), Idea("okay", "b")])
+    _wait(engine, [n["id"] for n in nodes])
+    engine.reduce(p["id"], 1)
+    assert engine.store.loop_state(p["id"])["state"] in ("ready", "stalled")
+
+
+def test_ledger_reports_the_tree_after_a_restart(engine, repo, tmp_path):
+    """A restarted dashboard cannot adopt the previous process's branches, but
+    the ledger must still account for the persisted tree instead of zeroes."""
+    p = _project(engine, repo)
+    root = engine.baseline(p["id"])
+    _wait(engine, [root["id"]])
+    engine.close()
+    restarted = Engine(engine.store, home=tmp_path / "home")
+    try:
+        metrics = restarted.metrics(p["id"])
+        assert restarted.store.nodes(p["id"])          # tree persisted
+        assert "reconciles" in metrics["orchestrator"]
+        assert "worktrees" in metrics
+        assert "dedup_ratio" in metrics["kv"]
+    finally:
+        restarted.close()

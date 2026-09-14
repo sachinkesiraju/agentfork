@@ -106,15 +106,15 @@ export default function ProjectPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {!hasBaseline ? (
+          {!hasBaseline && (
             <Button
-              variant="primary"
               disabled={!!busy}
               onClick={() => act("baseline", () => api.baseline(projectId))}
             >
               {busy === "baseline" ? "starting…" : `Run baseline ×${project.params.baseline_runs}`}
             </Button>
-          ) : looping ? (
+          )}
+          {looping ? (
             <Button variant="danger" onClick={() => act("stop", () => api.stopLoop(projectId))}>
               Stop autoresearch
             </Button>
@@ -124,7 +124,7 @@ export default function ProjectPage() {
               disabled={!!busy}
               onClick={() => act("loop", () => api.startLoop(projectId))}
             >
-              Start autoresearch
+              {busy === "loop" ? "starting…" : "Start autoresearch"}
             </Button>
           )}
         </div>
@@ -387,7 +387,7 @@ export default function ProjectPage() {
                 </div>
               ))}
               {!metrics?.kv || Object.keys(metrics.kv).length === 0 ? (
-                <Empty>No branches live yet.</Empty>
+                <Empty>No KV context resident yet.</Empty>
               ) : null}
             </dl>
           </Panel>
@@ -396,6 +396,10 @@ export default function ProjectPage() {
               <div className="flex justify-between">
                 <dt className="text-neutral-500">live branches</dt>
                 <dd>{metrics?.branches ?? 0}</dd>
+              </div>
+              <div className="flex justify-between">
+                <dt className="text-neutral-500">worktrees on disk</dt>
+                <dd>{metrics?.worktrees ?? 0}</dd>
               </div>
               {Object.entries(metrics?.orchestrator ?? {}).map(([k, v]) => (
                 <div key={k} className="flex justify-between">

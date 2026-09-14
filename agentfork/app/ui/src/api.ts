@@ -70,6 +70,7 @@ export type Metrics = {
   orchestrator: Record<string, number>;
   kv: Record<string, number>;
   branches?: number;
+  worktrees?: number;
 };
 
 export type Harnesses = Record<
