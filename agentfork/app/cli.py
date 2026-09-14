@@ -173,7 +173,7 @@ def main(argv: list[str] | None = None) -> int:
         params = {"eval_cmd": args.eval_cmd, "metric_grep": args.metric_grep,
                   "minimize": not args.maximize, "k": args.k, "b": args.b,
                   "timeout_s": args.timeout, "max_gens": args.max_gens,
-                  "holdout_cmd": args.holdout}
+                  "holdout_cmd": args.holdout_cmd}
         proj = _api(port, "POST", "/api/projects",
                     {"name": args.name or Path(args.path).resolve().name,
                      "repo_path": str(Path(args.path).resolve()),

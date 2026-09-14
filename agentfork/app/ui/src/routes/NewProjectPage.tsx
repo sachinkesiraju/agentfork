@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, Harnesses } from "../api";
-import { Button, Field, Input, Panel, Select } from "../components/ui";
+import { Button, ErrorNote, Field, Input, Panel, Select } from "../components/ui";
+import { Page, TopBar } from "../components/Shell";
 
 /** Onboarding: a repo plus the map-reduce parameter table. Nothing else is
  *  asked for, because eval_cmd + metric_grep are the whole contract. */
@@ -63,17 +64,24 @@ export default function NewProjectPage() {
   }
 
   return (
-    <div className="mx-auto max-w-3xl space-y-6 p-8">
-      <header className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold text-neutral-100">New project</h1>
-        <Link to="/" className="text-sm text-neutral-500 hover:underline">
-          cancel
+    <>
+      <TopBar>
+        <Link to="/" className="text-sm text-neutral-500 transition-colors hover:text-neutral-300">
+          Cancel
         </Link>
+      </TopBar>
+      <Page>
+      <header className="max-w-2xl space-y-2 pt-2">
+        <h1 className="text-2xl font-semibold tracking-tight text-neutral-50">New project</h1>
+        <p className="text-sm leading-relaxed text-neutral-400">
+          A project is a repo plus one fixed eval contract. Both are frozen once it exists —
+          that is what makes scores across generations comparable.
+        </p>
       </header>
 
-      <form onSubmit={submit} className="space-y-4">
-        <Panel title="Repository">
-          <div className="grid grid-cols-2 gap-3">
+      <form onSubmit={submit} className="max-w-3xl space-y-4">
+        <Panel title="Repository" subtitle="what gets branched, and who edits it">
+          <div className="grid gap-3 sm:grid-cols-2">
             <Field label="repo path" hint="absolute path to a git repo on this machine">
               <Input
                 required
@@ -105,8 +113,11 @@ export default function NewProjectPage() {
           </div>
         </Panel>
 
-        <Panel title="Eval contract">
-          <div className="grid grid-cols-2 gap-3">
+        <Panel
+          title="Eval contract"
+          subtitle="the orchestrator greps this score from the run log — never from the agent"
+        >
+          <div className="grid gap-3 sm:grid-cols-2">
             <Field label="eval_cmd" hint="fixed for the project's lifetime">
               <Input
                 required
@@ -138,8 +149,8 @@ export default function NewProjectPage() {
           </div>
         </Panel>
 
-        <Panel title="Search">
-          <div className="grid grid-cols-5 gap-3">
+        <Panel title="Search" subtitle="how wide each generation fans out, and how much survives">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
             <Field label="K" hint="ideas/gen">
               <Input type="number" min={1} value={form.k} onChange={(e) => set("k", e.target.value)} />
             </Field>
@@ -173,15 +184,17 @@ export default function NewProjectPage() {
           </div>
         </Panel>
 
-        {error && (
-          <p className="rounded border border-red-900 bg-red-950/50 px-3 py-2 text-sm text-red-200">
-            {error}
-          </p>
-        )}
-        <Button variant="primary" type="submit" disabled={busy}>
-          {busy ? "creating…" : "Create project"}
-        </Button>
+        {error && <ErrorNote>{error}</ErrorNote>}
+        <div className="flex items-center gap-3 pb-4">
+          <Button variant="primary" type="submit" disabled={busy}>
+            {busy ? "Creating…" : "Create project"}
+          </Button>
+          <span className="text-xs text-neutral-600">
+            Nothing runs until you start the baseline.
+          </span>
+        </div>
       </form>
-    </div>
+      </Page>
+    </>
   );
 }

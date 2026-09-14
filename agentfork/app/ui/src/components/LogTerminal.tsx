@@ -38,18 +38,27 @@ export default function LogTerminal({ runId }: { runId: string | null }) {
     boxRef.current?.scrollTo({ top: boxRef.current.scrollHeight });
   }, [text]);
 
-  if (!runId) return <Empty>Select a run to see its log.</Empty>;
+  if (!runId)
+    return (
+      <Empty title="No run selected">
+        Pick a run in the Runs tab, or click one from a node, to tail its output here.
+      </Empty>
+    );
+  const live = status === "running";
   return (
-    <div className="space-y-2">
-      <div className="mono flex items-center justify-between text-xs text-neutral-500">
-        <span>{runId}</span>
-        <span>{status}</span>
+    <div>
+      <div className="flex items-center justify-between gap-3 border-b border-neutral-800 bg-neutral-950/60 px-4 py-2">
+        <span className="mono truncate text-xs text-neutral-400">{runId}</span>
+        <span className="mono flex shrink-0 items-center gap-1.5 text-xs text-neutral-400">
+          {live && <span className="live-dot h-1.5 w-1.5 rounded-full bg-blue-400" />}
+          {status}
+        </span>
       </div>
       <pre
         ref={boxRef}
-        className="mono h-[420px] overflow-auto whitespace-pre-wrap rounded border border-neutral-800 bg-black/60 p-3 text-xs text-neutral-300"
+        className="mono h-[460px] overflow-auto whitespace-pre-wrap break-words bg-[#08080a] p-4 text-xs leading-relaxed text-neutral-300"
       >
-        {text || "(no output yet)"}
+        {text || <span className="text-neutral-600">waiting for output…</span>}
       </pre>
     </div>
   );
