@@ -17,8 +17,10 @@ exit codes, extracts scores, and logs to ``results.tsv``.
 from __future__ import annotations
 
 import logging
+import shutil
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from agentfork.app import amr, git, runner
@@ -60,15 +62,20 @@ class WorktreeSandbox(SandboxBackend):
 
     ``spawn`` creates branch ``af/<branch_id>`` from the parent's branch (or
     the baseline ref at the root) and checks it out; ``kill`` removes the
-    worktree but keeps the branch — it is the node's evidence.
+    worktree but keeps the branch — it is the node's evidence. Both halves
+    are restart-tolerant: a worktree that already exists is reattached as-is
+    (the checkout is disposable, the branch is not), and a kill of a branch
+    that still has a run inside it leaves the worktree alone.
     """
 
     parallel_lifecycle = True
 
-    def __init__(self, repo: str, base_dir: Path, baseline: str):
+    def __init__(self, repo: str, base_dir: Path, baseline: str,
+                 is_busy: Callable[[str], bool] | None = None):
         self.repo = repo
         self.base_dir = Path(base_dir)
         self.baseline = baseline
+        self.is_busy = is_busy or (lambda branch_id: False)
 
     def _branch(self, branch_id: str) -> str:
         # orchestrator child ids are "parent/n"; a git ref cannot be both a
@@ -79,11 +86,21 @@ class WorktreeSandbox(SandboxBackend):
         return self.base_dir / branch_id
 
     def spawn(self, branch_id: str, parent_id: str | None) -> None:
-        start = self._branch(parent_id) if parent_id else self.baseline
-        git.add_worktree(self.repo, self._path(branch_id),
-                         self._branch(branch_id), start)
+        path = self._path(branch_id)
+        if path.exists():
+            return  # reattach: the checkout is still on this node's branch
+        branch = self._branch(branch_id)
+        if not git.branch_exists(self.repo, branch):
+            start = self._branch(parent_id) if parent_id else self.baseline
+        else:
+            start = branch  # add_worktree checks an existing branch out as-is
+        git.add_worktree(self.repo, path, branch, start)
 
     def kill(self, branch_id: str) -> None:
+        if self.is_busy(branch_id):
+            # a detached run is still executing inside the worktree; leave the
+            # checkout in place — a later idle-time kill collects it
+            return
         git.remove_worktree(self.repo, self._path(branch_id))
 
     def alive(self, branch_id: str) -> bool:
@@ -105,6 +122,16 @@ class Engine:
         # loop state while it runs, so single steps must not overwrite it
         self.driven: set[str] = set()
         self._stop = threading.Event()
+        # workers run as threads of this process — a row still "running" here
+        # was orphaned by a previous dashboard; settle it so its node doesn't
+        # sit on "implementing" forever
+        for run in self.store.active_runs():
+            if run["kind"] == "worker":
+                self.store.update_run(run["id"], status="failed",
+                                      ended_at=time.time())
+                node = self.store.node(run["node_id"])
+                if node and node["status"] in ("proposed", "implementing"):
+                    self.store.update_node(node["id"], status="crash")
         self._poller = threading.Thread(target=self._poll_loop, daemon=True)
         self._poller.start()
 
@@ -115,7 +142,11 @@ class Engine:
         self._poller.join(timeout=5)
         for orch in self._orchestrators.values():
             try:
-                orch.close()
+                # shutdown only stops the reaper and drops the registry lock —
+                # it must not kill branches, or restarting the dashboard would
+                # delete worktrees under evals that are still running detached
+                orch.stop_reaper()
+                orch._release_registry_lock()
             except Exception:
                 pass
 
@@ -139,8 +170,9 @@ class Engine:
         orch = self._orchestrators.get(project["id"])
         if orch is None:
             base = self.project_dir(project["id"]) / _WORKTREES
-            sandbox = WorktreeSandbox(project["repo_path"], base,
-                                      project["baseline_branch"])
+            sandbox = WorktreeSandbox(
+                project["repo_path"], base, project["baseline_branch"],
+                is_busy=lambda bid, pid=project["id"]: self._node_busy(pid, bid))
             orch = ForkOrchestrator(
                 sandbox=sandbox,
                 registry_path=self.project_dir(project["id"]) / "orch.journal")
@@ -201,7 +233,9 @@ class Engine:
                            tokens=_tokenize(self._context(project_id)))
         node = self.store.create_node(
             project_id=project_id, parent_id=None, gen=0, slug="baseline",
-            branch_name=project["baseline_branch"], title="baseline",
+            # the worktree sits on the branch the orchestrator just made
+            # (af/<project_id>) — never on the user's baseline ref
+            branch_name="af/" + project_id, title="baseline",
             node_id=project_id, status="baseline",
             worktree_path=self._sandboxes[project_id].worktree(project_id),
             commit_sha=git.head_sha(project["repo_path"],
@@ -219,7 +253,14 @@ class Engine:
     def propose(self, project_id: str, parent_node_id: str, k: int) -> list[Idea]:
         project = self.store.project(project_id)
         harness = build_harness(project["harness"])
-        return harness.propose(self._context(project_id), k)
+        ctx = self._context(project_id)
+        parent = self.store.node(parent_node_id)
+        if parent is not None:
+            ctx += (f"\n\nThe parent candidate was {parent['title']!r} "
+                    f"(score {parent['score']}). Propose its children — each "
+                    "idea forks THIS parent's code and is scored relative to "
+                    "it.\n" + (parent["description"] or ""))
+        return harness.propose(ctx, k, cwd=project["repo_path"])
 
     def fan_out(self, project_id: str, parent_node_id: str,
                 ideas: list[Idea]) -> list[dict]:
@@ -238,6 +279,7 @@ class Engine:
             raise EngineError(f"{parent_node_id} is still {parent['status']} — "
                               "wait for its runs to finish")
         orch = self._orchestrator(project)
+        self._adopt_branch(orch, project, parent)
         children = orch.fork(parent_node_id, n=len(ideas))
         nodes = []
         for branch, idea in zip(children, ideas):
@@ -272,11 +314,12 @@ class Engine:
         inside the node's worktree, then the node is committed and queued for
         eval. For CLI harnesses the work is a process; for in-process
         harnesses (fake/api) we run it in a helper thread."""
-        run_dir = self.project_dir(project["id"]) / _RUNS / f"w-{node['id']}"
         run = self.store.create_run(project_id=project["id"],
                                     node_id=node["id"], kind="worker",
                                     command=f"harness:{harness.name}",
-                                    run_dir=str(run_dir), status="running")
+                                    run_dir="", status="running")
+        run_dir = self.project_dir(project["id"]) / _RUNS / run["id"]
+        self.store.update_run(run["id"], run_dir=str(run_dir))
         ctx = self._context(project["id"])
         t = threading.Thread(target=self._do_worker,
                              args=(project, node, harness, idea, ctx, run["id"]),
@@ -287,6 +330,12 @@ class Engine:
     def _do_worker(self, project, node, harness, idea, context, run_id):
         run_dir = Path(self.store.run(run_id)["run_dir"])
         run_dir.mkdir(parents=True, exist_ok=True)
+
+        def _aborted() -> bool:
+            """The run was killed/finished out from under the thread — stop
+            before committing or queueing an eval for it."""
+            return self.store.run(run_id)["status"] != "running"
+
         try:
             with (run_dir / runner.LOG).open("w") as log:
                 try:
@@ -296,6 +345,8 @@ class Engine:
                 except HarnessError as exc:
                     log.write(f"worker failed: {exc}\n")
                     raise
+            if _aborted():
+                return
             sha = git.commit_all(node["worktree_path"],
                                  f"agentfork: {idea.title}")
             self.store.update_run(run_id, status="done", ended_at=time.time())
@@ -305,6 +356,8 @@ class Engine:
             self.start_eval(project["id"], node["id"])
         except Exception as exc:  # noqa: BLE001 — worker failure → node crash
             _log.exception("worker failed for %s", node["id"])
+            if _aborted():
+                return
             self.store.update_run(run_id, status="failed", ended_at=time.time())
             self.store.update_node(node["id"], status="crash", frozen=True)
             self.results(project["id"]).log(
@@ -333,23 +386,53 @@ class Engine:
         # the run row comes first so its id keys the run directory: two runs
         # of the same node (the baseline pair, a re-run) must not share a
         # log, pid or exit_code file
+        run_dir = self.project_dir(project_id) / _RUNS / (
+            f"{kind}-{node_id}-{time.time_ns()}")
         run = self.store.create_run(project_id=project_id, node_id=node_id,
                                     kind=kind, command=command,
-                                    run_dir="", status="queued")
-        run_dir = self.project_dir(project_id) / _RUNS / run["id"]
+                                    run_dir=str(run_dir), status="queued")
+        if self._slots_free(project_id) <= 0:
+            self._emit(project_id, "run.queued", run_id=run["id"],
+                       node_id=node_id, run_kind=kind)
+            return run
+        return self._launch(run)
+
+    def _launch(self, run: dict) -> dict:
+        """Start a queued eval's process if a slot is free, else leave it
+        queued — the poller drains the queue as slots open up.
+        ``eval_slots`` is the project's fixed resource budget for concurrent
+        evaluators."""
+        node = self.store.node(run["node_id"])
+        project = self.store.project(run["project_id"])
+        self._ensure_worktree(project, node)
+        run_dir = Path(run["run_dir"])
         run_dir.mkdir(parents=True, exist_ok=True)
-        handle = runner.start(run_dir, command, node["worktree_path"],
-                              env={"AGENTFORK_NODE": node_id,
+        if run["kind"] == "eval":
+            # a re-answer unfreezes the node so the new score lands on it;
+            # a holdout is validation, not an answer — the node stays put
+            self.store.update_node(node["id"], status="running", frozen=False)
+        handle = runner.start(run_dir, run["command"], node["worktree_path"],
+                              env={"AGENTFORK_NODE": run["node_id"],
                                    "AGENTFORK_RUN": run["id"],
                                    "AGENTFORK_RUN_DIR": str(run_dir)})
-        # a re-answer unfreezes the node so the new run's score lands on it
-        self.store.update_node(node_id, status="running", frozen=False)
         run = self.store.update_run(run["id"], status="running",
-                                    run_dir=str(run_dir), pid=handle.pid,
-                                    started_at=time.time())
-        self._emit(project_id, "run.started", run_id=run["id"],
-                   node_id=node_id, run_kind=kind, pid=handle.pid)
+                                    pid=handle.pid, started_at=time.time())
+        self._emit(run["project_id"], "run.started", run_id=run["id"],
+                   node_id=run["node_id"], run_kind=run["kind"],
+                   pid=handle.pid)
         return run
+
+    def _slots_free(self, project_id: str) -> int:
+        """How many more evaluators may start under ``eval_slots``;
+        ``None``/0 means unbounded."""
+        params = self.store.project(project_id)["params"]
+        slots = int(params.get("eval_slots") or 0)
+        if not slots:
+            return 1 << 30
+        running = [r for r in self.store.runs(project_id)
+                   if r["kind"] in ("eval", "holdout")
+                   and r["status"] == "running"]
+        return max(0, slots - len(running))
 
     def _ensure_worktree(self, project: dict, node: dict) -> None:
         """Re-check out a node's worktree if it is gone.
@@ -374,13 +457,48 @@ class Engine:
         run = self.store.run(run_id)
         if run is None:
             raise EngineError(f"no such run: {run_id}")
-        runner.kill(run["run_dir"])
+        if run["status"] not in ("queued", "running"):
+            return run  # already settled — nothing to kill
+        if run["status"] == "running" and run["kind"] != "worker":
+            runner.kill(run["run_dir"])
         self._emit(run["project_id"], "run.killed", run_id=run_id)
         # settle the node too: a killed run still answers it (as a crash),
         # otherwise the node is stuck "running" with nothing left to finish it
         self._finish_run(run, runner_exit=runner.exit_code(run["run_dir"]),
                          killed="killed")
+        # a killed worker can't drive its node to ready — mark the node so
+        # the tree doesn't sit on "implementing" forever (the worker thread
+        # itself checks the run row and aborts before committing)
+        if run["kind"] == "worker":
+            node = self.store.node(run["node_id"])
+            if node and node["status"] in ("proposed", "implementing"):
+                self.store.update_node(node["id"], status="crash")
         return self.store.run(run_id)
+
+    def _node_busy(self, project_id: str, node_id: str) -> bool:
+        return any(r["node_id"] == node_id
+                   and r["status"] in ("queued", "running")
+                   for r in self.store.runs(project_id))
+
+    def _adopt_branch(self, orch: ForkOrchestrator, project: dict,
+                      node: dict) -> None:
+        """Re-register a node's branch after a restart.
+
+        The runtime deliberately cannot adopt a previous process's branches
+        (sandbox handles and KV trees are process-local), so a node whose
+        branch row was collected is re-parented fresh: the worktree is
+        reattached at its own branch, the KV tree gets the node's context
+        re-tokenized. Children then fork from it normally.
+        """
+        rows = {b.branch_id: b for b in orch.branches()}
+        row = rows.get(node["id"])
+        if row is not None and row.state == "live":
+            return
+        if row is not None:
+            orch.kill(node["id"])  # clear the dead row (busy-safe on worktree)
+        orch.create_parent(node["id"],
+                           tokens=_tokenize(node["description"] or
+                                            node["title"]))
 
     # -- reduce ---------------------------------------------------------------
 
@@ -390,6 +508,13 @@ class Engine:
         params = project["params"]
         if margin is None:
             margin = self._margin(project_id)
+        in_flight = [n["id"] for n in self.store.nodes(project_id, gen=gen)
+                     if n["status"] in ("proposed", "implementing", "ready",
+                                        "running")]
+        if in_flight:
+            raise EngineError(
+                f"gen {gen} still has {len(in_flight)} candidate(s) in flight "
+                f"({', '.join(in_flight[:3])}…) — wait for their evals")
         red = self.results(project_id).reduce(
             gen, margin, beam=params["b"], minimize=params["minimize"],
             guards=params["cost_guards"])
@@ -475,7 +600,10 @@ class Engine:
                   if r.gen == 0 and r.score is not None]
         if len(scores) < 2:
             raise EngineError("margin needs both baseline runs to finish")
-        return abs(scores[0] - scores[1])
+        # spread over every baseline run (baseline_runs can exceed two),
+        # floored at an epsilon: a deterministic eval measures 0 noise, and
+        # then an improvement still has to be a real nonzero delta
+        return max(max(scores) - min(scores), 1e-9)
 
     # -- poller ---------------------------------------------------------------
 
@@ -488,9 +616,20 @@ class Engine:
             self._stop.wait(0.5)
 
     def _poll_once(self) -> None:
+        # first drain queued evals into whatever slots are free
         for run in self.store.active_runs():
-            if run["kind"] == "worker":
-                continue  # in-process; managed by its own thread
+            if run["status"] != "queued" or run["kind"] == "worker":
+                continue
+            if self._slots_free(run["project_id"]) <= 0:
+                continue
+            try:
+                self._launch(run)
+            except Exception:  # noqa: BLE001
+                _log.exception("launch failed for %s", run["id"])
+                self._finish_run(run, runner_exit=127, killed=None)
+        for run in self.store.active_runs():
+            if run["status"] == "queued" or run["kind"] == "worker":
+                continue  # queued: waits on a slot; worker: own thread
             run_dir = run["run_dir"]
             if runner.alive(run_dir):
                 started = run.get("started_at") or run["created_at"]
@@ -515,37 +654,72 @@ class Engine:
         status = (killed if killed else
                   "done" if runner_exit == 0 else
                   "failed" if runner_exit is not None else "killed")
-        self.store.update_run(run["id"], status=status, exit_code=runner_exit,
-                              score=score, ended_at=time.time())
+        # atomic: if a kill already settled this row, nothing below may run —
+        # otherwise the poller would resurrect it and log a duplicate row
+        if not self.store.settle_run(run["id"], status=status,
+                                     exit_code=runner_exit, score=score,
+                                     ended_at=time.time()):
+            return
         self._emit(run["project_id"], "run.finished", run_id=run["id"],
                    node_id=run["node_id"], status=status,
                    exit_code=runner_exit, score=score)
-        if run["kind"] in ("eval", "holdout") and node and not node["frozen"]:
-            # the baseline node is answered by a *pair* of runs, so it only
-            # freezes once _baseline_done has seen them all
-            freeze = node["gen"] > 0
-            if score is None or status != "done":
-                self.store.update_node(node["id"], status="crash",
-                                       frozen=freeze)
+        if run["kind"] == "holdout":
+            # validation, not a candidate answer: the score stays on the run
+            # row; the tsv gets a note (byte-compatible) and the node's
+            # status/score/delta are left alone
+            if node is not None:
                 self.results(run["project_id"]).log(
                     node["gen"], node["id"], node["parent_id"] or "-",
-                    None, "crash", f"{run['kind']} exited {runner_exit}")
-            else:
-                parent = self.store.node(node["parent_id"]) \
-                    if node["parent_id"] else None
-                delta = (score - parent["score"]
-                         if parent and parent["score"] is not None else None)
-                self.store.update_node(node["id"], status="ran", score=score,
-                                       delta=delta, frozen=freeze)
-                self.results(run["project_id"]).log(
-                    node["gen"], node["id"], node["parent_id"] or "-",
-                    score, "ran", node["title"],
+                    score, "note",
+                    f"holdout {status}" +
+                    (f" score={score:g}" if score is not None else ""),
                     costs=self._costs(run), regions=node["regions"])
-            if node["gen"] == 0:
-                self._baseline_done(run["project_id"], node)
-            if score is not None and status == "done":
-                self._emit(run["project_id"], "node.scored",
-                           node_id=node["id"], score=score, delta=delta)
+            self._settle_loop_state(run["project_id"])
+            return
+        if run["kind"] == "eval" and node and not node["frozen"]:
+            # while a sibling run of this node is still queued/running the
+            # node stays in flight — the baseline pair only settles once
+            # every eval for it has finished
+            siblings = [r for r in self.store.runs(run["project_id"],
+                                                 node_id=node["id"])
+                        if r["id"] != run["id"]
+                        and r["status"] in ("queued", "running")]
+            if siblings:
+                self.results(run["project_id"]).log(
+                    node["gen"], node["id"], node["parent_id"] or "-",
+                    score, "ran" if (score is not None and status == "done")
+                    else "crash",
+                    node["title"] if score is not None else
+                    f"eval exited {runner_exit}",
+                    costs=self._costs(run), regions=node["regions"])
+            else:
+                # the baseline node is answered by a *pair* of runs, so it
+                # only freezes once _baseline_done has seen them all
+                freeze = node["gen"] > 0
+                if score is None or status != "done":
+                    self.store.update_node(node["id"], status="crash",
+                                           frozen=freeze)
+                    self.results(run["project_id"]).log(
+                        node["gen"], node["id"], node["parent_id"] or "-",
+                        None, "crash", f"eval exited {runner_exit}")
+                else:
+                    parent = self.store.node(node["parent_id"]) \
+                        if node["parent_id"] else None
+                    delta = (score - parent["score"]
+                             if parent and parent["score"] is not None
+                             else None)
+                    self.store.update_node(node["id"], status="ran",
+                                           score=score, delta=delta,
+                                           frozen=freeze)
+                    self.results(run["project_id"]).log(
+                        node["gen"], node["id"], node["parent_id"] or "-",
+                        score, "ran", node["title"],
+                        costs=self._costs(run), regions=node["regions"])
+                if node["gen"] == 0:
+                    self._baseline_done(run["project_id"], node)
+                if score is not None and status == "done":
+                    self._emit(run["project_id"], "node.scored",
+                               node_id=node["id"], score=score, delta=delta)
         self._settle_loop_state(run["project_id"])
 
     def _settle_loop_state(self, project_id: str) -> None:
@@ -580,7 +754,7 @@ class Engine:
         scores = [r.score for r in self.results(project_id).rows()
                   if r.gen == 0 and r.score is not None]
         if len(scores) >= 2:
-            margin = abs(scores[0] - scores[1])
+            margin = self._margin(project_id)
             self.store.update_node(node["id"], status="ran", score=scores[0],
                                    frozen=True)
             self.store.set_loop_state(project_id, margin=margin,
@@ -596,11 +770,38 @@ class Engine:
                 message="baseline needs two scored runs to fix the noise "
                         "margin; re-run it")
 
+    def delete_project(self, project_id: str) -> None:
+        """Tear a project down for real: kill its runs (caller does this),
+        collect worktrees + af/* branches it created in the user's repo,
+        and remove its data dir under ~/.agentfork. The SQLite rows are
+        deleted by the caller."""
+        project = self.store.project(project_id)
+        orch = self._orchestrators.pop(project_id, None)
+        self._sandboxes.pop(project_id, None)
+        if orch is not None:
+            try:
+                orch.stop_reaper()
+                orch._release_registry_lock()
+            except Exception:  # noqa: BLE001
+                pass
+        if project is not None:
+            repo = project["repo_path"]
+            for n in self.store.nodes(project_id):
+                if n["worktree_path"]:
+                    git.remove_worktree(repo, n["worktree_path"])
+                # only branches agentfork itself created — the user's
+                # baseline_branch is stored on the project, not the node
+                if n["branch_name"].startswith("af/"):
+                    git.delete_branch(repo, n["branch_name"])
+            shutil.rmtree(self.project_dir(project_id), ignore_errors=True)
+
     # -- snapshots for the API -------------------------------------------------
 
     def tree(self, project_id: str) -> dict:
+        loop = self.store.loop_state(project_id)
+        loop["driven"] = project_id in self.driven
         return {"nodes": self.store.nodes(project_id),
-                "loop": self.store.loop_state(project_id),
+                "loop": loop,
                 "results_tsv": self.results(project_id).path.exists() and
                 str(self.results(project_id).path) or None}
 
@@ -616,7 +817,13 @@ class Engine:
         if hasattr(kv, "__dict__"):
             kv = {**vars(kv), "dedup_ratio": kv.dedup_ratio}
         live = [b for b in orch.branches() if b.state == "live"]
-        return {"orchestrator": orch.metrics_snapshot(), "kv": kv,
+        snap = orch.metrics_snapshot()
+        # only the counters this product can move — the VMM-lifecycle ones
+        # (execs, swept_dead, restarted) are always 0 under WorktreeSandbox
+        orch_counters = {k: snap[k] for k in
+                         ("forks", "kills", "kill_failures", "reconciles",
+                          "reaped_expired") if k in snap}
+        return {"orchestrator": orch_counters, "kv": kv,
                 "branches": len(live),
                 "worktrees": sum(
                     1 for n in self.store.nodes(project_id)

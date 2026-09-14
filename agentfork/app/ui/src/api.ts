@@ -62,6 +62,7 @@ export type LoopState = {
   margin: number | null;
   frontier: string[];
   message: string;
+  driven?: boolean; // a live AutoresearchLoop owns the state right now
 };
 
 export type Law = { id: string; gen: number; text: string; created_at: number };
@@ -78,10 +79,21 @@ export type Harnesses = Record<
   { installed: boolean; authed: boolean; detail?: string }
 >;
 
+// When the server is bound off loopback it requires a bearer token, handed
+// to the UI via ?token= in the printed URL. Persist it for this tab so a
+// refresh keeps working.
+const TOKEN = (() => {
+  const fromUrl = new URLSearchParams(location.search).get("token");
+  if (fromUrl) sessionStorage.setItem("af-token", fromUrl);
+  return sessionStorage.getItem("af-token") || "";
+})();
+
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (TOKEN) headers["authorization"] = `Bearer ${TOKEN}`;
   const resp = await fetch(`/api${path}`, {
-    headers: { "content-type": "application/json" },
     ...init,
+    headers,
   });
   const text = await resp.text();
   const body = text ? JSON.parse(text) : null;
@@ -133,7 +145,8 @@ export const api = {
   evalNode: (id: string, node_id: string) =>
     call<Run>(`/projects/${id}/eval`, {
       method: "POST",
-      body: JSON.stringify({ node_id }),
+      // the button is the explicit re-answer — answered nodes are frozen
+      body: JSON.stringify({ node_id, force: true }),
     }),
   log: (runId: string, offset: number) =>
     call<{
@@ -168,7 +181,8 @@ export type Event = {
 };
 
 export function subscribe(onEvent: (e: Event) => void): () => void {
-  const es = new EventSource("/api/events");
+  // EventSource cannot set headers — the server accepts ?token= instead
+  const es = new EventSource(`/api/events${TOKEN ? `?token=${TOKEN}` : ""}`);
   es.onmessage = (m) => {
     try {
       onEvent(JSON.parse(m.data) as Event);

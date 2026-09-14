@@ -65,12 +65,18 @@ def slugify(text: str, limit: int = 40) -> str:
 
 def add_worktree(repo: str | Path, path: str | Path, branch: str,
                  start_point: str) -> str:
-    """Create ``branch`` at ``start_point`` and check it out at ``path``."""
+    """Check ``branch`` out at ``path``, creating it at ``start_point`` first if
+    it does not exist.
+
+    An existing branch is checked out as-is — ``worktree add <path> <branch>``
+    — never reset to ``start_point``, because a node's branch is its evidence
+    and resetting it would discard the commits a run already made on it.
+    """
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    args = ["worktree", "add", str(path)]
-    args += ["-B", branch, start_point] if branch_exists(repo, branch) else \
-            ["-b", branch, start_point]
-    git(repo, *args)
+    if branch_exists(repo, branch):
+        git(repo, "worktree", "add", str(path), branch)
+    else:
+        git(repo, "worktree", "add", "-b", branch, str(path), start_point)
     return str(path)
 
 

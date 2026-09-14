@@ -11,7 +11,10 @@ agentfork up        # local dashboard at http://127.0.0.1:8474
 
 Everything is local: SQLite state in `~/.agentfork`, a git worktree per
 experiment node, and detached eval processes you can kill from the UI or the
-CLI. Nothing leaves the machine except the agent harness you pick.
+CLI. Nothing leaves the machine except the agent harness you pick. The server
+binds loopback only; if you deliberately bind wider (`--host 0.0.0.0`, e.g.
+behind an SSH tunnel) every API call then requires the bearer token printed
+in the dashboard URL (`?token=`).
 
 - **Project** = a git repo plus a fixed eval contract (`eval_cmd`,
   `metric_grep`, minimize/maximize).

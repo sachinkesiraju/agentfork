@@ -265,6 +265,22 @@ class Store:
     def active_runs(self) -> list[dict]:
         return self._all("SELECT * FROM runs WHERE status IN ('queued','running')")
 
+    def settle_run(self, run_id: str, **changes) -> bool:
+        """Terminal write for a run, applied only while it is still in
+        flight. A kill racing the poller must not let the later finisher
+        resurrect the row (double run.finished events, duplicate tsv
+        rows). Returns False when the run had already settled."""
+        status = changes.get("status")
+        if status not in RUN_STATUSES:
+            raise ValueError(f"bad run status: {status}")
+        changes.pop("updated_at", None)
+        cols = ", ".join(f"{k} = ?" for k in changes)
+        cur = self._exec(
+            f"UPDATE runs SET {cols} WHERE id = ? "
+            "AND status IN ('queued','running')",
+            [*changes.values(), run_id])
+        return cur.rowcount > 0
+
     def update_run(self, run_id: str, **changes) -> dict:
         if "status" in changes and changes["status"] not in RUN_STATUSES:
             raise ValueError(f"bad run status: {changes['status']}")

@@ -66,8 +66,11 @@ def _wait(engine, node_ids, timeout=30.0):
     pending = set(node_ids)
     while pending and time.monotonic() < deadline:
         for nid in list(pending):
-            status = engine.store.node(nid)["status"]
-            if status not in ("proposed", "implementing", "ready", "running"):
+            node = engine.store.node(nid)
+            runs = engine.store.runs(node["project_id"], node_id=nid)
+            in_flight = any(r["status"] in ("queued", "running") for r in runs)
+            if not in_flight and node["status"] not in (
+                    "proposed", "implementing", "ready", "running"):
                 pending.discard(nid)
         time.sleep(0.05)
     assert not pending, f"nodes never settled: {pending}"
@@ -103,7 +106,7 @@ def test_baseline_fixes_the_noise_margin(engine, repo):
     node = engine.baseline(p["id"])
     _wait(engine, [node["id"]])
     assert engine.store.node(node["id"])["score"] == pytest.approx(1.0)
-    assert engine._margin(p["id"]) == pytest.approx(0.0)
+    assert engine._margin(p["id"]) == pytest.approx(1e-9)  # floored, never exactly 0
     loop = engine.store.loop_state(p["id"])
     assert loop["state"] == "ready" and loop["frontier"] == [node["id"]]
     rows = engine.results(p["id"]).rows()
@@ -403,6 +406,96 @@ def test_killing_every_candidate_leaves_the_loop_idle(engine, repo):
         if run["status"] in ("queued", "running"):
             engine.kill_run(run["id"])
     assert engine.store.loop_state(p["id"])["state"] != "running"
+
+
+def test_killing_a_settled_run_is_a_noop(engine, repo):
+    """kill on an already-finished run must not rewrite its terminal state."""
+    p = _project(engine, repo)
+    root = engine.baseline(p["id"])
+    _wait(engine, [root["id"]])
+    run = engine.store.runs(p["id"])[0]
+    assert run["status"] == "done"
+    again = engine.kill_run(run["id"])
+    assert again["status"] == "done"
+    assert engine.store.node(root["id"])["status"] != "crash"
+
+
+def test_reduce_refuses_while_candidates_are_in_flight(engine, repo):
+    """A mid-generation reduce would kill worktrees under running evals and
+    then mark the corpses discarded — refuse instead."""
+    p = _project(engine, repo, eval_cmd="sleep 5; ./eval.sh", timeout_s=300)
+    root = engine.baseline(p["id"])
+    _wait(engine, [root["id"]], timeout=30)
+    nodes = engine.fan_out(p["id"], root["id"],
+                           [Idea("good", "a"), Idea("okay", "b")])
+    with pytest.raises(EngineError, match="in flight"):
+        engine.reduce(p["id"], 1)
+    _wait(engine, [n["id"] for n in nodes], timeout=30)
+    engine.reduce(p["id"], 1)  # once settled, it goes through
+
+
+def test_eval_slots_serialize_the_baseline_pair(engine, repo):
+    """eval_slots is the resource budget: with one slot the second baseline
+    eval stays queued until the first finishes."""
+    p = _project(engine, repo, eval_slots=1, eval_cmd="sleep 0.4; ./eval.sh")
+    root = engine.baseline(p["id"])
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        runs = engine.store.runs(p["id"])
+        if runs and all(r["status"] not in ("queued", "running")
+                        for r in runs):
+            break
+        time.sleep(0.1)
+    assert engine.store.node(root["id"])["status"] != "running"
+    runs = sorted(engine.store.runs(p["id"]), key=lambda r: r["started_at"])
+    assert len(runs) == 2 and all(r["status"] == "done" for r in runs)
+    first, second = runs
+    assert second["started_at"] >= first["ended_at"] - 0.01
+
+
+def test_close_leaves_a_running_evals_worktree_alone(engine, repo):
+    """Shutting the dashboard down must not delete the checkout under an eval
+    that is still running detached — the new process can adopt or collect it."""
+    p = _project(engine, repo, eval_cmd="sleep 30", timeout_s=300)
+    engine.baseline(p["id"])
+    node = engine.store.nodes(p["id"])[0]
+    worktree = Path(node["worktree_path"])
+    engine.close()
+    assert worktree.exists()
+    for run in engine.store.runs(p["id"]):
+        subprocess.run(["kill", "-9", str(run["pid"])], check=False)
+
+
+def test_a_restarted_dashboard_can_still_fan_out(engine, repo, tmp_path):
+    """The prior process's branch rows are journaled but its sandboxes and KV
+    trees are gone; fanning out re-adopts the parent (worktree reattached,
+    context re-tokenized) instead of failing on a dead branch."""
+    p = _project(engine, repo)
+    root = engine.baseline(p["id"])
+    _wait(engine, [root["id"]])
+    engine.close()
+    restarted = Engine(engine.store, home=tmp_path / "home")
+    try:
+        nodes = restarted.fan_out(p["id"], root["id"], [Idea("good", "a")])
+        assert nodes[0]["gen"] == 1
+        assert Path(nodes[0]["worktree_path"]).exists()
+        _wait(restarted, [n["id"] for n in nodes])
+        assert restarted.store.node(nodes[0]["id"])["score"] == 0.20
+    finally:
+        restarted.close()
+
+
+def test_score_is_grepped_from_the_end_of_the_log(engine, repo, tmp_path):
+    """A long eval that scrolls the metric past the reader window still
+    reports its final score — extract reads the tail, not the head."""
+    from agentfork.app import runner
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    with (run_dir / runner.LOG).open("wb") as f:
+        f.write(b"val_loss=9.99\n")
+        f.write(b"x" * 9_000_000)
+        f.write(b"\nval_loss=0.5\n")
+    assert runner.extract_score(run_dir, r"val_loss=([0-9.]+)") == 0.5
 
 
 def test_a_node_whose_worktree_is_gone_is_checked_out_again(engine, repo):

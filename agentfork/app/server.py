@@ -33,7 +33,9 @@ from __future__ import annotations
 import json
 import logging
 import mimetypes
+import os
 import queue
+import secrets
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -51,9 +53,12 @@ VERSION = "0.4.0"
 
 
 class App:
-    def __init__(self, home: Path | None = None):
+    def __init__(self, home: Path | None = None, token: str | None = None):
         self.store = Store(home / "agentfork.db" if home else None)
         self.engine = Engine(self.store, home=self.store.path.parent)
+        # bearer token required on /api when the server is bound off
+        # loopback (see serve()); on loopback it stays None
+        self.token = token
         self.loops: dict[str, AutoresearchLoop] = {}
         self._subs: list[queue.Queue] = []
         self._last_seq = self.store.last_seq()
@@ -141,11 +146,17 @@ def make_handler(app: App, ui_root: Path | None):
             url = urlparse(self.path)
             parts = [p for p in url.path.split("/") if p]
             query = parse_qs(url.query)
+            if parts[:1] == ["api"] and not self._allowed(method, query):
+                self._error(403, "forbidden")
+                return
             try:
                 self._read_body()
                 out = self._route(method, parts, query)
-            except (EngineError, amr.AmrError, ValueError, KeyError) as exc:
+            except (EngineError, amr.AmrError, ValueError) as exc:
                 self._error(400, str(exc))
+                return
+            except KeyError as exc:
+                self._error(404, str(exc))
                 return
             except BrokenPipeError:
                 return
@@ -155,6 +166,34 @@ def make_handler(app: App, ui_root: Path | None):
                 return
             if out is not None:
                 self._json(200, out)
+
+        def _allowed(self, method: str, query: dict) -> bool:
+            """Two protections on the control API:
+
+            - ``app.token`` (set when binding off loopback): every /api call
+              needs ``Authorization: Bearer <token>`` — or ``?token=`` in the
+              query, which is how the dashboard's EventSource authenticates.
+            - unsafe methods from a browser must be same-origin: a web page
+              on another site always sends ``Origin`` on a cross-origin POST,
+              so reject any Origin whose host isn't this server's. Non-browser
+              clients (the CLI, curl) send no Origin and pass.
+            """
+            if app.token is not None:
+                auth = self.headers.get("authorization", "")
+                bearer = auth.removeprefix("Bearer ").strip()
+                supplied = bearer or (query.get("token") or [""])[0]
+                if not supplied or not secrets.compare_digest(supplied,
+                                                              app.token):
+                    return False
+            if method in ("POST", "DELETE"):
+                origin = self.headers.get("origin")
+                if origin:
+                    host = urlparse(origin).hostname
+                    if host not in (urlparse(
+                            f"//{self.headers.get('host', '')}").hostname,
+                                    "localhost", "127.0.0.1", "::1"):
+                        return False
+            return True
 
         def do_GET(self):    self._dispatch("GET")
         def do_POST(self):   self._dispatch("POST")
@@ -197,8 +236,12 @@ def make_handler(app: App, ui_root: Path | None):
                     raise KeyError("no such run")
                 off = int(q.get("offset", ["0"])[0])
                 text, new_off = runner.tail(run["run_dir"], offset=off)
-                return {"text": text, "offset": new_off,
-                        "alive": runner.alive(run["run_dir"]),
+                # worker runs are threads, not processes — they have no pid
+                # file, so liveness is their run status
+                live = (run["status"] in ("queued", "running")
+                        if run["kind"] == "worker"
+                        else runner.alive(run["run_dir"]))
+                return {"text": text, "offset": new_off, "alive": live,
                         "exit_code": runner.exit_code(run["run_dir"]),
                         "status": run["status"]}
             raise KeyError(f"no route: {method} /{'/'.join(parts)}")
@@ -211,6 +254,7 @@ def make_handler(app: App, ui_root: Path | None):
                     if p is None:
                         raise KeyError("no such project")
                     p["loop"] = store.loop_state(pid)
+                    p["loop"]["driven"] = pid in app.engine.driven
                     return p
                 if method == "DELETE":
                     for loop in list(app.loops.values()):
@@ -219,6 +263,7 @@ def make_handler(app: App, ui_root: Path | None):
                     for run in store.active_runs():
                         if run["project_id"] == pid:
                             engine.kill_run(run["id"])
+                    engine.delete_project(pid)  # worktrees + af/* + data dir
                     store.delete_project(pid)
                     return {"deleted": pid}
             action = rest[0]
@@ -315,8 +360,11 @@ def make_handler(app: App, ui_root: Path | None):
                 return None
             rel = "/".join(parts) or "index.html"
             path = (ui_root / rel).resolve()
-            if not str(path).startswith(str(ui_root.resolve())) \
-                    or not path.is_file():
+            try:
+                path.relative_to(ui_root.resolve())
+            except ValueError:
+                path = ui_root / "__outside__"  # forces the SPA fallback
+            if not path.is_file():
                 path = ui_root / "index.html"  # SPA fallback
             if not path.is_file():
                 self._send(404, b"not found", "text/plain")
@@ -335,12 +383,21 @@ def _sse_frame(event: dict) -> bytes:
 
 def serve(home: Path | None = None, host: str = "127.0.0.1", port: int = 8474,
           open_browser: bool = True) -> None:
-    app = App(home)
+    # binding anything but loopback exposes an unauthenticated control API —
+    # so a non-loopback bind requires a bearer token on every /api call; the
+    # dashboard picks it up from the ?token= in the printed URL
+    loopback = host in ("127.0.0.1", "::1", "localhost")
+    token = None if loopback else os.environ.get(
+        "AGENTFORK_TOKEN") or secrets.token_urlsafe(24)
+    app = App(home, token=token)
     ui_root = Path(__file__).parent / "ui" / "dist"
     if not ui_root.is_dir():
         ui_root = None
     httpd = ThreadingHTTPServer((host, port), make_handler(app, ui_root))
-    url = f"http://{host}:{port}"
+    url = f"http://{host}:{port}" + (f"/?token={token}" if token else "")
+    if not loopback:
+        print("warning: bound off loopback — the control API now requires "
+              "the token in this URL")
     print(f"agentfork dashboard: {url}")
     print(f"data: {app.store.path.parent}")
     if open_browser:

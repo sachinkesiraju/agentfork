@@ -144,7 +144,7 @@ def kill(run_dir: str | Path, *, grace_s: float = 3.0) -> bool:
         pgid = os.getpgid(p)
     except ProcessLookupError:
         return False
-    for sig, wait in ((signal.SIGTERM, grace_s), (signal.SIGKILL, 0.0)):
+    for sig, wait in ((signal.SIGTERM, grace_s), (signal.SIGKILL, 0.2)):
         try:
             os.killpg(pgid, sig)
         except ProcessLookupError:
@@ -154,7 +154,7 @@ def kill(run_dir: str | Path, *, grace_s: float = 3.0) -> bool:
             if not alive(run_dir):
                 return True
             time.sleep(0.05)
-    return True
+    return not alive(run_dir)
 
 
 def tail(run_dir: str | Path, *, offset: int = 0,
@@ -181,7 +181,10 @@ def extract_score(run_dir: str | Path, metric_grep: str, *,
     """Grep the run's log for the metric. The pattern's first capture group
     (or the whole match) must be the number; ``last`` takes the final
     occurrence, which is what an eval that prints per-epoch lines needs."""
-    text, _ = tail(run_dir, limit=8_000_000)
+    # scores land at the end of the log; read the tail, not the head
+    path = Path(run_dir) / LOG
+    size = path.stat().st_size if path.exists() else 0
+    text, _ = tail(run_dir, offset=max(0, size - 8_000_000), limit=8_000_000)
     matches = re.findall(metric_grep, text)
     if not matches:
         return None

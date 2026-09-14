@@ -100,7 +100,9 @@ export default function ProjectPage() {
     [runs, node],
   );
   const hasBaseline = nodes.some((n) => n.gen === 0);
-  const looping = loop?.state === "running" || loop?.state === "baseline";
+  // the loop state is the loop's own word for it: a hand-driven baseline
+  // also writes "baseline" — only a live AutoresearchLoop means stop-able
+  const looping = loop?.driven === true;
   const activeRuns = runs.filter(
     (r) => r.status === "running" || r.status === "queued",
   ).length;
@@ -258,7 +260,8 @@ export default function ProjectPage() {
                   {busy === "descend" ? "Forking…" : `Fan out ×${p.k}`}
                 </Button>
                 <Button
-                  disabled={!loop || !loop.gen || !!busy}
+                  disabled={!loop || !loop.gen || !!busy || activeRuns > 0}
+                  title={activeRuns > 0 ? "wait for in-flight runs" : undefined}
                   onClick={() =>
                     loop &&
                     act("reduce", async () => setReduction(await api.reduce(projectId, loop.gen)))
@@ -332,7 +335,8 @@ export default function ProjectPage() {
                         key={`${f.a}-${f.b}`}
                         className="mono rounded-lg border border-neutral-800 px-3 py-2 text-xs text-neutral-400"
                       >
-                        FUSE_CANDIDATE {f.a} + {f.b} — disjoint regions, try combining them
+                        FUSE_CANDIDATE {f.a} + {f.b} — disjoint regions; a combined
+                        candidate is worth a slot in the next generation
                       </p>
                     ))}
                     <p className="mono truncate pt-1 text-xs text-neutral-500">
@@ -440,7 +444,7 @@ export default function ProjectPage() {
         )}
 
         {tab === "runs" && (
-          <Panel title="Runs" subtitle="every process this project has started" padded={false}>
+          <Panel title="Runs" subtitle="every run this project has made" padded={false}>
             {runs.length === 0 ? (
               <Empty title="No runs yet">
                 Runs appear when the baseline, a candidate eval or a holdout starts.
@@ -584,8 +588,9 @@ export default function ProjectPage() {
                 ))}
               </dl>
               <p className="mt-3 text-[11px] leading-relaxed text-neutral-600">
-                A restarted dashboard cannot adopt the previous process's branches, so live
-                branches restarts at zero; the tree itself is kept in git.
+                Branch rows are journaled, so after a crash this count reflects what was
+                recorded, not what the previous process left running; the first mutating
+                action reconciles it. The tree itself is kept in git.
               </p>
             </Panel>
           </div>
@@ -602,8 +607,10 @@ function Dot() {
 function Legend() {
   const items = [
     ["bg-sky-500/70", "baseline"],
+    ["bg-amber-500/70", "implementing"],
     ["bg-blue-500/70", "running"],
     ["bg-emerald-500/70", "kept"],
+    ["bg-orange-500/70", "cost_fail"],
     ["bg-red-500/70", "crash"],
     ["bg-neutral-600", "discarded"],
   ];

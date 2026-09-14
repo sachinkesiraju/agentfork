@@ -25,6 +25,8 @@ export default function NewProjectPage() {
     timeout_s: 600,
     baseline_runs: 2,
     holdout_cmd: "",
+    eval_slots: 2,
+    cost_guards: "",
   });
 
   useEffect(() => {
@@ -52,7 +54,19 @@ export default function NewProjectPage() {
           max_gens: Number(form.max_gens),
           timeout_s: Number(form.timeout_s),
           baseline_runs: Number(form.baseline_runs),
+          eval_slots: Number(form.eval_slots),
           holdout_cmd: form.holdout_cmd,
+          cost_guards: Object.fromEntries(
+            form.cost_guards
+              .split(",")
+              .map((s) => s.trim())
+              .filter(Boolean)
+              .map((s) => {
+                const [k, v] = s.split("=");
+                return [k.trim(), Number(v)];
+              })
+              .filter(([, v]) => Number.isFinite(v)),
+          ),
         },
       });
       nav(`/p/${p.id}`);
@@ -82,7 +96,10 @@ export default function NewProjectPage() {
       <form onSubmit={submit} className="max-w-3xl space-y-4">
         <Panel title="Repository" subtitle="what gets branched, and who edits it">
           <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="repo path" hint="absolute path to a git repo on this machine">
+            <Field
+              label="repo path"
+              hint="absolute path to a git repo on this machine — agentfork appends results.tsv/.agentfork-candidate to its .gitignore"
+            >
               <Input
                 required
                 value={form.repo_path}
@@ -150,7 +167,7 @@ export default function NewProjectPage() {
         </Panel>
 
         <Panel title="Search" subtitle="how wide each generation fans out, and how much survives">
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-6">
             <Field label="K" hint="ideas/gen">
               <Input type="number" min={1} value={form.k} onChange={(e) => set("k", e.target.value)} />
             </Field>
@@ -181,7 +198,25 @@ export default function NewProjectPage() {
                 onChange={(e) => set("baseline_runs", e.target.value)}
               />
             </Field>
+            <Field label="eval slots" hint="max concurrent evals">
+              <Input
+                type="number"
+                min={0}
+                value={form.eval_slots}
+                onChange={(e) => set("eval_slots", e.target.value)}
+              />
+            </Field>
           </div>
+          <Field
+            label="cost guards"
+            hint="optional, comma-separated name=tolerance — a scored run whose cost grows by more than tol relative to its parent fails the reduce (seconds is built in)"
+          >
+            <Input
+              value={form.cost_guards}
+              placeholder="seconds=0.5, gpu_hours=0.2"
+              onChange={(e) => set("cost_guards", e.target.value)}
+            />
+          </Field>
         </Panel>
 
         {error && <ErrorNote>{error}</ErrorNote>}

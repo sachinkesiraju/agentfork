@@ -43,8 +43,10 @@ class Idea:
 class Harness(Protocol):
     name: str
 
-    def propose(self, context: str, n: int) -> list[Idea]:
-        """Propose ``n`` candidate ideas for the next generation."""
+    def propose(self, context: str, n: int,
+                cwd: str | None = None) -> list[Idea]:
+        """Propose ``n`` candidate ideas for the next generation; ``cwd`` is
+        the project's repo so CLI harnesses can read the code."""
         ...
 
     def implement(self, worktree: str, idea: Idea, context: str) -> str:
@@ -94,14 +96,16 @@ class ClaudeCodeHarness:
                 f"claude exited {proc.returncode}: {proc.stderr.strip()[:400]}")
         return proc.stdout.strip()
 
-    def propose(self, context: str, n: int) -> list[Idea]:
+    def propose(self, context: str, n: int, cwd: str | None = None) -> list[Idea]:
         prompt = (
             f"{context}\n\n"
             f"Propose exactly {n} distinct single-variable ideas to try next. "
             "Return them as a JSON array of objects with keys "
             "\"title\", \"description\", \"regions\" (a list of area names). "
             "Output only the JSON.")
-        return _parse_ideas(self._run(prompt, os.getcwd(), 300), n)
+        # run inside the project's repo so the proposing agent can read the
+        # code it is proposing changes to
+        return _parse_ideas(self._run(prompt, cwd or os.getcwd(), 300), n)
 
     def implement(self, worktree: str, idea: Idea, context: str) -> str:
         prompt = (
@@ -135,7 +139,7 @@ class ApiHarness:
         return bool(os.environ.get("ANTHROPIC_API_KEY") or
                     os.environ.get("TOGETHER_API_KEY"))
 
-    def propose(self, context: str, n: int) -> list[Idea]:
+    def propose(self, context: str, n: int, cwd: str | None = None) -> list[Idea]:
         prompt = (
             f"{context}\n\n"
             f"Propose exactly {n} distinct single-variable ideas to try next. "
@@ -176,9 +180,12 @@ def _apply_file_sections(reply: str, root: Path) -> list[str]:
         fence = _IDEA_FENCE.search(body)
         if fence:
             body = fence.group(1)
-        path = (root / rel).resolve()
-        if not str(path).startswith(str(root.resolve())):
-            continue
+        root_r = root.resolve()
+        path = (root_r / rel).resolve()
+        try:
+            path.relative_to(root_r)
+        except ValueError:
+            continue  # absolute paths, .. traversal, and sibling prefixes
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(body + ("\n" if body else ""))
         written.append(rel)
@@ -199,7 +206,7 @@ class FakeHarness:
     def probe(self) -> dict:
         return {"installed": True, "authed": True}
 
-    def propose(self, context: str, n: int) -> list[Idea]:
+    def propose(self, context: str, n: int, cwd: str | None = None) -> list[Idea]:
         ideas = self.scripted[:n]
         while len(ideas) < n:
             i = len(ideas)
@@ -245,12 +252,17 @@ def _parse_ideas(text: str, n: int) -> list[Idea]:
 
 
 def detect_harnesses() -> dict[str, dict]:
-    """Dashboard readiness probe for the onboarding screen."""
+    """Dashboard readiness probe for the onboarding screen. The api harness
+    reports which provider key it would actually use — that's what
+    ``build_harness`` selects."""
+    api_key = ("ANTHROPIC_API_KEY" if os.environ.get("ANTHROPIC_API_KEY")
+               else "TOGETHER_API_KEY" if os.environ.get("TOGETHER_API_KEY")
+               else None)
     return {
         "claude-code": ClaudeCodeHarness().probe(),
-        "api": {"installed": True,
-                "authed": bool(os.environ.get("ANTHROPIC_API_KEY") or
-                               os.environ.get("TOGETHER_API_KEY"))},
+        "api": {"installed": True, "authed": api_key is not None,
+                "detail": f"via {api_key}" if api_key else "needs "
+                "ANTHROPIC_API_KEY or TOGETHER_API_KEY"},
         "fake": {"installed": True, "authed": True},
     }
 
@@ -260,8 +272,14 @@ def build_harness(name: str, llm=None) -> Harness:
         return ClaudeCodeHarness()
     if name == "api":
         if llm is None:
-            from agentfork.harness.adapter import AnthropicLLM
-            llm = AnthropicLLM()
+            # pick the adapter by whichever provider key is present —
+            # matching what detect_harnesses reports as authed
+            if os.environ.get("ANTHROPIC_API_KEY"):
+                from agentfork.harness.adapter import AnthropicLLM
+                llm = AnthropicLLM()
+            else:
+                from agentfork.harness.adapter import OpenAICompatLLM
+                llm = OpenAICompatLLM()
         return ApiHarness(llm)
     if name == "fake":
         return FakeHarness()

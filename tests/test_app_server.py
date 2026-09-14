@@ -157,10 +157,61 @@ def test_loop_stop(server, repo):
     assert out["state"] == "stopping"
 
 
-def test_unknown_route_is_a_400(server):
+def test_unknown_route_is_a_404(server):
     with pytest.raises(AssertionError) as e:
         _req(server, "GET", "/api/nothing")
-    assert "400" in str(e.value)
+    assert "404" in str(e.value)
+
+
+def test_cross_origin_posts_are_rejected(server, repo):
+    """A malicious web page can POST to a loopback port (no preflight needed
+    for plain requests) — every browser sends Origin, so a foreign one is
+    refused before the route runs."""
+    import http.client
+
+    conn = http.client.HTTPConnection("127.0.0.1", server, timeout=30)
+    try:
+        conn.request("POST", "/api/projects", body=b"{}",
+                     headers={"content-type": "application/json",
+                              "origin": "https://evil.example"})
+        resp = conn.getresponse()
+        resp.read()
+        assert resp.status == 403
+        # same-origin browser POST carries the dashboard's own origin
+        conn.request("POST", "/api/projects", body=b"{}",
+                     headers={"content-type": "application/json",
+                              "origin": f"http://127.0.0.1:{server}"})
+        resp = conn.getresponse()
+        resp.read()
+        assert resp.status != 403
+    finally:
+        conn.close()
+
+
+def test_a_token_is_enforced_when_the_server_asks_for_one(tmp_path):
+    """Binding off loopback turns on bearer auth; the app only checks when
+    a token is configured."""
+    app = App(home=tmp_path / "home2", token="sekret")
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(app, None))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    port = httpd.server_address[1]
+    try:
+        with pytest.raises(AssertionError) as e:
+            _req(port, "GET", "/api/health")
+        assert "403" in str(e.value)
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/health",
+            headers={"authorization": "Bearer sekret"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            assert json.loads(resp.read())["ok"]
+        # EventSource-style query auth works too
+        with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/api/health?token=sekret",
+                timeout=30) as resp:
+            assert json.loads(resp.read())["ok"]
+    finally:
+        httpd.shutdown()
+        app.close()
 
 
 def test_keepalive_survives_a_post_whose_route_ignores_the_body(server, repo):

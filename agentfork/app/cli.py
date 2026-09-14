@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
 import time
@@ -46,8 +47,12 @@ def _api(port: int, method: str, path: str, body: dict | None = None,
          timeout: float = 30.0):
     url = f"http://127.0.0.1:{port}{path}"
     data = json.dumps(body).encode() if body is not None else None
+    headers = {"content-type": "application/json"}
+    token = os.environ.get("AGENTFORK_TOKEN")
+    if token:  # required when the dashboard is bound off loopback
+        headers["authorization"] = f"Bearer {token}"
     req = urllib.request.Request(url, data=data, method=method,
-                                 headers={"content-type": "application/json"})
+                                 headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read() or b"null")
@@ -79,10 +84,14 @@ def _kv_table(d: dict, keys: list[str]) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    # `agentfork amr` is a passthrough: everything after it is amr's own args
+    # `agentfork amr` is a passthrough: everything after it is amr's own
+    # args. The split must happen at the subcommand position — the first
+    # non-flag token — or a repo path/value equal to "amr" hijacks the parse.
     amr_args: list[str] | None = None
-    if "amr" in argv:
-        i = argv.index("amr")
+    i = 0
+    while i < len(argv) and argv[i].startswith("-"):
+        i += 2 if argv[i] in ("--port", "--home") else 1
+    if i < len(argv) and argv[i] == "amr":
         argv, amr_args = argv[:i], argv[i + 1:]
     ap = argparse.ArgumentParser(prog="agentfork", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -115,6 +124,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--timeout", type=int, default=600)
     p.add_argument("--max-gens", type=int, default=3)
     p.add_argument("--holdout", dest="holdout_cmd", default="")
+    p.add_argument("--eval-slots", type=int, default=2,
+                   help="max concurrent eval processes")
+    p.add_argument("--cost", dest="costs", action="append", default=[],
+                   metavar="NAME=TOL", help="cost guard, repeatable "
+                   "(e.g. --cost seconds=0.5)")
+    p.add_argument("--baseline-runs", type=int, default=2)
 
     p = sub.add_parser("project")
     p.add_argument("id")
@@ -170,10 +185,19 @@ def main(argv: list[str] | None = None) -> int:
                   f"[{p['baseline_branch']}]")
         return 0
     if args.cmd == "new":
+        try:
+            cost_guards = {k.strip(): float(v)
+                           for k, v in (c.split("=", 1) for c in args.costs)}
+        except ValueError:
+            raise SystemExit("error: --cost wants NAME=TOLERANCE pairs") \
+                from None
         params = {"eval_cmd": args.eval_cmd, "metric_grep": args.metric_grep,
                   "minimize": not args.maximize, "k": args.k, "b": args.b,
                   "timeout_s": args.timeout, "max_gens": args.max_gens,
-                  "holdout_cmd": args.holdout_cmd}
+                  "holdout_cmd": args.holdout_cmd,
+                  "eval_slots": args.eval_slots,
+                  "baseline_runs": args.baseline_runs,
+                  "cost_guards": cost_guards}
         proj = _api(port, "POST", "/api/projects",
                     {"name": args.name or Path(args.path).resolve().name,
                      "repo_path": str(Path(args.path).resolve()),
