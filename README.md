@@ -1,5 +1,49 @@
 # agentfork
 
+agentfork is a local autoresearch app: one executable that fans out agent
+candidates inside your repo, scores each with your own eval command, and keeps
+only what beats its parent — with the runtime underneath it.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sachinkesiraju/agentfork/main/install.sh | sh
+agentfork up        # local dashboard at http://127.0.0.1:8474
+```
+
+Everything is local: SQLite state in `~/.agentfork`, a git worktree per
+experiment node, and detached eval processes you can kill from the UI or the
+CLI. Nothing leaves the machine except the agent harness you pick.
+
+- **Project** = a git repo plus a fixed eval contract (`eval_cmd`,
+  `metric_grep`, minimize/maximize).
+- **Node** = one agentfork branch: a git worktree + a KV context slice + the
+  runs that answered it. Nodes freeze once answered.
+- **Autoresearch** = the [agent-mapreduce](https://github.com/sachinkesiraju/agent-mapreduce)
+  program, baked in: baseline twice for a noise margin, fan out K ideas, score
+  from eval artifacts (never the worker's claim), keep the top B that beat
+  their own parent, write down a law on a stall, holdout-check the champion.
+- **Ledger** = the numbers nothing else shows: resident KV tokens, dedup
+  ratio, prefills saved, fork/kill counters, live branches.
+
+Drive the same state from the terminal:
+
+```bash
+agentfork new ./my-repo --eval "python train.py" --metric "val_loss=([0-9.]+)"
+agentfork baseline <project>        # 2 runs → noise margin
+agentfork loop <project> start      # propose → fan out → eval → reduce → descend
+agentfork tree <project>            # the experiment tree
+agentfork runs <project> && agentfork logs <run> -f
+agentfork metrics <project>         # KV + orchestrator counters
+agentfork install-skills            # agent-mapreduce skill for agent CLIs
+```
+
+Harnesses, in detection order: **Claude Code** (`claude auth status`), a
+plain **API adapter** (`ANTHROPIC_API_KEY`/`TOGETHER_API_KEY`), and a
+deterministic **fake** for tests.
+
+The rest of this README describes the runtime the app is built on.
+
+---
+
 agentfork is a runtime for tree-style agent fanout.
 
 It forks a live agent's sandbox and its LLM KV context together, as one

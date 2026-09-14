@@ -8,3 +8,5 @@ build/
 dist/
 session_census_raw.json
 ROADMAP.md
+node_modules/
+!agentfork/app/ui/dist/
