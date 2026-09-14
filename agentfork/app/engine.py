@@ -320,6 +320,7 @@ class Engine:
         node = self.store.node(node_id)
         if node is None or node["worktree_path"] is None:
             raise EngineError(f"node {node_id} has no worktree")
+        self._ensure_worktree(project, node)
         # Frozen means a run already answered the node; only an explicit
         # caller re-answer (``force``) or a holdout may re-run it.
         if node["frozen"] and not (force or kind == "holdout"):
@@ -349,6 +350,25 @@ class Engine:
         self._emit(project_id, "run.started", run_id=run["id"],
                    node_id=node_id, run_kind=kind, pid=handle.pid)
         return run
+
+    def _ensure_worktree(self, project: dict, node: dict) -> None:
+        """Re-check out a node's worktree if it is gone.
+
+        A node's evidence is its git branch and commit, not its working
+        directory: shutting the dashboard down collects the sandboxes, so a
+        node answered in an earlier session has a branch but no checkout.
+        """
+        path = Path(node["worktree_path"])
+        if path.exists():
+            return
+        branch = node["branch_name"]
+        if not branch or not git.branch_exists(project["repo_path"], branch):
+            raise EngineError(
+                f"node {node['id']}: worktree and branch are both gone")
+        git.add_worktree(project["repo_path"], path, branch,
+                         node["commit_sha"] or branch)
+        self._emit(project["id"], "node.restored", node_id=node["id"],
+                   worktree=str(path))
 
     def kill_run(self, run_id: str) -> dict:
         run = self.store.run(run_id)
@@ -526,6 +546,19 @@ class Engine:
             if score is not None and status == "done":
                 self._emit(run["project_id"], "node.scored",
                            node_id=node["id"], score=score, delta=delta)
+        self._settle_loop_state(run["project_id"])
+
+    def _settle_loop_state(self, project_id: str) -> None:
+        """Leave a hand-driven project idle once nothing is in flight, so the
+        header stops offering to stop a generation that already finished."""
+        if any(r["status"] in ("queued", "running")
+               for r in self.store.runs(project_id)):
+            return
+        state = self.store.loop_state(project_id)
+        if state["state"] in ("running", "baseline"):
+            self._set_step_state(
+                project_id, state="ready",
+                message=f"gen {state['gen']}: all runs settled")
 
     def _costs(self, run: dict) -> dict[str, float]:
         """Cost guards: wall-clock seconds are the built-in cost."""

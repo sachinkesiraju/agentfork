@@ -7,6 +7,7 @@ map-reduce loop runs with no network and no model.
 
 import subprocess
 import time
+from pathlib import Path
 
 import pytest
 
@@ -387,3 +388,35 @@ def test_ledger_reports_the_tree_after_a_restart(engine, repo, tmp_path):
         assert "dedup_ratio" in metrics["kv"]
     finally:
         restarted.close()
+
+
+def test_killing_every_candidate_leaves_the_loop_idle(engine, repo):
+    p = _project(engine, repo, eval_cmd="sleep 5", timeout_s=300)
+    root = engine.baseline(p["id"])
+    for run in engine.store.runs(p["id"]):
+        engine.kill_run(run["id"])
+    engine.store.update_node(root["id"], status="ran", score=1.0, frozen=True)
+    nodes = engine.fan_out(p["id"], root["id"],
+                           [Idea("good", "a"), Idea("okay", "b")])
+    _wait(engine, [n["id"] for n in nodes])
+    for run in engine.store.runs(p["id"]):
+        if run["status"] in ("queued", "running"):
+            engine.kill_run(run["id"])
+    assert engine.store.loop_state(p["id"])["state"] != "running"
+
+
+def test_a_node_whose_worktree_is_gone_is_checked_out_again(engine, repo):
+    """The node's evidence is its branch and commit; the checkout is
+    disposable and comes back when a run needs it."""
+    p = _project(engine, repo)
+    root = engine.baseline(p["id"])
+    _wait(engine, [root["id"]])
+    nodes = engine.fan_out(p["id"], root["id"], [Idea("good", "a")])
+    _wait(engine, [n["id"] for n in nodes])
+    node = engine.store.node(nodes[0]["id"])
+    git.remove_worktree(repo, node["worktree_path"])
+    assert not Path(node["worktree_path"]).exists()
+    engine.start_eval(p["id"], node["id"], force=True)
+    assert Path(node["worktree_path"]).exists()
+    _wait(engine, [node["id"]])
+    assert engine.store.node(node["id"])["score"] == 0.20
