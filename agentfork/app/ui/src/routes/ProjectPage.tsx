@@ -254,10 +254,10 @@ export default function ProjectPage() {
                   variant="primary"
                   disabled={!node || !!busy}
                   onClick={() =>
-                    node && act("descend", () => api.descend(projectId, node.id, p.k))
+                    node && act("fanout", () => api.fanout(projectId, node.id, p.k))
                   }
                 >
-                  {busy === "descend" ? "Forking…" : `Fan out ×${p.k}`}
+                  {busy === "fanout" ? "Forking…" : `Fan out ×${p.k}`}
                 </Button>
                 <Button
                   disabled={!loop || !loop.gen || !!busy || activeRuns > 0}

@@ -20,9 +20,18 @@ export default function LogTerminal({ runId }: { runId: string | null }) {
       try {
         const out = await api.log(runId, offset.current);
         offset.current = out.offset;
-        setStatus(out.alive ? "running" : `${out.status} (exit ${out.exit_code ?? "—"})`);
+        const inflight = out.status === "running" || out.status === "queued";
+        setStatus(
+          out.alive
+            ? "running"
+            : inflight
+              ? out.status
+              : `${out.status} (exit ${out.exit_code ?? "—"})`,
+        );
         if (out.text) setText((t) => t + out.text);
-        if (!out.alive) return;
+        // a queued run has no pid yet — keep polling so its log streams
+        // once an eval slot frees and it starts
+        if (!out.alive && !inflight) return;
       } catch {
         /* run may not have a log yet */
       }

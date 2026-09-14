@@ -16,15 +16,18 @@ exit codes, extracts scores, and logs to ``results.tsv``.
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import shutil
+import sys
 import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
 
 from agentfork.app import amr, git, runner
-from agentfork.app.harness import HarnessError, Idea, build_harness
+from agentfork.app.harness import Idea, build_harness
 from agentfork.app.store import Store
 from agentfork.orchestrator import ForkOrchestrator, SandboxBackend
 
@@ -122,11 +125,11 @@ class Engine:
         # loop state while it runs, so single steps must not overwrite it
         self.driven: set[str] = set()
         self._stop = threading.Event()
-        # workers run as threads of this process — a row still "running" here
-        # was orphaned by a previous dashboard; settle it so its node doesn't
-        # sit on "implementing" forever
+        # a worker row with no pid is a legacy in-process worker orphaned by
+        # a previous dashboard — it can never finish, so settle it now.
+        # pid-ful rows are detached processes the poller adopts normally.
         for run in self.store.active_runs():
-            if run["kind"] == "worker":
+            if run["kind"] == "worker" and not run.get("pid"):
                 self.store.update_run(run["id"], status="failed",
                                       ended_at=time.time())
                 node = self.store.node(run["node_id"])
@@ -280,7 +283,20 @@ class Engine:
                               "wait for its runs to finish")
         orch = self._orchestrator(project)
         self._adopt_branch(orch, project, parent)
-        children = orch.fork(parent_node_id, n=len(ideas))
+        # name children ourselves: the orchestrator's next-id counter only
+        # knows live branches, but node ids are the tsv's commits — a reused
+        # id would collide with a discarded child's row (and after a
+        # restart, with every previous child's)
+        used = {n["id"] for n in self.store.nodes(project_id)}
+        child_ids = []
+        i = 1
+        while len(child_ids) < len(ideas):
+            cid = f"{parent_node_id}/{i}"
+            i += 1
+            if cid not in used:
+                child_ids.append(cid)
+        children = orch.fork(parent_node_id, n=len(ideas),
+                             child_ids=child_ids)
         nodes = []
         for branch, idea in zip(children, ideas):
             orch.extend(branch.branch_id, _tokenize(idea.description))
@@ -310,62 +326,36 @@ class Engine:
     # -- runs ---------------------------------------------------------------
 
     def start_worker(self, project: dict, node: dict, harness, idea: Idea):
-        """A worker run is a detached run too: the harness applies the idea
-        inside the node's worktree, then the node is committed and queued for
-        eval. For CLI harnesses the work is a process; for in-process
-        harnesses (fake/api) we run it in a helper thread."""
+        """A worker run is a detached process (``agentfork.app.worker``) —
+        the harness applies the idea inside the node's worktree, the worker
+        commits it and queues the eval. A real pid means a worker can be
+        killed mid-edit, streams its log like an eval's, and survives the
+        dashboard (its worktree is left alone on close)."""
         run = self.store.create_run(project_id=project["id"],
                                     node_id=node["id"], kind="worker",
                                     command=f"harness:{harness.name}",
-                                    run_dir="", status="running")
+                                    run_dir="", status="queued")
         run_dir = self.project_dir(project["id"]) / _RUNS / run["id"]
-        self.store.update_run(run["id"], run_dir=str(run_dir))
-        ctx = self._context(project["id"])
-        t = threading.Thread(target=self._do_worker,
-                             args=(project, node, harness, idea, ctx, run["id"]),
-                             daemon=True)
-        t.start()
-        return run
-
-    def _do_worker(self, project, node, harness, idea, context, run_id):
-        run_dir = Path(self.store.run(run_id)["run_dir"])
         run_dir.mkdir(parents=True, exist_ok=True)
-
-        def _aborted() -> bool:
-            """The run was killed/finished out from under the thread — stop
-            before committing or queueing an eval for it."""
-            return self.store.run(run_id)["status"] != "running"
-
-        try:
-            with (run_dir / runner.LOG).open("w") as log:
-                try:
-                    summary = harness.implement(node["worktree_path"], idea,
-                                                context)
-                    log.write(summary + "\n")
-                except HarnessError as exc:
-                    log.write(f"worker failed: {exc}\n")
-                    raise
-            if _aborted():
-                return
-            sha = git.commit_all(node["worktree_path"],
-                                 f"agentfork: {idea.title}")
-            self.store.update_run(run_id, status="done", ended_at=time.time())
-            self.store.update_node(node["id"], status="ready",
-                                   commit_sha=sha or node["commit_sha"])
-            self._emit(project["id"], "node.ready", node_id=node["id"])
-            self.start_eval(project["id"], node["id"])
-        except Exception as exc:  # noqa: BLE001 — worker failure → node crash
-            _log.exception("worker failed for %s", node["id"])
-            if _aborted():
-                return
-            self.store.update_run(run_id, status="failed", ended_at=time.time())
-            self.store.update_node(node["id"], status="crash", frozen=True)
-            self.results(project["id"]).log(
-                node["gen"], node["id"], node["parent_id"] or "-", None,
-                "crash", f"worker failed: {exc}",
-                regions=node["regions"])
-            self._emit(project["id"], "node.crashed", node_id=node["id"],
-                       reason=str(exc)[:200])
+        (run_dir / "payload.json").write_text(json.dumps({
+            "db": str(self.store.path),
+            "project_id": project["id"],
+            "project_dir": str(self.project_dir(project["id"])),
+            "node_id": node["id"],
+            "title": node["title"],
+            "description": node["description"],
+            "regions": node["regions"],
+            "context": self._context(project["id"]),
+        }))
+        import agentfork
+        package_root = str(Path(agentfork.__file__).resolve().parent.parent)
+        env = {"PYTHONPATH": package_root + os.pathsep
+               + os.environ.get("PYTHONPATH", "")}
+        command = f"'{sys.executable}' -m agentfork.app.worker '{run_dir}'"
+        handle = runner.start(run_dir, command, run_dir, env=env)
+        return self.store.update_run(
+            run["id"], status="running", run_dir=str(run_dir),
+            command=command, pid=handle.pid, started_at=time.time())
 
     def start_eval(self, project_id: str, node_id: str,
                    kind: str = "eval", force: bool = False) -> dict:
@@ -459,20 +449,13 @@ class Engine:
             raise EngineError(f"no such run: {run_id}")
         if run["status"] not in ("queued", "running"):
             return run  # already settled — nothing to kill
-        if run["status"] == "running" and run["kind"] != "worker":
+        if run["status"] == "running":
             runner.kill(run["run_dir"])
         self._emit(run["project_id"], "run.killed", run_id=run_id)
         # settle the node too: a killed run still answers it (as a crash),
         # otherwise the node is stuck "running" with nothing left to finish it
         self._finish_run(run, runner_exit=runner.exit_code(run["run_dir"]),
                          killed="killed")
-        # a killed worker can't drive its node to ready — mark the node so
-        # the tree doesn't sit on "implementing" forever (the worker thread
-        # itself checks the run row and aborts before committing)
-        if run["kind"] == "worker":
-            node = self.store.node(run["node_id"])
-            if node and node["status"] in ("proposed", "implementing"):
-                self.store.update_node(node["id"], status="crash")
         return self.store.run(run_id)
 
     def _node_busy(self, project_id: str, node_id: str) -> bool:
@@ -628,8 +611,8 @@ class Engine:
                 _log.exception("launch failed for %s", run["id"])
                 self._finish_run(run, runner_exit=127, killed=None)
         for run in self.store.active_runs():
-            if run["status"] == "queued" or run["kind"] == "worker":
-                continue  # queued: waits on a slot; worker: own thread
+            if run["status"] == "queued":
+                continue  # waits on a slot; the drain above starts it
             run_dir = run["run_dir"]
             if runner.alive(run_dir):
                 started = run.get("started_at") or run["created_at"]
@@ -663,6 +646,21 @@ class Engine:
         self._emit(run["project_id"], "run.finished", run_id=run["id"],
                    node_id=run["node_id"], status=status,
                    exit_code=runner_exit, score=score)
+        if run["kind"] == "worker":
+            # a failed/killed worker can't drive its node to ready — mark
+            # the node so the tree doesn't sit on "implementing" forever
+            if status != "done" and node and node["status"] == "implementing":
+                self.store.update_node(node["id"], status="crash",
+                                       frozen=node["gen"] > 0)
+                self.results(run["project_id"]).log(
+                    node["gen"], node["id"], node["parent_id"] or "-",
+                    None, "crash", f"worker exited {runner_exit}",
+                    regions=node["regions"])
+                self._emit(run["project_id"], "node.crashed",
+                           node_id=node["id"],
+                           reason=f"worker exited {runner_exit}")
+            self._settle_loop_state(run["project_id"])
+            return
         if run["kind"] == "holdout":
             # validation, not a candidate answer: the score stays on the run
             # row; the tsv gets a note (byte-compatible) and the node's

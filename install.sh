@@ -30,6 +30,8 @@ mkdir -p "$BIN"
 ln -sf "$VENV/bin/agentfork" "$BIN/agentfork"
 
 echo "installed: $BIN/agentfork"
+echo "worker harness: install the 'claude' CLI, or export ANTHROPIC_API_KEY"
+echo "(or TOGETHER_API_KEY) for the api harness — 'fake' needs nothing"
 case ":$PATH:" in
   *":$BIN:"*) : ;;
   *) echo "note: $BIN is not on PATH — add it, then run:" ;;

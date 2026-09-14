@@ -13,7 +13,7 @@ import pytest
 
 from agentfork.app import git
 from agentfork.app.engine import Engine, EngineError
-from agentfork.app.harness import FakeHarness, Idea
+from agentfork.app.harness import Idea
 from agentfork.app.store import Store
 
 # eval: score = 1.0 unless the candidate marker names a better idea
@@ -217,18 +217,18 @@ def test_eval_timeout_is_killed_and_recorded(engine, repo):
     assert engine.store.node(root["id"])["status"] == "crash"
 
 
-def test_worker_failure_crashes_the_node(engine, repo, monkeypatch):
+def test_worker_failure_crashes_the_node(engine, repo):
     p = _project(engine, repo)
     root = engine.baseline(p["id"])
     _wait(engine, [root["id"]])
-
-    def boom(self, worktree, idea, context):
-        raise RuntimeError("harness exploded")
-
-    monkeypatch.setattr(FakeHarness, "implement", boom)
-    nodes = engine.fan_out(p["id"], root["id"], [Idea("bad", "x")])
+    # "fail" is the fake harness's scripted failure — the worker is a real
+    # subprocess, so its crash comes back via the run's exit code
+    nodes = engine.fan_out(p["id"], root["id"], [Idea("fail", "x")])
     _wait(engine, [n["id"] for n in nodes])
     assert engine.store.node(nodes[0]["id"])["status"] == "crash"
+    runs = [r for r in engine.store.runs(p["id"]) if r["kind"] == "worker"]
+    assert runs and runs[0]["status"] == "failed"
+    assert runs[0]["pid"]  # workers are real processes, killable like evals
 
 
 def test_cost_guard_rejects_a_slow_winner(engine, repo):
@@ -483,6 +483,49 @@ def test_a_restarted_dashboard_can_still_fan_out(engine, repo, tmp_path):
         assert restarted.store.node(nodes[0]["id"])["score"] == 0.20
     finally:
         restarted.close()
+
+
+def test_child_ids_never_collide_with_prior_nodes(engine, repo, tmp_path):
+    """Node ids are the tsv's commits: the orchestrator's next-id counter
+    only knows live branches, so children must be named from the store —
+    otherwise a discarded (or pre-restart) child's id gets reused and its
+    row collides."""
+    p = _project(engine, repo)
+    root = engine.baseline(p["id"])
+    _wait(engine, [root["id"]])
+    first = engine.fan_out(p["id"], root["id"], [Idea("good", "a")])
+    _wait(engine, [n["id"] for n in first])
+    engine.close()
+    restarted = Engine(engine.store, home=tmp_path / "home")
+    try:
+        second = restarted.fan_out(p["id"], root["id"], [Idea("okay", "b")])
+        assert second[0]["id"] != first[0]["id"]
+        _wait(restarted, [n["id"] for n in second])
+    finally:
+        restarted.close()
+
+
+def test_holdout_does_not_contaminate_the_record(engine, repo):
+    """A holdout is revalidation, not an answer: the node's score/status
+    don't move, and the tsv records a note — never a 'ran' row."""
+    p = _project(engine, repo, holdout_cmd="./eval.sh")
+    root = engine.baseline(p["id"])
+    _wait(engine, [root["id"]])
+    nodes = engine.fan_out(p["id"], root["id"], [Idea("good", "a")])
+    _wait(engine, [n["id"] for n in nodes])
+    node = engine.store.node(nodes[0]["id"])
+    run = engine.start_eval(p["id"], node["id"], kind="holdout")
+    deadline = time.monotonic() + 30
+    while engine.store.run(run["id"])["status"] in ("queued", "running"):
+        assert time.monotonic() < deadline, "holdout never finished"
+        time.sleep(0.05)
+    run = engine.store.run(run["id"])
+    assert run["status"] == "done" and run["score"] == pytest.approx(0.20)
+    after = engine.store.node(node["id"])
+    assert after["score"] == node["score"] and after["status"] == node["status"]
+    rows = [r for r in engine.results(p["id"]).rows()
+            if r.commit == node["id"]]
+    assert [r.status for r in rows][-1] == "note"
 
 
 def test_score_is_grepped_from_the_end_of_the_log(engine, repo, tmp_path):

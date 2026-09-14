@@ -13,7 +13,7 @@ subcommands inspect and drive it — so `agentfork projects`, `tree`, `runs`,
     agentfork project <id>             project detail
     agentfork baseline <project>       create root + queue baseline evals
     agentfork tree <project>           experiment tree (rendered)
-    agentfork descend <project> <node> [-k N]
+    agentfork fanout <project> <node> [-k N]  propose + fan out (alias: descend)
     agentfork reduce <project> --gen N [--margin M]
     agentfork runs <project>
     agentfork logs <run> [-f]
@@ -137,7 +137,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("project")
     p = sub.add_parser("tree")
     p.add_argument("project")
-    p = sub.add_parser("descend")
+    p = sub.add_parser("fanout", aliases=["descend"])
     p.add_argument("project")
     p.add_argument("node")
     p.add_argument("-k", type=int, default=None)
@@ -218,11 +218,11 @@ def main(argv: list[str] | None = None) -> int:
               f"margin={loop['margin']} frontier={loop['frontier']}")
         print(r["tree"] or "(no results yet)")
         return 0
-    if args.cmd == "descend":
+    if args.cmd in ("fanout", "descend"):
         body = {"parent_id": args.node}
         if args.k:
             body["k"] = args.k
-        out = _api(port, "POST", f"/api/projects/{args.project}/descend", body)
+        out = _api(port, "POST", f"/api/projects/{args.project}/fanout", body)
         for n in out["nodes"]:
             print(f"{n['id']}  gen{n['gen']}  {n['title']}")
         return 0

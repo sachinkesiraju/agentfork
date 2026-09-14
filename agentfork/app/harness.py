@@ -215,6 +215,9 @@ class FakeHarness:
         return ideas
 
     def implement(self, worktree: str, idea: Idea, context: str) -> str:
+        # scripted failure for tests: the title "fail" always crashes
+        if idea.title == "fail":
+            raise HarnessError("scripted failure")
         marker = Path(worktree) / ".agentfork-candidate"
         marker.write_text(f"{idea.title}\n{idea.description}\n")
         return f"wrote .agentfork-candidate ({idea.title})"

@@ -13,7 +13,8 @@ Routes (JSON unless noted):
     GET  /api/projects/{id}/runs     all runs
     GET  /api/projects/{id}/laws
     POST /api/projects/{id}/baseline create root node + queue baseline evals
-    POST /api/projects/{id}/descend  {parent_id, k} propose+fan out
+    POST /api/projects/{id}/fanout   {parent_id, k} propose+fan out
+    POST /api/projects/{id}/descend  alias for /fanout
     POST /api/projects/{id}/reduce   {gen, margin?}
     POST /api/projects/{id}/holdout  {node_id}
     POST /api/projects/{id}/loop/start   run the whole map-reduce loop
@@ -283,7 +284,7 @@ def make_handler(app: App, ui_root: Path | None):
                                        ["params"]["minimize"]).render()}
             if action == "baseline" and method == "POST":
                 return engine.baseline(pid)
-            if action == "descend" and method == "POST":
+            if action in ("fanout", "descend") and method == "POST":
                 b = self._body()
                 nodes = engine.descend(pid, b["parent_id"],
                                        int(b.get("k") or
@@ -365,7 +366,12 @@ def make_handler(app: App, ui_root: Path | None):
             except ValueError:
                 path = ui_root / "__outside__"  # forces the SPA fallback
             if not path.is_file():
-                path = ui_root / "index.html"  # SPA fallback
+                # SPA fallback only for extensionless paths — a request for
+                # a missing *asset* (has a file suffix) is a 404, not HTML
+                if "." in Path(rel).name:
+                    self._send(404, b"not found", "text/plain")
+                    return None
+                path = ui_root / "index.html"
             if not path.is_file():
                 self._send(404, b"not found", "text/plain")
                 return None

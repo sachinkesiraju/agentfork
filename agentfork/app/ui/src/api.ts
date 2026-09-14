@@ -123,8 +123,8 @@ export const api = {
     call<{ path: string; rows: unknown[]; tree: string }>(`/projects/${id}/results`),
   baseline: (id: string) =>
     call<Node>(`/projects/${id}/baseline`, { method: "POST", body: "{}" }),
-  descend: (id: string, parent_id: string, k?: number) =>
-    call<{ nodes: Node[] }>(`/projects/${id}/descend`, {
+  fanout: (id: string, parent_id: string, k?: number) =>
+    call<{ nodes: Node[] }>(`/projects/${id}/fanout`, {
       method: "POST",
       body: JSON.stringify({ parent_id, k }),
     }),
