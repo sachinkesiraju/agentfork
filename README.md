@@ -1,5 +1,57 @@
 # agentfork
 
+agentfork is a local autoresearch app: one executable that fans out agent
+candidates inside your repo, scores each with your own eval command, and keeps
+only what beats its parent — with the runtime underneath it.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sachinkesiraju/agentfork/main/install.sh | sh
+agentfork up        # local dashboard at http://127.0.0.1:8474
+```
+
+Everything is local: SQLite state in `~/.agentfork`, a git worktree per
+experiment node, and detached eval processes you can kill from the UI or the
+CLI. Nothing leaves the machine except the agent harness you pick. The server
+binds loopback only; if you deliberately bind wider (`--host 0.0.0.0`, e.g.
+behind an SSH tunnel) every API call then requires the bearer token printed
+in the dashboard URL (`?token=`).
+
+- **Project** = a git repo plus a fixed eval contract (`eval_cmd`,
+  `metric_grep`, minimize/maximize).
+- **Node** = one agentfork branch: a git worktree + a KV context slice + the
+  runs that answered it. Nodes freeze once answered.
+- **Autoresearch** = the [agent-mapreduce](https://github.com/sachinkesiraju/agent-mapreduce)
+  program, baked in: baseline twice for a noise margin, fan out K ideas, score
+  from eval artifacts (never the worker's claim), keep the top B that beat
+  their own parent, write down a law on a stall, holdout-check the champion.
+- **Ledger** = the numbers nothing else shows: resident KV tokens, dedup
+  ratio, prefills saved, fork/kill counters, live branches.
+
+Drive the same state from the terminal:
+
+```bash
+agentfork new ./my-repo --eval "python train.py" --metric "val_loss=([0-9.]+)"
+agentfork baseline <project>        # 2 runs → noise margin
+agentfork loop <project> start      # propose → fan out → eval → reduce → descend
+agentfork tree <project>            # the experiment tree
+agentfork runs <project> && agentfork logs <run> -f
+agentfork metrics <project>         # KV + orchestrator counters
+agentfork install-skills            # agent-mapreduce skill for agent CLIs
+```
+
+Harnesses: **Claude Code**, **Codex**, **OpenCode**, and **cursor-agent**
+CLIs in headless mode (each probed via its own status command — auth is
+whatever the vendor CLI already has), a plain **API adapter**, and a
+deterministic **fake** for tests. `--model` is passed through to whichever
+harness you pick. The API adapter targets any OpenAI-compatible endpoint
+with `--api-base`/`AGENTFORK_API_BASE` (loopback only from the dashboard —
+Ollama `:11434/v1`, LM Studio `:1234/v1`, vLLM), else falls back to
+`ANTHROPIC_API_KEY`/`TOGETHER_API_KEY`.
+
+The rest of this README describes the runtime the app is built on.
+
+---
+
 agentfork is a runtime for tree-style agent fanout.
 
 It forks a live agent's sandbox and its LLM KV context together, as one
