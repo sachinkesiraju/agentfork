@@ -8,10 +8,16 @@ Harnesses, in detection order:
 
 * ``claude-code`` — the ``claude`` CLI in headless ``-p`` mode, detected via
   ``claude auth status --json`` (the check OpenResearch's claude.rs uses).
-* ``api`` — the existing ``agentfork.harness`` LLM adapters: proposes ideas and
-  applies a change by asking the model to emit complete replacement files in
-  ``## path`` sections (no tool use, but works offline of any CLI and needs
-  only an API key).
+* ``codex`` / ``opencode`` / ``cursor-agent`` — the other vendor CLIs in
+  their headless print modes (``codex exec``, ``opencode run``,
+  ``cursor-agent -p``), detected via each CLI's own status command.
+* ``api`` — plain chat completions over the ``agentfork.harness`` adapters:
+  proposes ideas and applies a change by asking the model to emit complete
+  replacement files in ``## path`` sections (no tool use, but works without
+  any vendor CLI). Provider selection: ``AGENTFORK_API_BASE`` (+ optional
+  ``AGENTFORK_API_KEY``/``AGENTFORK_API_MODEL``) points it at any
+  OpenAI-compatible endpoint — LM Studio, Ollama, vLLM — else
+  ``ANTHROPIC_API_KEY`` or ``TOGETHER_API_KEY`` pick the hosted default.
 * ``fake`` — deterministic harness for tests and dashboards demos; makes a
   real (harmless) change so the tree has evidence.
 """
@@ -21,7 +27,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
@@ -54,13 +62,99 @@ class Harness(Protocol):
         ...
 
 
-# -- Claude Code --------------------------------------------------------------
+# -- vendor CLI harnesses -------------------------------------------------------
 
-class ClaudeCodeHarness:
+_PROPOSE_TEMPLATE = (
+    "{context}\n\n"
+    "Propose exactly {n} distinct single-variable ideas to try next. "
+    "Return them as a JSON array of objects with keys "
+    "\"title\", \"description\", \"regions\" (a list of area names). "
+    "Output only the JSON.")
+
+_IMPLEMENT_TEMPLATE = (
+    "You are working inside the git worktree in your current directory. "
+    "Implement exactly this change — nothing else:\n\n"
+    "Title: {title}\n\n{description}\n\n"
+    "Edit the files, then finish. Do not run the eval command; the "
+    "orchestrator scores this worktree after you return.")
+
+
+class CliHarness:
+    """A vendor agent CLI driven in headless print mode: propose and
+    implement are both one non-interactive invocation inside the repo/
+    worktree, so the agent can read the code it proposes changes to and edit
+    it in place. Subclasses supply the argv shape and the status probe."""
+
+    name = "cli"
+    bin = ""
+    model_flag: str | None = None
+
+    def __init__(self, model: str | None = None):
+        self.model = model
+
+    # per-CLI command shapes -------------------------------------------------
+    def _argv(self, prompt: str) -> list[str]:  # pragma: no cover
+        raise NotImplementedError
+
+    def _probe_cmd(self) -> list[str] | None:  # pragma: no cover
+        return None
+
+    def probe(self) -> dict:
+        if not shutil.which(self.bin):
+            return {"installed": False, "authed": False}
+        cmd = self._probe_cmd()
+        if cmd is None:
+            return {"installed": True, "authed": None,
+                    "detail": "no status command"}
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True,
+                                  timeout=15)
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return {"installed": True, "authed": None,
+                    "detail": "status probe failed"}
+        detail = (proc.stdout or proc.stderr).strip()[:200]
+        return {"installed": True, "authed": proc.returncode == 0,
+                "detail": detail}
+
+    def _run(self, prompt: str, cwd: str, timeout_s: float) -> str:
+        argv = self._argv(prompt)
+        if self.model and self.model_flag:
+            argv += [self.model_flag, self.model]
+        try:
+            proc = subprocess.run(argv, cwd=cwd, capture_output=True,
+                                  text=True, timeout=timeout_s)
+        except FileNotFoundError:
+            raise HarnessError(f"{self.bin} CLI not found on PATH") from None
+        except subprocess.TimeoutExpired:
+            raise HarnessError(
+                f"{self.bin} timed out after {timeout_s}s") from None
+        if proc.returncode != 0:
+            raise HarnessError(
+                f"{self.bin} exited {proc.returncode}: "
+                f"{proc.stderr.strip()[:400]}")
+        return proc.stdout.strip()
+
+    def propose(self, context: str, n: int, cwd: str | None = None) -> list[Idea]:
+        prompt = _PROPOSE_TEMPLATE.format(context=context, n=n)
+        # run inside the project's repo so the proposing agent can read the
+        # code it is proposing changes to
+        return _parse_ideas(self._run(prompt, cwd or os.getcwd(), 300), n)
+
+    def implement(self, worktree: str, idea: Idea, context: str) -> str:
+        prompt = _IMPLEMENT_TEMPLATE.format(title=idea.title,
+                                            description=idea.description)
+        self._run(prompt, worktree, 900)
+        return f"{self.bin}: {idea.title}"
+
+
+class ClaudeCodeHarness(CliHarness):
     name = "claude-code"
+    bin = "claude"
+    model_flag = "--model"
 
-    def __init__(self, bin: str = "claude"):
-        self.bin = bin
+    def _argv(self, prompt: str) -> list[str]:
+        return [self.bin, "-p", prompt, "--output-format", "text",
+                "--dangerously-skip-permissions"]
 
     def probe(self) -> dict:
         """``claude auth status --json`` — same check orx runs."""
@@ -81,41 +175,50 @@ class ClaudeCodeHarness:
                 "authed": bool(out.get("loggedIn", out.get("authed", False))),
                 "detail": proc.stdout.strip()[:200]}
 
-    def _run(self, prompt: str, cwd: str, timeout_s: float) -> str:
-        try:
-            proc = subprocess.run(
-                [self.bin, "-p", prompt, "--output-format", "text",
-                 "--dangerously-skip-permissions"],
-                cwd=cwd, capture_output=True, text=True, timeout=timeout_s)
-        except FileNotFoundError:
-            raise HarnessError("claude CLI not found on PATH") from None
-        except subprocess.TimeoutExpired:
-            raise HarnessError(f"claude timed out after {timeout_s}s") from None
-        if proc.returncode != 0:
-            raise HarnessError(
-                f"claude exited {proc.returncode}: {proc.stderr.strip()[:400]}")
-        return proc.stdout.strip()
 
-    def propose(self, context: str, n: int, cwd: str | None = None) -> list[Idea]:
-        prompt = (
-            f"{context}\n\n"
-            f"Propose exactly {n} distinct single-variable ideas to try next. "
-            "Return them as a JSON array of objects with keys "
-            "\"title\", \"description\", \"regions\" (a list of area names). "
-            "Output only the JSON.")
-        # run inside the project's repo so the proposing agent can read the
-        # code it is proposing changes to
-        return _parse_ideas(self._run(prompt, cwd or os.getcwd(), 300), n)
+class CodexHarness(CliHarness):
+    """OpenAI Codex CLI: ``codex exec`` runs one headless task; login is
+    ChatGPT-subscription or API key, probed via ``codex login status``."""
 
-    def implement(self, worktree: str, idea: Idea, context: str) -> str:
-        prompt = (
-            "You are working inside the git worktree in your current directory. "
-            "Implement exactly this change — nothing else:\n\n"
-            f"Title: {idea.title}\n\n{idea.description}\n\n"
-            "Edit the files, then finish. Do not run the eval command; the "
-            "orchestrator scores this worktree after you return.")
-        self._run(prompt, worktree, 900)
-        return f"claude: {idea.title}"
+    name = "codex"
+    bin = "codex"
+    model_flag = "--model"
+
+    def _argv(self, prompt: str) -> list[str]:
+        return [self.bin, "exec", "--full-auto", prompt]
+
+    def _probe_cmd(self) -> list[str]:
+        return [self.bin, "login", "status"]
+
+
+class OpenCodeHarness(CliHarness):
+    """OpenCode CLI: ``opencode run`` is the headless mode; its own provider
+    config (incl. any loopback model servers) carries auth."""
+
+    name = "opencode"
+    bin = "opencode"
+    model_flag = "-m"
+
+    def _argv(self, prompt: str) -> list[str]:
+        return [self.bin, "run", prompt]
+
+    def _probe_cmd(self) -> list[str]:
+        return [self.bin, "auth", "list"]
+
+
+class CursorAgentHarness(CliHarness):
+    """Cursor's ``cursor-agent`` CLI in ``-p`` print mode."""
+
+    name = "cursor-agent"
+    bin = "cursor-agent"
+    model_flag = "--model"
+
+    def _argv(self, prompt: str) -> list[str]:
+        return [self.bin, "-p", prompt, "--output-format", "text",
+                "--force"]
+
+    def _probe_cmd(self) -> list[str]:
+        return [self.bin, "status"]
 
 
 # -- API adapter harness --------------------------------------------------------
@@ -133,11 +236,7 @@ class ApiHarness:
         self.llm = llm
 
     def probe(self) -> dict:
-        return {"installed": True, "authed": self._has_key()}
-
-    def _has_key(self) -> bool:
-        return bool(os.environ.get("ANTHROPIC_API_KEY") or
-                    os.environ.get("TOGETHER_API_KEY"))
+        return {"installed": True, "authed": _api_credentials() is not None}
 
     def propose(self, context: str, n: int, cwd: str | None = None) -> list[Idea]:
         prompt = (
@@ -254,35 +353,80 @@ def _parse_ideas(text: str, n: int) -> list[Idea]:
     return ideas
 
 
+def _api_credentials() -> str | None:
+    """Which API route ``api`` would take — custom endpoint beats keys,
+    matching ``build_harness``'s selection order."""
+    if os.environ.get("AGENTFORK_API_BASE"):
+        return "AGENTFORK_API_BASE"
+    for var in ("ANTHROPIC_API_KEY", "TOGETHER_API_KEY"):
+        if os.environ.get(var):
+            return var
+    return None
+
+
+def list_models(base_url: str, api_key: str | None = None,
+                timeout: float = 10.0) -> list[str]:
+    """``GET {base}/models`` on an OpenAI-compatible server — the "find
+    models" call orx's model picker makes against LM Studio/Ollama/vLLM."""
+    headers = {"user-agent": "agentfork-harness/0.4"}
+    key = api_key if api_key is not None \
+        else os.environ.get("AGENTFORK_API_KEY", "")
+    if key:
+        headers["authorization"] = f"Bearer {key}"
+    req = urllib.request.Request(base_url.rstrip("/") + "/models",
+                                 headers=headers)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        payload = json.loads(resp.read().decode())
+    return [m["id"] for m in payload.get("data", []) if "id" in m]
+
+
 def detect_harnesses() -> dict[str, dict]:
     """Dashboard readiness probe for the onboarding screen. The api harness
-    reports which provider key it would actually use — that's what
+    reports which provider route it would actually use — that's what
     ``build_harness`` selects."""
-    api_key = ("ANTHROPIC_API_KEY" if os.environ.get("ANTHROPIC_API_KEY")
-               else "TOGETHER_API_KEY" if os.environ.get("TOGETHER_API_KEY")
-               else None)
+    api = _api_credentials()
     return {
         "claude-code": ClaudeCodeHarness().probe(),
-        "api": {"installed": True, "authed": api_key is not None,
-                "detail": f"via {api_key}" if api_key else "needs "
-                "ANTHROPIC_API_KEY or TOGETHER_API_KEY"},
+        "codex": CodexHarness().probe(),
+        "opencode": OpenCodeHarness().probe(),
+        "cursor-agent": CursorAgentHarness().probe(),
+        "api": {"installed": True, "authed": api is not None,
+                "detail": f"via {api}" if api else "needs "
+                "AGENTFORK_API_BASE, ANTHROPIC_API_KEY or TOGETHER_API_KEY"},
         "fake": {"installed": True, "authed": True},
     }
 
 
-def build_harness(name: str, llm=None) -> Harness:
+def build_harness(name: str, llm=None, model: str | None = None,
+                  api_base: str | None = None) -> Harness:
     if name == "claude-code":
-        return ClaudeCodeHarness()
+        return ClaudeCodeHarness(model=model)
+    if name == "codex":
+        return CodexHarness(model=model)
+    if name == "opencode":
+        return OpenCodeHarness(model=model)
+    if name == "cursor-agent":
+        return CursorAgentHarness(model=model)
     if name == "api":
         if llm is None:
-            # pick the adapter by whichever provider key is present —
-            # matching what detect_harnesses reports as authed
-            if os.environ.get("ANTHROPIC_API_KEY"):
+            # selection order mirrors _api_credentials(): an explicit
+            # endpoint first, then whichever provider key is present
+            base = api_base or os.environ.get("AGENTFORK_API_BASE")
+            if base:
+                from agentfork.harness.adapter import OpenAICompatLLM
+                llm = OpenAICompatLLM(
+                    api_key=os.environ.get("AGENTFORK_API_KEY", ""),
+                    base_url=base,
+                    model=model or os.environ.get("AGENTFORK_API_MODEL")
+                          or "default")
+            elif os.environ.get("ANTHROPIC_API_KEY"):
                 from agentfork.harness.adapter import AnthropicLLM
-                llm = AnthropicLLM()
+                kw = {"model": model} if model else {}
+                llm = AnthropicLLM(**kw)
             else:
                 from agentfork.harness.adapter import OpenAICompatLLM
-                llm = OpenAICompatLLM()
+                kw = {"model": model} if model else {}
+                llm = OpenAICompatLLM(**kw)
         return ApiHarness(llm)
     if name == "fake":
         return FakeHarness()

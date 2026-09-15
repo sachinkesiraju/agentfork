@@ -44,6 +44,8 @@ DEFAULT_PARAMS = {
     "baseline_runs": 2,
     "holdout_cmd": "",
     "cost_guards": {},      # name -> relative tolerance
+    "model": "",           # passed to the harness (cli flag or api model id)
+    "api_base": "",        # harness=api: OpenAI-compatible endpoint base
 }
 
 _WORKTREES = "worktrees"
@@ -253,9 +255,15 @@ class Engine:
 
     # -- fan out -------------------------------------------------------------
 
+    def _build_harness(self, project: dict):
+        params = project["params"]
+        return build_harness(project["harness"],
+                             model=params.get("model") or None,
+                             api_base=params.get("api_base") or None)
+
     def propose(self, project_id: str, parent_node_id: str, k: int) -> list[Idea]:
         project = self.store.project(project_id)
-        harness = build_harness(project["harness"])
+        harness = self._build_harness(project)
         ctx = self._context(project_id)
         parent = self.store.node(parent_node_id)
         if parent is not None:
@@ -318,7 +326,7 @@ class Engine:
                              state="running",
                              message=f"gen {parent['gen'] + 1}: "
                                      f"{len(nodes)} candidates")
-        harness = build_harness(project["harness"])
+        harness = self._build_harness(project)
         for node, idea in zip(nodes, ideas):
             self.start_worker(project, node, harness, idea)
         return nodes

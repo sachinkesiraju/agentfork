@@ -10,6 +10,8 @@ export type Params = {
   baseline_runs: number;
   holdout_cmd: string;
   cost_guards: Record<string, number>;
+  model: string;    // harness model id — cli flag or api model name
+  api_base: string; // harness=api: OpenAI-compatible endpoint base
 };
 
 export type Project = {
@@ -76,7 +78,7 @@ export type Metrics = {
 
 export type Harnesses = Record<
   string,
-  { installed: boolean; authed: boolean; detail?: string }
+  { installed: boolean; authed: boolean | null; detail?: string }
 >;
 
 // When the server is bound off loopback it requires a bearer token, handed
@@ -104,6 +106,8 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   health: () => call<{ ok: boolean; version: string; home: string }>("/health"),
   harnesses: () => call<Harnesses>("/harnesses"),
+  models: (base: string) =>
+    call<{ models: string[] }>(`/models?base=${encodeURIComponent(base)}`),
   projects: () => call<Project[]>("/projects"),
   project: (id: string) => call<Project>(`/projects/${id}`),
   createProject: (body: {

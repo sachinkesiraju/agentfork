@@ -31,7 +31,10 @@ def main(run_dir: str) -> int:
     if project is None or node is None:
         print("project or node deleted; worker exiting", file=sys.stderr)
         return 3
-    harness = build_harness(project["harness"])
+    params = project["params"]
+    harness = build_harness(project["harness"],
+                            model=params.get("model") or None,
+                            api_base=params.get("api_base") or None)
     idea = Idea(title=payload["title"], description=payload["description"],
                 regions=payload["regions"])
     summary = harness.implement(node["worktree_path"], idea,

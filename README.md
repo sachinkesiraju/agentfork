@@ -39,9 +39,14 @@ agentfork metrics <project>         # KV + orchestrator counters
 agentfork install-skills            # agent-mapreduce skill for agent CLIs
 ```
 
-Harnesses, in detection order: **Claude Code** (`claude auth status`), a
-plain **API adapter** (`ANTHROPIC_API_KEY`/`TOGETHER_API_KEY`), and a
-deterministic **fake** for tests.
+Harnesses: **Claude Code**, **Codex**, **OpenCode**, and **cursor-agent**
+CLIs in headless mode (each probed via its own status command — auth is
+whatever the vendor CLI already has), a plain **API adapter**, and a
+deterministic **fake** for tests. `--model` is passed through to whichever
+harness you pick. The API adapter targets any OpenAI-compatible endpoint
+with `--api-base`/`AGENTFORK_API_BASE` (loopback only from the dashboard —
+Ollama `:11434/v1`, LM Studio `:1234/v1`, vLLM), else falls back to
+`ANTHROPIC_API_KEY`/`TOGETHER_API_KEY`.
 
 The rest of this README describes the runtime the app is built on.
 

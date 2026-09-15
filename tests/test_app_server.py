@@ -163,6 +163,14 @@ def test_unknown_route_is_a_404(server):
     assert "404" in str(e.value)
 
 
+def test_models_endpoint_is_loopback_only(server):
+    """GET /api/models fetches {base}/models for the picker's "find" button —
+    a remote base would turn the loopback API into an HTTP relay."""
+    with pytest.raises(AssertionError) as e:
+        _req(server, "GET", "/api/models?base=https://evil.example/v1")
+    assert "400" in str(e.value)
+
+
 def test_cross_origin_posts_are_rejected(server, repo):
     """A malicious web page can POST to a loopback port (no preflight needed
     for plain requests) — every browser sends Origin, so a foreign one is

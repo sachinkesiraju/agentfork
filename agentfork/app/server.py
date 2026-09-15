@@ -44,7 +44,7 @@ from urllib.parse import parse_qs, urlparse
 
 from agentfork.app import amr, runner
 from agentfork.app.engine import Engine, EngineError
-from agentfork.app.harness import detect_harnesses
+from agentfork.app.harness import detect_harnesses, list_models
 from agentfork.app.loop import AutoresearchLoop
 from agentfork.app.store import Store
 
@@ -211,6 +211,14 @@ def make_handler(app: App, ui_root: Path | None):
                         "home": str(app.store.path.parent)}
             if rest == ["harnesses"]:
                 return detect_harnesses()
+            if rest == ["models"]:
+                # model picker data for harness=api: only loopback bases, so
+                # the dashboard can't be turned into an HTTP relay
+                base = (q.get("base") or [""])[0]
+                host = urlparse(base).hostname or ""
+                if host not in ("127.0.0.1", "localhost", "::1"):
+                    raise EngineError("models base must be a loopback URL")
+                return {"models": list_models(base)}
             if rest == ["events"]:
                 return self._sse(q)
             if rest == ["projects"]:

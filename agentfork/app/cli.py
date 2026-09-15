@@ -114,7 +114,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--name")
     p.add_argument("--baseline", default="main")
     p.add_argument("--harness", default="claude-code",
-                   choices=["claude-code", "api", "fake"])
+                   choices=["claude-code", "codex", "opencode",
+                            "cursor-agent", "api", "fake"])
+    p.add_argument("--model", default="",
+                   help="model id passed to the harness (e.g. "
+                   "--harness api --model qwen3:14b)")
+    p.add_argument("--api-base", dest="api_base", default="",
+                   help="harness=api only: OpenAI-compatible endpoint "
+                   "(e.g. http://127.0.0.1:11434/v1 for Ollama)")
     p.add_argument("--eval", dest="eval_cmd", required=True)
     p.add_argument("--metric", dest="metric_grep", required=True,
                    help="regex over eval log; first group = the number")
@@ -197,7 +204,8 @@ def main(argv: list[str] | None = None) -> int:
                   "holdout_cmd": args.holdout_cmd,
                   "eval_slots": args.eval_slots,
                   "baseline_runs": args.baseline_runs,
-                  "cost_guards": cost_guards}
+                  "cost_guards": cost_guards,
+                  "model": args.model, "api_base": args.api_base}
         proj = _api(port, "POST", "/api/projects",
                     {"name": args.name or Path(args.path).resolve().name,
                      "repo_path": str(Path(args.path).resolve()),

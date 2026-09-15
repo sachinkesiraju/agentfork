@@ -21,6 +21,10 @@ agentfork harnesses                   # detected agent CLIs
 agentfork new /path/to/repo --baseline main \
     --eval "python train.py" --metric "loss=([0-9.]+)" --harness claude-code \
     --eval-slots 2 --baseline-runs 2 --cost seconds=0.5  # flags all optional
+    # harnesses: claude-code | codex | opencode | cursor-agent | api | fake
+    #   --model M        model flag/id passed to the harness
+    #   --api-base URL   harness=api: OpenAI-compatible endpoint (Ollama,
+    #                    LM Studio, vLLM — e.g. http://127.0.0.1:11434/v1)
 agentfork baseline <project>          # root node + 2 evals → noise margin
 agentfork loop <project> start        # autoresearch: propose→fan out→eval→reduce
 agentfork tree <project>              # rendered experiment tree

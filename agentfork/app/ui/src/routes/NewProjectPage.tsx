@@ -27,7 +27,11 @@ export default function NewProjectPage() {
     holdout_cmd: "",
     eval_slots: 2,
     cost_guards: "",
+    model: "",
+    api_base: "",
   });
+  const [modelList, setModelList] = useState<string[]>([]);
+  const [modelNote, setModelNote] = useState("");
 
   useEffect(() => {
     api.harnesses().then(setHarnesses).catch(() => undefined);
@@ -56,6 +60,8 @@ export default function NewProjectPage() {
           baseline_runs: Number(form.baseline_runs),
           eval_slots: Number(form.eval_slots),
           holdout_cmd: form.holdout_cmd,
+          model: form.model,
+          api_base: form.api_base,
           cost_guards: Object.fromEntries(
             form.cost_guards
               .split(",")
@@ -127,6 +133,61 @@ export default function NewProjectPage() {
                 ))}
               </Select>
             </Field>
+            <Field
+              label="model"
+              hint={
+                form.harness === "api"
+                  ? "model id at the endpoint — leave blank to use the server's default"
+                  : "optional — passed as the harness's --model flag"
+              }
+            >
+              <div className="flex gap-2">
+                <Input
+                  value={form.model}
+                  list="af-model-options"
+                  placeholder={
+                    form.harness === "api" ? "e.g. qwen3:14b" : "e.g. claude-sonnet-4"
+                  }
+                  onChange={(e) => set("model", e.target.value)}
+                />
+                {form.harness === "api" && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      setModelNote("");
+                      api
+                        .models(form.api_base || "http://127.0.0.1:11434/v1")
+                        .then((r) => setModelList(r.models))
+                        .catch((err) => setModelNote((err as Error).message));
+                    }}
+                  >
+                    find
+                  </Button>
+                )}
+              </div>
+              <datalist id="af-model-options">
+                {modelList.map((m) => (
+                  <option key={m} value={m} />
+                ))}
+              </datalist>
+              {modelNote && (
+                <p className="mt-1 text-[11px] text-red-300">{modelNote}</p>
+              )}
+            </Field>
+            {form.harness === "api" && (
+              <Field
+                label="endpoint"
+                hint="OpenAI-compatible base URL — loopback only (Ollama :11434/v1, LM Studio :1234/v1, vLLM…)"
+              >
+                <Input
+                  value={form.api_base}
+                  placeholder="http://127.0.0.1:11434/v1"
+                  onChange={(e) => set("api_base", e.target.value)}
+                />
+              </Field>
+            )}
           </div>
         </Panel>
 
