@@ -68,9 +68,20 @@ export default function TreeView({
                   style={{ background: style.accent }}
                 />
                 <div className="min-w-0 flex-1">
-                  <div className="truncate text-xs font-medium leading-tight text-neutral-50">
+                  <div
+                    className="truncate text-xs font-medium leading-tight text-neutral-50"
+                    title={n.title}
+                  >
                     {n.title}
                   </div>
+                  {n.description && (
+                    <div
+                      className="truncate text-[10px] leading-snug text-neutral-400"
+                      title={n.description}
+                    >
+                      {n.description.split("\n")[0]}
+                    </div>
+                  )}
                   <div className="mt-1 flex items-baseline justify-between gap-2">
                     <span
                       className="mono text-[10px] uppercase tracking-wide"

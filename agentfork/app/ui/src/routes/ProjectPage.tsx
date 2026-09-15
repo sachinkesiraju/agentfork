@@ -99,6 +99,11 @@ export default function ProjectPage() {
     () => (node ? runs.filter((r) => r.node_id === node.id) : []),
     [runs, node],
   );
+  const titleById = useMemo(
+    () => new Map(nodes.map((n) => [n.id, n.title])),
+    [nodes],
+  );
+  const nodeTitle = (id: string) => titleById.get(id) ?? id;
   const hasBaseline = nodes.some((n) => n.gen === 0);
   // the loop state is the loop's own word for it: a hand-driven baseline
   // also writes "baseline" — only a live AutoresearchLoop means stop-able
@@ -358,6 +363,11 @@ export default function ProjectPage() {
                     <p className="text-sm font-medium leading-snug text-neutral-100">
                       {node.title}
                     </p>
+                    {node.description && (
+                      <p className="whitespace-pre-wrap rounded-lg border border-neutral-800 bg-neutral-950/50 p-2.5 text-xs leading-relaxed text-neutral-400">
+                        {node.description}
+                      </p>
+                    )}
                     <div className="flex flex-wrap items-center gap-1.5">
                       <Badge status={node.status} />
                       {node.frozen && <Badge status="frozen" />}
@@ -405,12 +415,6 @@ export default function ProjectPage() {
                       }
                     />
                   </dl>
-
-                  {node.description && (
-                    <p className="whitespace-pre-wrap rounded-lg border border-neutral-800 bg-neutral-950/50 p-2.5 text-xs leading-relaxed text-neutral-400">
-                      {node.description}
-                    </p>
-                  )}
 
                   <div className="space-y-1.5">
                     <p className="text-[11px] uppercase tracking-wider text-neutral-500">Runs</p>
@@ -485,7 +489,9 @@ export default function ProjectPage() {
                         <td className="px-2 py-2">
                           <Badge status={r.status} />
                         </td>
-                        <td className="mono px-2 py-2 text-neutral-500">{r.node_id}</td>
+                        <td className="mono max-w-[10rem] truncate px-2 py-2 text-neutral-500" title={r.node_id}>
+                          {nodeTitle(r.node_id)}
+                        </td>
                         <td className="mono nums px-2 py-2 text-right text-neutral-200">
                           {fmt(r.score)}
                         </td>
