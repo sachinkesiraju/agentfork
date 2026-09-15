@@ -76,10 +76,10 @@ export default function TreeView({
                   </div>
                   {n.description && (
                     <div
-                      className="truncate text-[10px] leading-snug text-neutral-400"
+                      className="line-clamp-2 text-[10px] leading-snug text-neutral-400"
                       title={n.description}
                     >
-                      {n.description.split("\n")[0]}
+                      {n.description}
                     </div>
                   )}
                   <div className="mt-1 flex items-baseline justify-between gap-2">
