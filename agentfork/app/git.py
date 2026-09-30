@@ -94,8 +94,19 @@ def commit_all(repo: str | Path, message: str) -> str | None:
     git(repo, "add", "-A")
     if not git(repo, "diff", "--cached", "--name-only"):
         return None
-    git(repo, "commit", "-m", message, "--no-verify")
+    git(repo, *_identity_args(repo), "commit", "-m", message, "--no-verify")
     return head_sha(repo)
+
+
+def _identity_args(repo: str | Path) -> list[str]:
+    """``-c user.*`` fallbacks so experiment commits work on machines with no
+    git identity configured; a configured identity always wins."""
+    args: list[str] = []
+    if not git(repo, "config", "user.name", check=False):
+        args += ["-c", "user.name=agentfork"]
+    if not git(repo, "config", "user.email", check=False):
+        args += ["-c", "user.email=agentfork@localhost"]
+    return args
 
 
 def gitignore(repo: str | Path, patterns: list[str]) -> None:

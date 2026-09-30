@@ -1,10 +1,12 @@
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import ReactFlow, {
   Background,
   Controls,
   Edge,
   Node as FlowNode,
   MarkerType,
+  useReactFlow,
+  useUpdateNodeInternals,
 } from "reactflow";
 import "reactflow/dist/style.css";
 import { Node } from "../api";
@@ -26,6 +28,29 @@ const STYLE: Record<string, { bg: string; accent: string; dim?: boolean }> = {
 
 const COL_W = 236;
 const ROW_H = 108;
+
+/** reactflow hides nodes until its ResizeObserver has measured them; if that
+ *  first measurement races the pane's own layout (or the page loads in a
+ *  background tab), the nodes stay hidden forever. Re-running internals on
+ *  every data change — and re-fitting when the tab re-appears — makes the
+ *  tree recover deterministically. */
+function MeasureFix({ ids }: { ids: string }) {
+  const updateInternals = useUpdateNodeInternals();
+  const rf = useReactFlow();
+  useEffect(() => {
+    const list = ids ? ids.split(",") : [];
+    if (list.length) updateInternals(list);
+    rf.fitView({ padding: 0.25 });
+  }, [ids, updateInternals, rf]);
+  useEffect(() => {
+    const onVisible = () => {
+      if (!document.hidden) rf.fitView({ padding: 0.25 });
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [rf]);
+  return null;
+}
 
 /** Layered layout: generation on the y axis, siblings spread on x — the
  *  "stacked bushes" shape the map-reduce program wants to make obvious. */
@@ -154,6 +179,7 @@ export default function TreeView({
         proOptions={{ hideAttribution: true }}
         onNodeClick={(_, n) => onSelect(n.id)}
       >
+        <MeasureFix ids={flowNodes.map((n) => n.id).join(",")} />
         <Background color="#2a2a30" gap={20} size={1} />
         <Controls
           showInteractive={false}
