@@ -150,15 +150,18 @@ class AnthropicLLM(_HTTPChatLLM):
 
 class OpenAICompatLLM(_HTTPChatLLM):
     """Calls any OpenAI-compatible ``/chat/completions`` endpoint (Together,
-    etc.) over ``urllib``. Together's key defaults to ``TOGETHER_API_KEY``."""
+    LM Studio, Ollama, vLLM, …) over ``urllib``. Together's key defaults to
+    ``TOGETHER_API_KEY``; local servers typically need no key — leave it
+    empty and no Authorization header is sent."""
 
     def __init__(self, *, api_key: str | None = None,
                  base_url: str = "https://api.together.xyz/v1",
                  model: str = "meta-llama/Llama-3.3-70B-Instruct-Turbo",
                  max_tokens: int = 1024, timeout: float = 60.0):
-        self.api_key = api_key or os.environ.get("TOGETHER_API_KEY")
-        if not self.api_key:
-            raise ValueError("an API key is required")
+        self.api_key = api_key if api_key is not None \
+            else os.environ.get("TOGETHER_API_KEY", "")
+        if not self.api_key and "api.together.xyz" in base_url:
+            raise ValueError("TOGETHER_API_KEY is required")
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.max_tokens = max_tokens
@@ -167,13 +170,14 @@ class OpenAICompatLLM(_HTTPChatLLM):
     def _message(self, prompt: str, *, max_tokens: int | None = None) -> str:
         body = {"model": self.model, "max_tokens": max_tokens or self.max_tokens,
                 "messages": [{"role": "user", "content": prompt}]}
+        headers = {"content-type": "application/json",
+                   "user-agent": "agentfork-harness/0.4"}
+        if self.api_key:
+            headers["authorization"] = f"Bearer {self.api_key}"
         request = urllib.request.Request(
             self.base_url + "/chat/completions",
             data=json.dumps(body).encode(),
-            headers={"content-type": "application/json",
-                     "authorization": f"Bearer {self.api_key}",
-                     "user-agent": "agentfork-harness/0.4"},
-            method="POST")
+            headers=headers, method="POST")
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as resp:
                 payload = json.loads(resp.read().decode())
