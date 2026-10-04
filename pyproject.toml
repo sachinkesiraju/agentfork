@@ -1,9 +1,12 @@
 [project]
 name = "agentfork"
 version = "0.4.0"
-description = "Reference components and benchmarks for coordinated sandbox and LLM KV-cache branching"
+description = "Local-first agent fanout runtime and autoresearch dashboard: tree-style branching for agent code AND model KV context, with a baked-in map-reduce experiment loop."
 requires-python = ">=3.10"
 license = {text = "Apache-2.0"}
+
+[project.scripts]
+agentfork = "agentfork.app.cli:main"
 
 [project.optional-dependencies]
 dev = ["pytest==8.3.5", "ruff==0.11.0"]
@@ -19,4 +22,4 @@ build-backend = "setuptools.build_meta"
 include = ["agentfork*"]
 
 [tool.setuptools.package-data]
-agentfork = ["py.typed"]
+agentfork = ["py.typed", "app/skills/**/*", "app/ui/dist/**/*"]
