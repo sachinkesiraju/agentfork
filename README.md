@@ -9,6 +9,8 @@ curl -fsSL https://raw.githubusercontent.com/sachinkesiraju/agentfork/main/insta
 agentfork up        # local dashboard at http://127.0.0.1:8474
 ```
 
+![agentfork dashboard: the experiment tree after one autoresearch generation](docs/img/dashboard.png)
+
 Everything is local: SQLite state in `~/.agentfork`, a git worktree per
 experiment node, and detached eval processes you can kill from the UI or the
 CLI. Nothing leaves the machine except the agent harness you pick. The server
