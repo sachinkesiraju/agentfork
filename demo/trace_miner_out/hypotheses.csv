@@ -1,0 +1,21 @@
+neuron_idx,target_lasso,interpretation,f1_fidelity_score
+747,0.5445295315182648,Performs explicit step-by-step arithmetic verification with multiple calculation methods and double-checking before final answer,0.7368421052631577
+249,-0.4986573574989012,Omits step-by-step reasoning and gives only final numeric answers without explanation,0.8750000000000001
+202,-0.47939018064076705,"The model gives extremely short or nonsensical numerical guesses without any reasoning or explanation, often repeating digits from the problem or giving single-digit answers",0.7407407407407406
+680,0.2537380095584222,The model provides a detailed step-by-step mathematical derivation with explicit variable definitions and combinatorial formulas before stating the final answer,0.5454545454545454
+69,-0.11692763657082084,"The model expresses explicit uncertainty or hedging about the correct answer (e.g., 'Wait', 'Maybe', 'Hmm', 'let's recompute', 'But they say answer X', 'Might need to reconsider') while continuing to work through the problem rather than giving a final answer",0.4
+316,0.09928810971700468,The model performs explicit step-by-step mathematical derivation with intermediate reasoning shown before giving the final ANSWER,0.5714285714285714
+967,-0.09367179421280891,"The model re-evaluates or questions its initial interpretation after receiving verifier feedback, attempting to find alternative explanations or trick interpretations rather than simply correcting a calculation error",0.28571428571428575
+731,-0.08844799579205573,"The agent gives an incorrect answer in Turn 1, then gives a different incorrect answer in Turn 2 (never correct, and answers change between turns)",0.6896551724137931
+610,0.08740556570315912,Immediately solves the bat-and-ball problem correctly on the first turn without being misled by incorrect verified solver metadata or second-guessing,0.6666666666666666
+632,0.08165258707716967,"the model initially gives an incorrect numerical answer on its first turn, then gives the correct numerical answer on its second turn",0.5
+187,-0.06736631907036311,"The model persists with an incorrect answer (8) across multiple turns despite verifier feedback indicating it is wrong, while engaging in elaborate rationalization to justify the wrong answer rather than correcting it",0.0
+808,0.0596593361656063,"The transcript contains exactly one turn with a single immediate answer (no multi-step reasoning or second turn), and the answer is correct on the first try",0.5
+634,-0.03290379302778428,The model repeats the same incorrect answer or gives a nonsensical/random answer in Turn 2 without any reasoning or explanation between turns,0.4
+30,-0.032374325080388865,"The transcript contains explicit uncertainty or confusion about whether to trust an externally provided answer over the model's own calculation, including phrases like 'Huh?', 'Maybe they computed', or 'they claim'",0.5
+176,0.029432990610710086,"The model initially answers incorrectly, then in the next turn explicitly re-analyzes the problem from scratch by restating key information and exploring multiple interpretations before arriving at the correct answer",0.4
+411,-0.02757790026001099,"The model incorrectly trusts or blindly repeats a stated 'verified solver' answer without independent verification, leading to incorrect final answers",0.4
+986,-0.026451176854553657,The model repeats the same incorrect answer in Turn 2 that it gave in Turn 1 without any reasoning or explanation,0.6666666666666666
+112,0.026390643119939872,"uses stars-and-bars combinatorics (C(n+k-1,k-1)) to count integer solutions with substitution a'=a-1",0.8000000000000002
+289,0.009363376907593568,The model expresses explicit uncertainty or hedging about the given/verified answer before ultimately providing its own conclusion,0.5
+482,0.0033155223376377142,"The model initially gives an incorrect numeric answer, then corrects it to the right answer on the second turn after receiving verifier feedback",0.4
