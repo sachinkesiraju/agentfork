@@ -1,0 +1,2107 @@
+{
+ "report": {
+  "n_transcripts": 208,
+  "significant_hypotheses": 0,
+  "baseline_failure_rate": 0.5,
+  "strict": {
+   "failure_neurons": [],
+   "success_neurons": [],
+   "kill_count": 0,
+   "precision_failures_killed": null,
+   "recall_of_failures": 0.0,
+   "correct_wrongly_killed": 0
+  },
+  "exploratory_uncorrected_p05": {
+   "failure_neurons": [
+    753
+   ],
+   "success_neurons": [],
+   "kill_count": 2,
+   "precision_failures_killed": 0.0,
+   "recall_of_failures": 0.0,
+   "correct_wrongly_killed": 2
+  }
+ },
+ "per_branch": [
+  {
+   "task_id": "bigchain",
+   "branch_id": "task-5/170",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "7623x89",
+   "branch_id": "task-7/245",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "bigchain",
+   "branch_id": "task-5/175",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "8642x37",
+   "branch_id": "task-6/203",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sum3dig",
+   "branch_id": "task-8/276",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sheep",
+   "branch_id": "task-2/79",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "bigchain",
+   "branch_id": "task-5/166",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "bigchain",
+   "branch_id": "task-5/168",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sally",
+   "branch_id": "task-4/142",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "rect2",
+   "branch_id": "task-10/329",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "coins",
+   "branch_id": "task-9/316",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "bigchain",
+   "branch_id": "task-5/162",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sally",
+   "branch_id": "task-4/153",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "7623x89",
+   "branch_id": "task-7/237",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "7623x89",
+   "branch_id": "task-7/251",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "strawberry-r",
+   "branch_id": "task-1/49",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "zeros40",
+   "branch_id": "task-11/359",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sally",
+   "branch_id": "task-4/146",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "coins",
+   "branch_id": "task-9/306",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "bigchain",
+   "branch_id": "task-5/167",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "strawberry-r",
+   "branch_id": "task-1/52",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "zeros40",
+   "branch_id": "task-11/367",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "widgets",
+   "branch_id": "task-3/105",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sum3dig",
+   "branch_id": "task-8/285",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "7623x89",
+   "branch_id": "task-7/226",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sally",
+   "branch_id": "task-4/150",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sum3dig",
+   "branch_id": "task-8/269",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sum3dig",
+   "branch_id": "task-8/263",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "coins",
+   "branch_id": "task-9/296",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "coins",
+   "branch_id": "task-9/299",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sum3dig",
+   "branch_id": "task-8/283",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "bigchain",
+   "branch_id": "task-5/188",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "zeros40",
+   "branch_id": "task-11/366",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sum3dig",
+   "branch_id": "task-8/259",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sum3dig",
+   "branch_id": "task-8/264",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "coins",
+   "branch_id": "task-9/310",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "7623x89",
+   "branch_id": "task-7/228",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "bigchain",
+   "branch_id": "task-5/169",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "strawberry-r",
+   "branch_id": "task-1/36",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "8642x37",
+   "branch_id": "task-6/198",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "bat-ball",
+   "branch_id": "task-0/18",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "8642x37",
+   "branch_id": "task-6/210",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "strawberry-r",
+   "branch_id": "task-1/47",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sheep",
+   "branch_id": "task-2/82",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sum3dig",
+   "branch_id": "task-8/274",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sum3dig",
+   "branch_id": "task-8/284",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "widgets",
+   "branch_id": "task-3/109",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "widgets",
+   "branch_id": "task-3/100",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "coins",
+   "branch_id": "task-9/312",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "coins",
+   "branch_id": "task-9/305",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "7623x89",
+   "branch_id": "task-7/239",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "zeros40",
+   "branch_id": "task-11/357",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "strawberry-r",
+   "branch_id": "task-1/46",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "bigchain",
+   "branch_id": "task-5/161",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "strawberry-r",
+   "branch_id": "task-1/64",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sheep",
+   "branch_id": "task-2/84",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sheep",
+   "branch_id": "task-2/77",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "zeros40",
+   "branch_id": "task-11/356",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sally",
+   "branch_id": "task-4/145",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "rect2",
+   "branch_id": "task-10/350",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sheep",
+   "branch_id": "task-2/88",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "coins",
+   "branch_id": "task-9/315",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "7623x89",
+   "branch_id": "task-7/255",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "bigchain",
+   "branch_id": "task-5/187",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sally",
+   "branch_id": "task-4/147",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "widgets",
+   "branch_id": "task-3/122",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "8642x37",
+   "branch_id": "task-6/196",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "zeros40",
+   "branch_id": "task-11/361",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "strawberry-r",
+   "branch_id": "task-1/59",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "8642x37",
+   "branch_id": "task-6/201",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sum3dig",
+   "branch_id": "task-8/265",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "bat-ball",
+   "branch_id": "task-0/15",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "7623x89",
+   "branch_id": "task-7/238",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sally",
+   "branch_id": "task-4/152",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sally",
+   "branch_id": "task-4/155",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sally",
+   "branch_id": "task-4/130",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sally",
+   "branch_id": "task-4/160",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sally",
+   "branch_id": "task-4/148",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sum3dig",
+   "branch_id": "task-8/282",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sum3dig",
+   "branch_id": "task-8/288",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "zeros40",
+   "branch_id": "task-11/376",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sum3dig",
+   "branch_id": "task-8/268",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sally",
+   "branch_id": "task-4/136",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "zeros40",
+   "branch_id": "task-11/360",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "zeros40",
+   "branch_id": "task-11/372",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sum3dig",
+   "branch_id": "task-8/266",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sheep",
+   "branch_id": "task-2/90",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sheep",
+   "branch_id": "task-2/67",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "8642x37",
+   "branch_id": "task-6/207",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "widgets",
+   "branch_id": "task-3/113",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "8642x37",
+   "branch_id": "task-6/211",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sum3dig",
+   "branch_id": "task-8/271",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sally",
+   "branch_id": "task-4/143",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "7623x89",
+   "branch_id": "task-7/233",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "8642x37",
+   "branch_id": "task-6/212",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sum3dig",
+   "branch_id": "task-8/286",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "widgets",
+   "branch_id": "task-3/106",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "bat-ball",
+   "branch_id": "task-0/4",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "bat-ball",
+   "branch_id": "task-0/30",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "rect2",
+   "branch_id": "task-10/333",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "rect2",
+   "branch_id": "task-10/327",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "strawberry-r",
+   "branch_id": "task-1/48",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "7623x89",
+   "branch_id": "task-7/254",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sum3dig",
+   "branch_id": "task-8/258",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sum3dig",
+   "branch_id": "task-8/281",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "8642x37",
+   "branch_id": "task-6/215",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "zeros40",
+   "branch_id": "task-11/373",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "zeros40",
+   "branch_id": "task-11/383",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sally",
+   "branch_id": "task-4/156",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sum3dig",
+   "branch_id": "task-8/257",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sheep",
+   "branch_id": "task-2/76",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "8642x37",
+   "branch_id": "task-6/219",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "coins",
+   "branch_id": "task-9/314",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sum3dig",
+   "branch_id": "task-8/280",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "bat-ball",
+   "branch_id": "task-0/27",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "zeros40",
+   "branch_id": "task-11/377",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "7623x89",
+   "branch_id": "task-7/230",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sheep",
+   "branch_id": "task-2/75",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sally",
+   "branch_id": "task-4/149",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "widgets",
+   "branch_id": "task-3/107",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "bigchain",
+   "branch_id": "task-5/172",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "rect2",
+   "branch_id": "task-10/335",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "8642x37",
+   "branch_id": "task-6/220",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "8642x37",
+   "branch_id": "task-6/204",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "strawberry-r",
+   "branch_id": "task-1/61",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "widgets",
+   "branch_id": "task-3/111",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "8642x37",
+   "branch_id": "task-6/195",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "rect2",
+   "branch_id": "task-10/326",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sally",
+   "branch_id": "task-4/135",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sheep",
+   "branch_id": "task-2/96",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sum3dig",
+   "branch_id": "task-8/287",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sally",
+   "branch_id": "task-4/144",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "widgets",
+   "branch_id": "task-3/121",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "7623x89",
+   "branch_id": "task-7/231",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "bat-ball",
+   "branch_id": "task-0/22",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "zeros40",
+   "branch_id": "task-11/375",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "7623x89",
+   "branch_id": "task-7/256",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "bigchain",
+   "branch_id": "task-5/171",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "7623x89",
+   "branch_id": "task-7/227",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "7623x89",
+   "branch_id": "task-7/236",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "zeros40",
+   "branch_id": "task-11/379",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "bat-ball",
+   "branch_id": "task-0/3",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "bigchain",
+   "branch_id": "task-5/176",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "7623x89",
+   "branch_id": "task-7/241",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "rect2",
+   "branch_id": "task-10/344",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "8642x37",
+   "branch_id": "task-6/216",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sheep",
+   "branch_id": "task-2/95",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "8642x37",
+   "branch_id": "task-6/208",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "bigchain",
+   "branch_id": "task-5/181",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "strawberry-r",
+   "branch_id": "task-1/35",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "widgets",
+   "branch_id": "task-3/123",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sheep",
+   "branch_id": "task-2/68",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "rect2",
+   "branch_id": "task-10/347",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "widgets",
+   "branch_id": "task-3/108",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "8642x37",
+   "branch_id": "task-6/197",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "zeros40",
+   "branch_id": "task-11/364",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sheep",
+   "branch_id": "task-2/93",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sum3dig",
+   "branch_id": "task-8/279",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "8642x37",
+   "branch_id": "task-6/213",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sally",
+   "branch_id": "task-4/141",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sum3dig",
+   "branch_id": "task-8/270",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sally",
+   "branch_id": "task-4/129",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "bat-ball",
+   "branch_id": "task-0/9",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "bat-ball",
+   "branch_id": "task-0/21",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sally",
+   "branch_id": "task-4/131",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sheep",
+   "branch_id": "task-2/86",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "7623x89",
+   "branch_id": "task-7/242",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "rect2",
+   "branch_id": "task-10/341",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "7623x89",
+   "branch_id": "task-7/248",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "zeros40",
+   "branch_id": "task-11/384",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "widgets",
+   "branch_id": "task-3/115",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "rect2",
+   "branch_id": "task-10/323",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "7623x89",
+   "branch_id": "task-7/250",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "strawberry-r",
+   "branch_id": "task-1/63",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "widgets",
+   "branch_id": "task-3/102",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "8642x37",
+   "branch_id": "task-6/218",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "zeros40",
+   "branch_id": "task-11/369",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sum3dig",
+   "branch_id": "task-8/262",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "7623x89",
+   "branch_id": "task-7/246",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sum3dig",
+   "branch_id": "task-8/277",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "bigchain",
+   "branch_id": "task-5/173",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sally",
+   "branch_id": "task-4/137",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "bigchain",
+   "branch_id": "task-5/184",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "widgets",
+   "branch_id": "task-3/120",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "widgets",
+   "branch_id": "task-3/112",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sally",
+   "branch_id": "task-4/140",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "bigchain",
+   "branch_id": "task-5/186",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "zeros40",
+   "branch_id": "task-11/355",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "zeros40",
+   "branch_id": "task-11/370",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "widgets",
+   "branch_id": "task-3/99",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "coins",
+   "branch_id": "task-9/291",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sally",
+   "branch_id": "task-4/138",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "rect2",
+   "branch_id": "task-10/346",
+   "label": 1,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sum3dig",
+   "branch_id": "task-8/267",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "zeros40",
+   "branch_id": "task-11/363",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sheep",
+   "branch_id": "task-2/91",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "8642x37",
+   "branch_id": "task-6/222",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 0.8,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "strawberry-r",
+   "branch_id": "task-1/44",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "8642x37",
+   "branch_id": "task-6/221",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "widgets",
+   "branch_id": "task-3/124",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "rect2",
+   "branch_id": "task-10/325",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "widgets",
+   "branch_id": "task-3/104",
+   "label": 0,
+   "persona": "quick",
+   "temperature": 1.3,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sally",
+   "branch_id": "task-4/139",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "sheep",
+   "branch_id": "task-2/85",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "coins",
+   "branch_id": "task-9/303",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "bigchain",
+   "branch_id": "task-5/163",
+   "label": 0,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "coins",
+   "branch_id": "task-9/289",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 0.4,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  },
+  {
+   "task_id": "bat-ball",
+   "branch_id": "task-0/7",
+   "label": 1,
+   "persona": "careful",
+   "temperature": 1.0,
+   "kill": false,
+   "failure_neurons_fired": [],
+   "success_neurons_fired": []
+  }
+ ]
+}
