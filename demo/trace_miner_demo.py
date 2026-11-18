@@ -109,21 +109,30 @@ def _chat_ids(tok, messages, prefill=None):
 
 def split_channels(text: str) -> tuple[str, str]:
     """Return (reasoning, final) channels: harmony (gpt-oss) or <think>
-    style (Qwen)."""
+    style (Qwen). Truncated decodes — harmony output that never reaches
+    the final channel, or an unclosed <think> block — expose their partial
+    reasoning in ``analysis`` but return an empty ``final``: unfinished
+    reasoning is not a completed answer and must not be graded."""
     analysis = ""
     if "<|channel|>analysis<|message|>" in text:
         analysis = text.split("<|channel|>analysis<|message|>", 1)[1]
         analysis = analysis.split("<|channel|>")[0]
-    if "<think>" in text and "</think>" in text:
-        analysis = text.split("<think>", 1)[1].split("</think>", 1)[0]
-    final = text.split(FINAL_MARKER)[-1] if FINAL_MARKER in text else text
+    if "<think>" in text:
+        think = text.split("<think>", 1)[1]
+        analysis += ("\n" if analysis else "") + (
+            think.split("</think>", 1)[0] if "</think>" in think else think)
+    if FINAL_MARKER in text:
+        final = text.split(FINAL_MARKER)[-1]
+    elif "</think>" in text:
+        final = text.split("</think>")[-1]
+    elif "<|channel|>" in text or "<think>" in text:
+        final = ""  # truncated before producing a completed final answer
+    else:
+        final = text
     for tok in ("<|end|>", "<|return|>", "<|call|>", "<|start|>"):
         final = final.split(tok)[0]
         analysis = analysis.split(tok)[0]
-    # truncated decodes never reach the final channel: drop harmony markup
     final = re.sub(r"<\|[a-z_]+\|>", "", final)
-    if "</think>" in final:
-        final = final.split("</think>")[-1]
     return analysis.strip(), final.strip()
 
 
@@ -187,7 +196,14 @@ def build_transcript(task, turns):
     for i, turn in enumerate(turns):
         parts.append(f"[TURN {i + 1}]")
         if turn["reasoning"]:
-            parts.append(_truncate(turn["reasoning"], 160))
+            parts.append(_truncate(turn["reasoning"], 120))
+        if turn["final"]:
+            # final-channel explanations are real solver behavior — keep
+            # them (a turn whose reasoning channel is empty still shows
+            # its work here instead of reading as a bare guess); strip the
+            # raw ANSWER line, re-emitted canonically below
+            parts.append(_truncate(ANSWER_RE.sub("", turn["final"]).strip()
+                                   or turn["final"], 60))
         parts.append(f"ANSWER: {turn['answer'] or '<none>'}")
         parts.append(f"[VERIFIER] {'correct' if turn['correct'] else 'incorrect'}")
     return "\n".join(parts)
@@ -260,11 +276,15 @@ def generate_transcripts(out_dir: str) -> list[dict]:
                 turns_per_branch.append(turns)
                 if not correct:
                     retry_idx.append(k)
-                    assistant_msg = ({"role": "assistant", "content": final,
+                    # truncated decodes have no final text; hand back the
+                    # partial reasoning so the model re-checks real work
+                    fallback = final or _truncate(analysis, 200) or \
+                        "(no answer emitted)"
+                    assistant_msg = ({"role": "assistant", "content": fallback,
                                       "thinking": analysis}
                                      if models[k] == BRANCH_MODEL else
                                      {"role": "assistant",
-                                      "content": final})
+                                      "content": fallback})
                     retry_jobs.append((
                         models[k],
                         sys_msgs[k] + [
@@ -471,8 +491,12 @@ def mine(records: list[dict], out_dir: str) -> None:
     print(f"mining corpus: {len(texts)} transcripts, "
           f"{labels.mean():.2f} solved", flush=True)
 
+    if len(texts) < 24:
+        raise SystemExit(
+            f"balanced corpus has {len(texts)} transcripts; need >=24 "
+            "for a train/holdout split (increase --branches or add tasks)")
     rng = np.random.RandomState(1)
-    n_hold = max(60, int(0.25 * len(texts)))
+    n_hold = min(60, max(8, int(0.25 * len(texts))))
     hold_idx = rng.choice(len(texts), n_hold, replace=False)
     mask = np.zeros(len(texts), dtype=bool)
     mask[hold_idx] = True
@@ -527,21 +551,37 @@ def mine(records: list[dict], out_dir: str) -> None:
 
 
 def prune_report(records, kept, df, eval_df, sae, out_dir):
-    """Kill rule: a branch's *early* turn (first ~100 words of transcript)
-    activates >=1 neuron whose hypothesis predicts failure on holdout
-    (significant negative regression coefficient)."""
+    """Kill rule: a branch's *early* turn activates >=1 neuron whose
+    hypothesis predicts failure on holdout (significant negative
+    regression coefficient). The early input is the transcript prefix
+    before the first ``[VERIFIER]`` marker: [TASK] + [TURN 1] reasoning,
+    final text and answer — nothing after. That is what is observable
+    when the kill decision would actually be made; later turns and their
+    verdicts must never leak in."""
     from hypothesaes.embedding import get_local_embeddings
 
-    sig = eval_df[eval_df["regression_pval"] < 0.05 / len(eval_df)]
-    failure_hyps = set(sig[sig["regression_coef"] < 0]["hypothesis"])
-    success_hyps = set(sig[sig["regression_coef"] > 0]["hypothesis"])
     neuron_for_hyp = dict(zip(df["interpretation"], df["neuron_idx"]))
-    failure_neurons = [neuron_for_hyp[h] for h in failure_hyps
-                       if h in neuron_for_hyp]
-    success_neurons = [neuron_for_hyp[h] for h in success_hyps
-                       if h in neuron_for_hyp]
+    # strict = Bonferroni-corrected significance; exploratory = uncorrected
+    # p<0.05. Both are reported so a corpus where nothing survives
+    # correction still exposes the kill-rule mechanics honestly.
+    tiers = {
+        "strict": eval_df[
+            eval_df["regression_pval"] < 0.05 / len(eval_df)],
+        "exploratory": eval_df[eval_df["regression_pval"] < 0.05],
+    }
+    neurons = {}
+    for tier, sig in tiers.items():
+        failure_hyps = set(sig[sig["regression_coef"] < 0]["hypothesis"])
+        success_hyps = set(sig[sig["regression_coef"] > 0]["hypothesis"])
+        neurons[tier] = {
+            "failure": [neuron_for_hyp[h] for h in failure_hyps
+                        if h in neuron_for_hyp],
+            "success": [neuron_for_hyp[h] for h in success_hyps
+                        if h in neuron_for_hyp],
+        }
 
-    early = [_truncate(r["transcript"], 100) for r in kept]
+    early = [_truncate(r["transcript"].split("[VERIFIER]", 1)[0], 100)
+             for r in kept]
     emb = get_local_embeddings(
         early, model="sentence-transformers/all-MiniLM-L6-v2",
         cache_name="trace-miner-early", batch_size=64)
@@ -551,33 +591,49 @@ def prune_report(records, kept, df, eval_df, sae, out_dir):
     acts = np.asarray(sae.get_activations(E_early))
     labels = np.array([r["label"] for r in kept])
 
+    def _kill_stats(failure_neurons, success_neurons):
+        mask = np.zeros(len(kept), dtype=bool)
+        for i in range(len(kept)):
+            fired_fail = [j for j in failure_neurons if acts[i, j] > 0]
+            fired_succ = [j for j in success_neurons if acts[i, j] > 0]
+            mask[i] = bool(fired_fail) and not fired_succ
+        return {
+            "failure_neurons": failure_neurons,
+            "success_neurons": success_neurons,
+            "kill_count": int(mask.sum()),
+            "precision_failures_killed":
+                float((labels[mask] == 0).mean()) if mask.sum() else None,
+            "recall_of_failures":
+                float(mask[labels == 0].mean()) if (labels == 0).sum()
+                else None,
+            "correct_wrongly_killed":
+                int(((labels == 1) & mask).sum()),
+        }
+
+    strict = _kill_stats(neurons["strict"]["failure"],
+                         neurons["strict"]["success"])
+    exploratory = _kill_stats(neurons["exploratory"]["failure"],
+                              neurons["exploratory"]["success"])
+
     recs = []
-    kill_mask = np.zeros(len(kept), dtype=bool)
     for i, r in enumerate(kept):
-        fired_fail = [j for j in failure_neurons if acts[i, j] > 0]
-        fired_succ = [j for j in success_neurons if acts[i, j] > 0]
-        kill = bool(fired_fail) and not fired_succ
-        kill_mask[i] = kill
+        fired_fail = [j for j in neurons["strict"]["failure"]
+                      if acts[i, j] > 0]
+        fired_succ = [j for j in neurons["strict"]["success"]
+                      if acts[i, j] > 0]
         recs.append({"task_id": r["task_id"], "branch_id": r["branch_id"],
                      "label": r["label"], "persona": r["persona"],
                      "temperature": r["temperature"],
-                     "kill": kill, "failure_neurons_fired": fired_fail,
+                     "kill": bool(fired_fail) and not fired_succ,
+                     "failure_neurons_fired": fired_fail,
                      "success_neurons_fired": fired_succ})
 
-    killed = kill_mask
     report = {
         "n_transcripts": len(kept),
-        "significant_hypotheses": int(len(sig)),
-        "failure_neurons": failure_neurons,
-        "success_neurons": success_neurons,
-        "kill_count": int(killed.sum()),
-        "precision_failures_killed":
-            float((labels[killed] == 0).mean()) if killed.sum() else None,
-        "recall_of_failures":
-            float(killed[labels == 0].mean()) if (labels == 0).sum() else None,
-        "correct_wrongly_killed":
-            int(((labels == 1) & killed).sum()),
+        "significant_hypotheses": int(len(tiers["strict"])),
         "baseline_failure_rate": float((labels == 0).mean()),
+        "strict": strict,
+        "exploratory_uncorrected_p05": exploratory,
     }
     with open(os.path.join(out_dir, "pruning_report.json"), "w") as f:
         json.dump({"report": report, "per_branch": recs}, f, indent=1)
